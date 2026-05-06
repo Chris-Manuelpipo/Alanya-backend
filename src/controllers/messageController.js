@@ -47,6 +47,17 @@ const getMessages = async (req, res) => {
       [id, alanyaID]
     );
 
+    // ── Notifier l'expéditeur en temps réel que ses messages sont lus ─
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`conversation_${id}`).emit('message:status_updated', {
+        conversationID: id,
+        status: 3,
+        readBy: alanyaID,
+        readAt: new Date().toISOString(),
+      });
+    }
+
     res.json(rows.reverse());
   } catch (error) {
     throw error;

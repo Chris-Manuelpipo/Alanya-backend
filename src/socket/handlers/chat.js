@@ -146,6 +146,65 @@ const presenceOnline = (io, socket, userSockets) => {
       console.warn('[Socket presence:online] DB update failed:', e.message);
     }
 
+    // ── Passer les messages "envoyé" (1) en "reçu" (2) ───────────────
+    // Quand le user se connecte, tous les messages qui l'attendaient
+    // passent en status=2, et on notifie les expéditeurs en temps réel.
+    try {
+      const [convs] = await pool.execute(
+        'SELECT conversID FROM conv_participants WHERE alanyaID = ?',
+        [userID]
+      );
+
+      if (convs.length > 0) {
+        const conversIDs = convs.map(c => c.conversID);
+        const placeholders = conversIDs.map(() => '?').join(', ');
+
+        // Récupérer les messages en attente (status=1) dont cet user est destinataire
+        const [pendingMsgs] = await pool.query(
+          `SELECT DISTINCT senderID, conversationID FROM message
+           WHERE conversationID IN (${placeholders})
+             AND senderID != ?
+             AND status = 1
+             AND isDeleted = 0`,
+          [...conversIDs, userID]
+        );
+
+        if (pendingMsgs.length > 0) {
+          // Mettre à jour en DB : status=2, deliveredAt=maintenant
+          await pool.query(
+            `UPDATE message
+             SET status = 2, deliveredAt = NOW()
+             WHERE conversationID IN (${placeholders})
+               AND senderID != ?
+               AND status = 1
+               AND isDeleted = 0`,
+            [...conversIDs, userID]
+          );
+
+          // Notifier chaque expéditeur unique s'il est connecté
+          const notifiedSenders = new Set();
+          for (const msg of pendingMsgs) {
+            if (notifiedSenders.has(msg.senderID)) continue;
+            notifiedSenders.add(msg.senderID);
+
+            const senderSocketId = userSockets.get(Number(msg.senderID));
+            if (senderSocketId) {
+              io.to(senderSocketId).emit('message:status_updated', {
+                conversationID: msg.conversationID,
+                status: 2,
+                deliveredTo: Number(userID),
+                deliveredAt: new Date().toISOString(),
+              });
+            }
+          }
+
+          console.log(`[Socket presence:online] ${pendingMsgs.length} message(s) passé(s) en "reçu" pour user ${userID}`);
+        }
+      }
+    } catch (e) {
+      console.warn('[Socket presence:online] delivered update failed:', e.message);
+    }
+
     io.emit('presence:updated', {
       userID: Number(userID),
       online: true,
