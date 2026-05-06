@@ -55,13 +55,19 @@ function toInt(v) {
 const callUser = (io, socket, userSockets) => {
   socket.on('call_user', async (data) => {
     try {
-      if (!socket.authenticated) return;
+      if (!socket.authenticated) {
+        console.warn('[Socket call_user] ❌ Tentative non authentifiée');
+        return;
+      }
 
       const { targetUserId, callerId, callerName, callerPhoto, isVideo, offer } = data;
       const targetID = toInt(targetUserId);
       const callerID = toInt(callerId) || socket.alanyaID;
 
+      console.log(`[Socket call_user] 📞 Appel: ${callerID} → ${targetID} (${isVideo ? 'vidéo' : 'audio'})`);
+
       if (!targetID || !offer) {
+        console.warn('[Socket call_user] ❌ Données invalides', { targetID, offerExists: !!offer });
         socket.emit('call_failed', { reason: 'Données d\'appel invalides' });
         return;
       }
@@ -80,6 +86,7 @@ const callUser = (io, socket, userSockets) => {
 
       const targetSocketId = userSockets.get(targetID);
       if (targetSocketId) {
+        console.log(`[Socket call_user] ✅ Envoi incoming_call à socket ${targetSocketId}`);
         io.to(targetSocketId).emit('incoming_call', {
           callerId:    String(callerID),
           callerName:  callerName  || '',
@@ -88,6 +95,7 @@ const callUser = (io, socket, userSockets) => {
           offer,
         });
       } else {
+        console.warn(`[Socket call_user] ❌ Utilisateur ${targetID} non trouvé en socket. UserSockets: [${Array.from(userSockets.keys()).join(', ')}]`);
         socket.emit('call_failed', { reason: 'Utilisateur non disponible' });
       }
     } catch (error) {
@@ -100,16 +108,24 @@ const callUser = (io, socket, userSockets) => {
 const answerCall = (io, socket, userSockets) => {
   socket.on('answer_call', async (data) => {
     try {
-      if (!socket.authenticated) return;
+      if (!socket.authenticated) {
+        console.warn('[Socket answer_call] ❌ Non authentifié');
+        return;
+      }
       const { callerId, answer } = data;
 
       const callerID   = toInt(callerId);
       const receiverID = socket.alanyaID;
-      if (!callerID || !answer) return;
+      if (!callerID || !answer) {
+        console.warn('[Socket answer_call] ❌ Données invalides', { callerID, answerExists: !!answer });
+        return;
+      }
+
+      console.log(`[Socket answer_call] 📞 Réponse: Receiver ${receiverID} → Caller ${callerID}`);
 
       // CORRIGÉ : subquery pour éviter UPDATE + ORDER BY + LIMIT
       try {
-        await pool.execute(
+        const [result] = await pool.execute(
           `UPDATE callHistory
            SET start_time = NOW(), status = 1
            WHERE IDcall = (
@@ -122,13 +138,17 @@ const answerCall = (io, socket, userSockets) => {
            )`,
           [callerID, receiverID]
         );
+        console.log(`[Socket answer_call] ✅ DB updated: ${result.affectedRows} row(s)`);
       } catch (dbErr) {
         console.warn('[Socket answer_call] DB update failed:', dbErr.message);
       }
 
       const callerSocketId = userSockets.get(callerID);
       if (callerSocketId) {
+        console.log(`[Socket answer_call] ✅ Envoi call_answered à socket ${callerSocketId}`);
         io.to(callerSocketId).emit('call_answered', { answer });
+      } else {
+        console.warn(`[Socket answer_call] ❌ Caller ${callerID} non trouvé. UserSockets: [${Array.from(userSockets.keys()).join(', ')}]`);
       }
     } catch (error) {
       console.error('[Socket answer_call]', error.message);

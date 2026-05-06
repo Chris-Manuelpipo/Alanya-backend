@@ -6,15 +6,21 @@ const {
   login,
   refreshToken,
   resetPassword,
+  requestPasswordReset,
+  validateOTP,
+  completePasswordReset,
   getMe,
   updateMe,
 } = require('../controllers/authCustomController');
 
 // Public
-router.post('/register',        register);
-router.post('/login',           login);
-router.post('/refresh',         refreshToken);     // ← renouvellement silencieux
-router.post('/reset-password',  resetPassword);
+router.post('/register',                  register);
+router.post('/login',                     login);
+router.post('/refresh',                   refreshToken);
+router.post('/reset-password',            resetPassword);              // Legacy endpoint
+router.post('/forgot-password',           requestPasswordReset);       // New: Step 1 - Request OTP
+router.post('/validate-otp',              validateOTP);                // New: Step 2 - Validate OTP
+router.post('/reset-password-confirm',    completePasswordReset);      // New: Step 3 - Complete reset
 
 // Protégées
 router.get('/me',  authCustom, getMe);

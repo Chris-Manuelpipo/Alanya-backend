@@ -87,15 +87,15 @@ const register = async (req, res) => {
 // ── LOGIN ─────────────────────────────────────────────────────────────
 const login = async (req, res) => {
   try {
-    const { email, password, fcm_token, device_ID } = req.body;
+    const { alanyaPhone, password, fcm_token, device_ID } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' });
+    if (!alanyaPhone || !password) {
+      return res.status(400).json({ error: 'alanyaPhone and password required' });
     }
 
     const [rows] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, email, password, avatar_url, is_online, exclus FROM users WHERE email = ?',
-      [email.toLowerCase().trim()]
+      'SELECT alanyaID, nom, pseudo, alanyaPhone, email, password, avatar_url, is_online, exclus FROM users WHERE alanyaPhone = ?',
+      [alanyaPhone]
     );
 
     if (rows.length === 0) {
@@ -180,13 +180,217 @@ const refreshToken = async (req, res) => {
   }
 };
 
-// ── RESET PASSWORD ────────────────────────────────────────────────────
+// ── GENERATE OTP ──────────────────────────────────────────────────────
+const generateOTP = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+const sendPasswordResetOTP = async (email, otp) => {
+  const fromEmail = process.env.SENDGRID_FROM_EMAIL || process.env.SMTP_FROM || process.env.MAIL_FROM;
+  const fromName = process.env.MAIL_FROM_NAME || 'Alanya';
+  const subject = 'Alanya password reset OTP';
+  const text = `Your Alanya password reset OTP is ${otp}. It expires in 10 minutes. `;
+  const html = `
+    <p>Your Alanya password reset OTP is:</p>
+    <p style="font-size:24px;font-weight:700;letter-spacing:4px;">${otp}</p>
+    <p>This code expires in 10 minutes.</p>
+  `;
+
+  if (!fromEmail) {
+    throw new Error('Email sender is not configured');
+  }
+
+  if (process.env.SENDGRID_API_KEY) {
+    const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email }] }],
+        from: { email: fromEmail, name: fromName },
+        subject,
+        content: [
+          { type: 'text/plain', value: text },
+          { type: 'text/html', value: html },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`SendGrid failed with status ${response.status}: ${errorBody}`);
+    }
+    return;
+  }
+
+  if (!process.env.SMTP_HOST) {
+    throw new Error('Email service is not configured');
+  }
+
+  let nodemailer;
+  try {
+    nodemailer = require('nodemailer');
+  } catch (error) {
+    throw new Error('Nodemailer is required for SMTP email sending');
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: process.env.SMTP_USER && process.env.SMTP_PASS
+      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+      : undefined,
+  });
+
+  await transporter.sendMail({
+    from: `"${fromName}" <${fromEmail}>`,
+    to: email,
+    subject,
+    text,
+    html,
+  });
+};
+
+// ── REQUEST PASSWORD RESET (Étape 1) ──────────────────────────────────
+// Envoie un OTP à l'email
+const requestPasswordReset = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email required' });
+    }
+
+    const [rows] = await pool.execute(
+      'SELECT alanyaID FROM users WHERE email = ?',
+      [email.toLowerCase().trim()]
+    );
+
+    // Réponse volontairement vague pour éviter l'énumération
+    if (rows.length === 0) {
+      return res.json({ message: 'If this email exists, check your inbox for the OTP' });
+    }
+
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // OTP valide 10 minutes
+
+    await pool.execute(
+      'UPDATE users SET reset_otp = ?, reset_otp_expires_at = ? WHERE alanyaID = ?',
+      [otp, expiresAt, rows[0].alanyaID]
+    );
+
+    await sendPasswordResetOTP(email.toLowerCase().trim(), otp);
+
+    res.json({ message: 'If this email exists, check your inbox for the OTP' });
+  } catch (error) {
+    console.error('[RequestPasswordReset] ERROR:', error);
+    res.status(500).json({ error: error.message || 'Request failed' });
+  }
+};
+
+// ── VALIDATE OTP (Étape 2) ────────────────────────────────────────────
+// Vérifie l'OTP et retourne un token temporaire
+const validateOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ error: 'Email and OTP required' });
+    }
+
+    const [rows] = await pool.execute(
+      'SELECT alanyaID, reset_otp, reset_otp_expires_at FROM users WHERE email = ?',
+      [email.toLowerCase().trim()]
+    );
+
+    if (rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid email' });
+    }
+
+    const user = rows[0];
+
+    // Vérifier que l'OTP existe et est valide
+    if (!user.reset_otp) {
+      return res.status(400).json({ error: 'No OTP requested' });
+    }
+
+    if (user.reset_otp !== otp) {
+      return res.status(401).json({ error: 'Invalid OTP' });
+    }
+
+    if (new Date() > new Date(user.reset_otp_expires_at)) {
+      return res.status(401).json({ error: 'OTP expired' });
+    }
+
+    // Générer un token temporaire valide 15 minutes pour changer le mot de passe
+    const resetToken = jwt.sign(
+      { alanyaID: user.alanyaID, type: 'password_reset' },
+      process.env.JWT_SECRET || 'talky-secret-key-change-in-production',
+      { expiresIn: '15m' }
+    );
+
+    res.json({ resetToken, message: 'OTP validated. Use resetToken to change password' });
+  } catch (error) {
+    console.error('[ValidateOTP] ERROR:', error);
+    res.status(500).json({ error: error.message || 'Validation failed' });
+  }
+};
+
+// ── COMPLETE PASSWORD RESET (Étape 3) ─────────────────────────────────
+// Change le mot de passe avec le reset token
+const completePasswordReset = async (req, res) => {
+  try {
+    const { resetToken, newPassword } = req.body;
+
+    if (!resetToken || !newPassword) {
+      return res.status(400).json({ error: 'Reset token and new password required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    // Vérifier le reset token
+    let decoded;
+    try {
+      decoded = jwt.verify(
+        resetToken,
+        process.env.JWT_SECRET || 'talky-secret-key-change-in-production'
+      );
+    } catch (err) {
+      return res.status(401).json({ error: 'Invalid or expired reset token' });
+    }
+
+    if (decoded.type !== 'password_reset') {
+      return res.status(401).json({ error: 'Invalid token type' });
+    }
+
+    // Hacher le nouveau mot de passe
+    const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
+
+    // Mettre à jour le mot de passe et nettoyer l'OTP
+    await pool.execute(
+      'UPDATE users SET password = ?, reset_otp = NULL, reset_otp_expires_at = NULL WHERE alanyaID = ?',
+      [hashedPassword, decoded.alanyaID]
+    );
+
+    res.json({ message: 'Password updated successfully' });
+  } catch (error) {
+    console.error('[CompletePasswordReset] ERROR:', error);
+    res.status(500).json({ error: error.message || 'Reset failed' });
+  }
+};
+
+// ── RESET PASSWORD (Legacy - kept for backward compatibility) ─────────
 const resetPassword = async (req, res) => {
   try {
     const { email, newPassword } = req.body;
 
     if (!email || !newPassword) {
-      return res.status(400).json({ error: 'Email and newPassword required' });
+      return res.status(400).json({ error: 'Email and new Password required' });
     }
 
     if (newPassword.length < 6) {
@@ -279,6 +483,9 @@ module.exports = {
   login,
   refreshToken,
   resetPassword,
+  requestPasswordReset,
+  validateOTP,
+  completePasswordReset,
   getMe,
   updateMe,
   authCustom: require('../middleware/authCustom').authCustom,

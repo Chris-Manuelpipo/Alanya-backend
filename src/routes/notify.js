@@ -1,11 +1,12 @@
-// POST /notify — déclenche l'envoi FCM (appels hors ligne, etc.) depuis le client authentifié.
+// POST /notify — déclenche l'envoi FCM (appels hors ligne, etc.)
+// CORRIGÉ : utilise auth JWT au lieu de authFirebase
 const express = require('express');
-const authFirebase = require('../middleware/authFirebase');
+const auth    = require('../middleware/auth');
 const { sendToUser } = require('../services/notificationService');
 
 const router = express.Router();
 
-router.post('/', authFirebase, async (req, res, next) => {
+router.post('/', auth, async (req, res, next) => {
   try {
     const {
       toUserId,
@@ -25,17 +26,16 @@ router.post('/', authFirebase, async (req, res, next) => {
     }
 
     const payload = {
-      type: String(type || 'message'),
+      type:  String(type  || 'message'),
       title: String(title || ''),
-      body: String(body || ''),
+      body:  String(body  || ''),
     };
     if (conversationId != null) payload.conversationId = String(conversationId);
-    if (callerId != null) payload.callerId = String(callerId);
-    if (roomId != null) payload.roomId = String(roomId);
-    if (isVideo != null) payload.isVideo = String(isVideo);
-    if (offer != null) {
-      payload.offer =
-        typeof offer === 'string' ? offer : JSON.stringify(offer);
+    if (callerId       != null) payload.callerId       = String(callerId);
+    if (roomId         != null) payload.roomId         = String(roomId);
+    if (isVideo        != null) payload.isVideo        = String(isVideo);
+    if (offer          != null) {
+      payload.offer = typeof offer === 'string' ? offer : JSON.stringify(offer);
     }
 
     await sendToUser(id, payload);
