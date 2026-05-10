@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 // ── Firebase Admin — initialisé EN PREMIER avant tout autre require ───
-require('./src/config/firebase');
+//require('./src/config/firebase');
 
 const express    = require('express');
 const http       = require('http');
@@ -134,7 +134,7 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server en marche sur le port ${PORT}`);
   startMeetingScheduler();
 });

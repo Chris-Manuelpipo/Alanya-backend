@@ -4,6 +4,6 @@ const auth = require('../middleware/auth');
 const { getMessages, sendMessage, updateMessage, deleteMessage } = require('../controllers/messageController');
 
 router.get('/:id/messages', auth, getMessages);
-router.post('/:id/messages', auth, sendMessage);
+router.post('/:id/messages',auth,  sendMessage); 
 
-module.exports = router;
+module.exports = router; 

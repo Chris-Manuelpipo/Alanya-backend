@@ -66,6 +66,7 @@ const getMessages = async (req, res) => {
 
 const sendMessage = async (req, res) => {
   try {
+    console.log('send message called')
     const { id } = req.params; // conversationID
     const {
       content, type = 0, mediaUrl, mediaName, mediaDuration,
