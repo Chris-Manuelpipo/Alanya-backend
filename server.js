@@ -68,8 +68,14 @@ app.use(express.json());
 app.use(generalLimiter);
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-// Servir les fichiers uploadés statiquement
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Servir les fichiers uploadés statiquement.
+// Les headers CORS explicites sont nécessaires pour que Chrome puisse charger
+// images/audio/vidéo depuis Flutter web (Image.network, audioplayers, etc.)
+app.use('/uploads', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
+}, express.static(path.join(__dirname, 'uploads')));
 
 // ── Routes API ────────────────────────────────────────────────────────
 app.use('/api/auth',          authCustomRoutes);
