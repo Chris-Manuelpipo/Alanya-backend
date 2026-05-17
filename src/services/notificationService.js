@@ -70,16 +70,16 @@ const notifyNewMessage = async (conversationID, senderID, senderName, content, t
   }
 };
 
-const notifyIncomingCall = async (idReceiver, callerID, callerName, callerPhoto, isVideo, roomId) => {
+const notifyIncomingCall = async (idReceiver, callerID, callerName, callerPhoto, isVideo, callId) => {
   await sendToUser(idReceiver, {
     type:       'call',
-    title:      callerName,
-    body:       `${callerName} vous appelle`,
+    title:      callerName || 'Appel entrant',
+    body:       `${callerName || 'Quelqu\'un'} vous appelle`,
     callerId:   String(callerID),
-    callerName: String(callerName),
+    callerName: String(callerName ?? ''),
     photo:      String(callerPhoto ?? ''),
-    isVideo:    String(isVideo ?? 'false'),
-    roomId:     String(roomId ?? ''),
+    isVideo:    String(isVideo ?? false),
+    callId:     String(callId ?? ''),
   });
 };
 
@@ -87,12 +87,12 @@ const notifyGroupCall = async (targetUserIds = [], callerID, callerName, callerP
   for (const uid of targetUserIds) {
     await sendToUser(uid, {
       type:       'group_call',
-      title:      callerName,
-      body:       `${callerName} démarre un appel de groupe`,
+      title:      callerName || 'Appel de groupe',
+      body:       `${callerName || 'Quelqu\'un'} démarre un appel de groupe`,
       callerId:   String(callerID),
-      callerName: String(callerName),
+      callerName: String(callerName ?? ''),
       photo:      String(callerPhoto ?? ''),
-      isVideo:    String(isVideo ?? 'false'),
+      isVideo:    String(isVideo ?? false),
       roomId:     String(roomId ?? ''),
     });
   }

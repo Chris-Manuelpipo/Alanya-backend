@@ -186,43 +186,20 @@ const generateOTP = () => {
 };
 
 const sendPasswordResetOTP = async (email, otp) => {
-  const fromEmail = process.env.SENDGRID_FROM_EMAIL || process.env.SMTP_FROM || process.env.MAIL_FROM;
+  const fromEmail =process.env.SMTP_FROM ;
   const fromName = process.env.MAIL_FROM_NAME || 'Alanya';
   const subject = 'Alanya password reset OTP';
   const text = `Your Alanya password reset OTP is ${otp}. It expires in 10 minutes. `;
   const html = `
     <p>Your Alanya password reset OTP is:</p>
+    <p>Votre code OTP pour réinitialiser le mot de passe Alanya est:</p>
     <p style="font-size:24px;font-weight:700;letter-spacing:4px;">${otp}</p>
     <p>This code expires in 10 minutes.</p>
+    <p>Ce code expire dans 10 minutes.</p>
   `;
 
   if (!fromEmail) {
     throw new Error('Email sender is not configured');
-  }
-
-  if (process.env.SENDGRID_API_KEY) {
-    const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email }] }],
-        from: { email: fromEmail, name: fromName },
-        subject,
-        content: [
-          { type: 'text/plain', value: text },
-          { type: 'text/html', value: html },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`SendGrid failed with status ${response.status}: ${errorBody}`);
-    }
-    return;
   }
 
   if (!process.env.SMTP_HOST) {
@@ -439,6 +416,28 @@ const getMe = async (req, res) => {
   }
 };
 
+// ── UPDATE FCM TOKEN ──────────────────────────────────────────────────
+// Endpoint léger dédié à la rotation du token FCM (mobile/web push).
+// Accepte { fcmToken } ou { fcm_token } pour rester compatible.
+const updateFcmToken = async (req, res) => {
+  try {
+    const token = req.body.fcmToken || req.body.fcm_token;
+    if (!token || typeof token !== 'string' || token.length > 4096) {
+      return res.status(400).json({ error: 'fcmToken required' });
+    }
+
+    await pool.execute(
+      'UPDATE users SET fcm_token = ? WHERE alanyaID = ?',
+      [token, req.user.alanyaID]
+    );
+
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[UpdateFcmToken] ERROR:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 // ── UPDATE ME ─────────────────────────────────────────────────────────
 const updateMe = async (req, res) => {
   try {
@@ -488,5 +487,6 @@ module.exports = {
   completePasswordReset,
   getMe,
   updateMe,
+  updateFcmToken,
   authCustom: require('../middleware/authCustom').authCustom,
 };

@@ -11,6 +11,7 @@ const {
   completePasswordReset,
   getMe,
   updateMe,
+  updateFcmToken,
 } = require('../controllers/authCustomController');
 
 // Public
@@ -23,7 +24,8 @@ router.post('/validate-otp',              validateOTP);                // New: S
 router.post('/reset-password-confirm',    completePasswordReset);      // New: Step 3 - Complete reset
 
 // Protégées
-router.get('/me',  authCustom, getMe);
-router.put('/me',  authCustom, updateMe);
+router.get('/me',         authCustom, getMe);
+router.put('/me',         authCustom, updateMe);
+router.put('/fcm-token',  authCustom, updateFcmToken);
 
 module.exports = router;

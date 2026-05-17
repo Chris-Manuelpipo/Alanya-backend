@@ -38,6 +38,7 @@
 //   group_user_left    { roomId, userId }
 
 const pool = require('../../config/db');
+const { notifyIncomingCall, notifyGroupCall } = require('../../services/notificationService');
 
 // State en mémoire des rooms de groupe
 // roomId → Map<alanyaID, { userName, userPhoto }>
@@ -72,13 +73,15 @@ const callUser = (io, socket, userSockets) => {
         return;
       }
 
+      let callID = null;
       try {
         const [result] = await pool.execute(
           `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, start_time)
            VALUES (?, ?, ?, 0, NOW(), NOW())`,
           [callerID, targetID, isVideo ? 1 : 0]
         );
-        socket.currentCallID = result.insertId;
+        callID = result.insertId;
+        socket.currentCallID = callID;
         socket.currentCallTarget = targetID;
       } catch (dbErr) {
         console.warn('[Socket call_user] DB insert failed:', dbErr.message);
@@ -88,6 +91,7 @@ const callUser = (io, socket, userSockets) => {
       if (targetSocketId) {
         console.log(`[Socket call_user] ✅ Envoi incoming_call à socket ${targetSocketId}`);
         io.to(targetSocketId).emit('incoming_call', {
+          callId:      callID != null ? String(callID) : null,
           callerId:    String(callerID),
           callerName:  callerName  || '',
           callerPhoto: callerPhoto || null,
@@ -95,9 +99,14 @@ const callUser = (io, socket, userSockets) => {
           offer,
         });
       } else {
-        console.warn(`[Socket call_user] ❌ Utilisateur ${targetID} non trouvé en socket. UserSockets: [${Array.from(userSockets.keys()).join(', ')}]`);
-        socket.emit('call_failed', { reason: 'Utilisateur non disponible' });
+        console.warn(`[Socket call_user] ❌ Utilisateur ${targetID} non trouvé en socket — fallback FCM uniquement`);
       }
+
+      // Toujours envoyer la notif FCM : si l'app est tuée/background, c'est l'unique
+      // moyen d'afficher CallKit. Si l'app est au premier plan, le client déduplique
+      // via callId (notif ignorée si l'event socket est déjà arrivé).
+      notifyIncomingCall(targetID, callerID, callerName, callerPhoto, isVideo, callID)
+        .catch((err) => console.warn('[Socket call_user] FCM error:', err.message));
     } catch (error) {
       console.error('[Socket call_user]', error.message);
       socket.emit('call_failed', { reason: error.message });
@@ -277,9 +286,11 @@ const createGroupCall = (io, socket, userSockets) => {
       socket.join(`group_${roomId}`);
       socket.currentGroupRoom = roomId;
 
+      const fcmTargets = [];
       for (const uid of targetUserIds) {
         const targetID = toInt(uid);
         if (!targetID) continue;
+        fcmTargets.push(targetID);
         const targetSocketId = userSockets.get(targetID);
         if (targetSocketId) {
           io.to(targetSocketId).emit('group_call_invite', {
@@ -291,6 +302,10 @@ const createGroupCall = (io, socket, userSockets) => {
           });
         }
       }
+
+      // FCM en parallèle pour les destinataires hors-ligne / app fermée
+      notifyGroupCall(fcmTargets, callerID, callerName, callerPhoto, isVideo, roomId)
+        .catch((err) => console.warn('[Socket create_group_call] FCM error:', err.message));
     } catch (error) {
       console.error('[Socket create_group_call]', error.message);
     }

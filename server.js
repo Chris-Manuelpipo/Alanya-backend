@@ -28,6 +28,7 @@ const meetingRoutes      = require('./src/routes/meetings');
 const notifyRoutes       = require('./src/routes/notify');
 const uploadRoutes       = require('./src/routes/upload');
 const contactRoutes      = require('./src/routes/contacts');
+const turnRoutes         = require('./src/routes/turn');
 
 // ── Socket handlers ───────────────────────────────────────────────────
 const socketAuth = require('./src/socket/handlers/auth');
@@ -83,6 +84,7 @@ app.use('/api/calls',         callRoutes);
 app.use('/api/meetings',      meetingRoutes);
 app.use('/api/upload',        uploadRoutes);
 app.use('/api/contacts',      contactRoutes);
+app.use('/api/turn',          turnRoutes);
 app.use('/notify',            notifyRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'Serveur ok', timestamp: new Date().toISOString() }));
