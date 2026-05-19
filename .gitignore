@@ -35,3 +35,7 @@ Thumbs.db
 serviceAccountKey.json
 serviceAccountKey.json
 .codex/k
+
+# zip
+
+src.zip
