@@ -127,6 +127,16 @@ const notifyMeetingReminder = async (participantId, meetingTitle, organiserName)
   });
 };
 
+const notifyCallEnded = async (receiverId, callerId, callerName) => {
+  await sendToUser(receiverId, {
+    type:       'call_ended',
+    title:      'Appel terminé',
+    body:       `${callerName || 'L\'appel'} a raccroché`,
+    callerId:   String(callerId),
+    callerName: String(callerName ?? ''),
+  });
+};
+
 module.exports = {
   sendDataOnlyNotification,
   sendToUser,
@@ -136,4 +146,5 @@ module.exports = {
   notifyStatusView,
   notifyMeetingInvite,
   notifyMeetingReminder,
+  notifyCallEnded,
 };

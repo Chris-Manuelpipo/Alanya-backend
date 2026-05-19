@@ -38,7 +38,7 @@
 //   group_user_left    { roomId, userId }
 
 const pool = require('../../config/db');
-const { notifyIncomingCall, notifyGroupCall } = require('../../services/notificationService');
+const { notifyIncomingCall, notifyGroupCall, notifyCallEnded } = require('../../services/notificationService');
 
 // State en mémoire des rooms de groupe
 // roomId → Map<alanyaID, { userName, userPhoto }>
@@ -197,6 +197,10 @@ const rejectCall = (io, socket, userSockets) => {
       if (callerSocketId) {
         io.to(callerSocketId).emit('call_rejected', {});
       }
+
+      // ✅ Envoyer FCM au caller pour arrêter la sonnerie (cas où receiver est en background)
+      notifyCallEnded(callerID, receiverID, 'Destinataire')
+        .catch((err) => console.warn('[Socket reject_call] FCM notifyCallEnded error:', err.message));
     } catch (error) {
       console.error('[Socket reject_call]', error.message);
     }
@@ -255,6 +259,10 @@ const endCall = (io, socket, userSockets) => {
         if (targetSocketId) {
           io.to(targetSocketId).emit('call_ended', {});
         }
+
+        // ✅ Envoyer FCM au receiver pour arrêter la sonnerie (cas où receiver est en background)
+        notifyCallEnded(targetID, callerID, 'L\'appelant')
+          .catch((err) => console.warn('[Socket end_call] FCM notifyCallEnded error:', err.message));
       }
 
       socket.currentCallID     = null;
