@@ -220,7 +220,7 @@ const inviteParticipants = async (req, res) => {
 
       if (existing.length === 0) {
         await pool.execute(
-          'INSERT INTO participant (idMeeting, IDparticipant, status, start_time, connecte, duree) VALUES (?, ?, 0, NOW(), 0, 0)',
+          'INSERT INTO participant (idMeeting, IDparticipant, status, start_time, connecte, duree) VALUES (?, ?, 1, NOW(), 0, 0)',
           [id, participantId]
         );
 
@@ -230,7 +230,8 @@ const inviteParticipants = async (req, res) => {
             participantId,
             meeting.organiser_nom,
             meeting.objet,
-            meeting.start_time
+            meeting.start_time,
+            id
           );
         } catch (err) {
           console.error('[Meeting] Erreur notification invite:', err.message);

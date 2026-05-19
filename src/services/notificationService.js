@@ -106,7 +106,7 @@ const notifyStatusView = async (statusOwnerID, viewerName) => {
   });
 };
 
-const notifyMeetingInvite = async (participantId, organiserName, meetingTitle, meetingTime) => {
+const notifyMeetingInvite = async (participantId, organiserName, meetingTitle, meetingTime, meetingId) => {
   await sendToUser(participantId, {
     type:          'meeting_invite',
     title:         'Nouvelle réunion',
@@ -114,16 +114,18 @@ const notifyMeetingInvite = async (participantId, organiserName, meetingTitle, m
     meetingTitle:  String(meetingTitle),
     organiserName: String(organiserName),
     meetingTime:   String(meetingTime),
+    meetingId:     String(meetingId ?? ''),
   });
 };
 
-const notifyMeetingReminder = async (participantId, meetingTitle, organiserName) => {
+const notifyMeetingReminder = async (participantId, meetingTitle, organiserName, meetingId) => {
   await sendToUser(participantId, {
     type:          'meeting_reminder',
     title:         'Réunion dans 10 minutes',
     body:          `${meetingTitle} démarre dans 10 minutes`,
     meetingTitle:  String(meetingTitle),
     organiserName: String(organiserName),
+    meetingId:     String(meetingId ?? ''),
   });
 };
 

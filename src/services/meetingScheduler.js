@@ -75,7 +75,8 @@ const checkAndNotifyUpcomingMeetings = async () => {
           await notifyMeetingReminder(
             p.IDparticipant,
             meeting.objet,
-            meeting.organiser_nom
+            meeting.organiser_nom,
+            meeting.idMeeting
           );
           console.log(
             `[MeetingScheduler] Notification envoyée au participant ${p.IDparticipant} pour réunion ${meeting.idMeeting}`
