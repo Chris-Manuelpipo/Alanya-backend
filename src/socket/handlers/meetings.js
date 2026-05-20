@@ -1,9 +1,41 @@
 // src/socket/handlers/meetings.js
 // meetingJoinRoom est maintenant exporté et DOIT être enregistré dans server.js
+const pool = require('../../config/db');
 
 function toInt(v) {
   const n = parseInt(v, 10);
   return isNaN(n) ? null : n;
+}
+
+async function persistLeaveAndMaybeEnd(meetingID, userID) {
+  const mID = toInt(meetingID);
+  const uID = toInt(userID);
+  if (!mID || !uID) return;
+
+  await pool.execute(
+    `UPDATE participant
+     SET connecte = 0,
+         duree = CASE
+                   WHEN start_time IS NULL THEN duree
+                   ELSE TIMESTAMPDIFF(SECOND, start_time, NOW())
+                 END
+     WHERE idMeeting = ? AND IDparticipant = ?`,
+    [mID, uID]
+  );
+
+  const [connectedRows] = await pool.execute(
+    `SELECT COUNT(*) AS count
+     FROM participant
+     WHERE idMeeting = ? AND connecte = 1`,
+    [mID]
+  );
+
+  if ((connectedRows?.[0]?.count ?? 0) === 0) {
+    await pool.execute('UPDATE meeting SET isEnd = 1 WHERE idMeeting = ?', [mID]);
+    return true;
+  }
+
+  return false;
 }
 
 const meetingCreate = (io, socket, userSockets) => {
@@ -99,9 +131,26 @@ const meetingStart = (io, socket, userSockets) => {
 };
 
 const meetingEnd = (io, socket, userSockets) => {
-  socket.on('meeting:end', (data) => {
+  socket.on('meeting:end', async (data) => {
     if (!socket.authenticated) return;
     const { meetingID } = data;
+
+    try {
+      await pool.execute('UPDATE meeting SET isEnd = 1 WHERE idMeeting = ?', [meetingID]);
+      await pool.execute(
+        `UPDATE participant
+         SET connecte = 0,
+             duree = CASE
+                       WHEN start_time IS NULL THEN duree
+                       ELSE TIMESTAMPDIFF(SECOND, start_time, NOW())
+                     END
+         WHERE idMeeting = ?`,
+        [meetingID]
+      );
+    } catch (error) {
+      console.error('[Socket meeting:end] DB update failed:', error.message);
+    }
+
     io.to(`meeting_${meetingID}`).emit('meeting:ended', { meetingID });
 
     const roomSockets = io.sockets.adapter.rooms.get(`meeting_${meetingID}`);
@@ -131,15 +180,23 @@ const meetingChat = (io, socket, userSockets) => {
 };
 
 const meetingLeave = (io, socket, userSockets) => {
-  socket.on('meeting:leave', (data) => {
+  socket.on('meeting:leave', async (data) => {
     try {
       const meetingID = data?.meetingID || socket.currentMeetingID;
-      if (!meetingID) return;
+      const userID = socket.alanyaID;
+      if (!meetingID || !userID) return;
 
       socket.to(`meeting_${meetingID}`).emit('meeting:user_left', {
         meetingID,
-        userID: String(socket.alanyaID),
+        userID: String(userID),
       });
+
+      const ended = await persistLeaveAndMaybeEnd(meetingID, userID);
+      if (ended) {
+        io.to(`meeting_${meetingID}`).emit('meeting:ended', {
+          meetingID: toInt(meetingID),
+        });
+      }
 
       socket.leave(`meeting_${meetingID}`);
       socket.currentMeetingID = null;
@@ -147,6 +204,30 @@ const meetingLeave = (io, socket, userSockets) => {
       console.error('[Socket meeting:leave]', error.message);
     }
   });
+};
+
+const meetingHandleDisconnect = async (io, socket) => {
+  try {
+    const meetingID = socket.currentMeetingID;
+    const userID = socket.alanyaID;
+    if (!meetingID || !userID) return;
+
+    socket.to(`meeting_${meetingID}`).emit('meeting:user_left', {
+      meetingID,
+      userID: String(userID),
+    });
+
+    const ended = await persistLeaveAndMaybeEnd(meetingID, userID);
+    if (ended) {
+      io.to(`meeting_${meetingID}`).emit('meeting:ended', {
+        meetingID: toInt(meetingID),
+      });
+    }
+
+    socket.currentMeetingID = null;
+  } catch (error) {
+    console.error('[Socket meeting:disconnect]', error.message);
+  }
 };
 
 const meetingOffer = (io, socket, userSockets) => {
@@ -225,6 +306,7 @@ module.exports = {
   meetingEnd,
   meetingChat,
   meetingLeave,
+  meetingHandleDisconnect,
   meetingOffer,
   meetingAnswer,
   meetingIceCandidate,
