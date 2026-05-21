@@ -51,7 +51,8 @@ const mediaFilter = (req, file, cb) => {
   const allowed = [
     'image/jpeg', 'image/png', 'image/webp', 'image/gif',
     'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/aac', 'audio/mp4',
-    'video/mp4', 'video/webm',
+    'audio/x-m4a', 'audio/m4a', 'audio/webm',
+    'video/mp4', 'video/webm', 'video/quicktime', 'video/3gpp',
     'application/pdf',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',

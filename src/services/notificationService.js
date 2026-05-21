@@ -121,8 +121,8 @@ const notifyMeetingInvite = async (participantId, organiserName, meetingTitle, m
 const notifyMeetingReminder = async (participantId, meetingTitle, organiserName, meetingId) => {
   await sendToUser(participantId, {
     type:          'meeting_reminder',
-    title:         'Réunion dans 10 minutes',
-    body:          `${meetingTitle} démarre dans 10 minutes`,
+    title:         'Réunion dans moins de 10 minutes',
+    body:          `${meetingTitle} démarre dans moins de 10 minutes`,
     meetingTitle:  String(meetingTitle),
     organiserName: String(organiserName),
     meetingId:     String(meetingId ?? ''),

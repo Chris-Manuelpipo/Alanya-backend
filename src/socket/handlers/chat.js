@@ -23,7 +23,7 @@ const messageSend = (io, socket, userSockets) => {
         });
       }
 
-      const { conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply = 0 } = data;
+      const { conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply = 0, clientId } = data;
       const senderID = socket.alanyaID; // ✅ Utiliser l'ID du socket authentifié
 
       if (!conversationID || (!content && !mediaUrl)) {
@@ -104,7 +104,8 @@ const messageSend = (io, socket, userSockets) => {
         );
       }, 0);
 
-      socket.emit('message:sent', { msgID, ...msg });
+      // Renvoyer clientId pour que l'émetteur retrouve son message optimiste.
+      socket.emit('message:sent', { msgID, clientId, ...msg });
     } catch (error) {
       console.error('[Socket message:send]', error.message);
       socket.emit('error', { message: error.message });
@@ -123,6 +124,69 @@ const typingStop = (io, socket, userSockets) => {
   socket.on('typing:stop', (data) => {
     const { conversationID, userID } = data;
     socket.to(`conversation_${conversationID}`).emit('typing:stopped', { userID });
+  });
+};
+
+// ── Accusés de réception / lecture ──────────────────────────────────
+// Notifie l'émetteur quand ses messages sont LIVRÉS (status=2) ou LUS
+// (status=3). Émet `message:status` dans la room + directement aux
+// sockets des participants (au cas où l'émetteur n'est pas dans la room).
+const _notifyStatus = async (io, conversationID, status, byUserID, userSockets) => {
+  const payload = { conversationID: Number(conversationID), status, byUserID: Number(byUserID) };
+  io.to(`conversation_${conversationID}`).emit('message:status', payload);
+  try {
+    const [participants] = await pool.execute(
+      'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+      [conversationID, byUserID]
+    );
+    for (const p of participants) {
+      const sid = userSockets.get(p.alanyaID);
+      if (sid) io.to(sid).emit('message:status', payload);
+    }
+  } catch (e) {
+    console.warn('[Socket message:status] notify failed:', e.message);
+  }
+};
+
+const messageDelivered = (io, socket, userSockets) => {
+  socket.on('message:delivered', async (data) => {
+    if (!socket.authenticated) return;
+    const { conversationID } = data;
+    const userID = socket.alanyaID;
+    if (!conversationID || !userID) return;
+    try {
+      await pool.execute(
+        `UPDATE message SET status = 2
+         WHERE conversationID = ? AND senderID != ? AND status = 1`,
+        [conversationID, userID]
+      );
+      await _notifyStatus(io, conversationID, 2, userID, userSockets);
+    } catch (e) {
+      console.warn('[Socket message:delivered]', e.message);
+    }
+  });
+};
+
+const messageRead = (io, socket, userSockets) => {
+  socket.on('message:read', async (data) => {
+    if (!socket.authenticated) return;
+    const { conversationID } = data;
+    const userID = socket.alanyaID;
+    if (!conversationID || !userID) return;
+    try {
+      await pool.execute(
+        `UPDATE message SET status = 3, readAt = NOW()
+         WHERE conversationID = ? AND senderID != ? AND status < 3`,
+        [conversationID, userID]
+      );
+      await pool.execute(
+        'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
+        [conversationID, userID]
+      );
+      await _notifyStatus(io, conversationID, 3, userID, userSockets);
+    } catch (e) {
+      console.warn('[Socket message:read]', e.message);
+    }
   });
 };
 
@@ -230,6 +294,8 @@ module.exports = {
   messageSend,
   typingStart,
   typingStop,
+  messageDelivered,
+  messageRead,
   presenceOnline,
   presenceOffline,
   handleDisconnect,

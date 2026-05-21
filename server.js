@@ -34,6 +34,7 @@ const turnRoutes         = require('./src/routes/turn');
 const socketAuth = require('./src/socket/handlers/auth');
 const {
   joinConversation, messageSend, typingStart, typingStop,
+  messageDelivered, messageRead,
   presenceOnline, presenceOffline, handleDisconnect,
 } = require('./src/socket/handlers/chat');
 
@@ -104,6 +105,8 @@ io.on('connection', (socket) => {
   messageSend(io, socket, userSockets);
   typingStart(io, socket, userSockets);
   typingStop(io, socket, userSockets);
+  messageDelivered(io, socket, userSockets);
+  messageRead(io, socket, userSockets);
   callUser(io, socket, userSockets);
   answerCall(io, socket, userSockets);
   rejectCall(io, socket, userSockets);
