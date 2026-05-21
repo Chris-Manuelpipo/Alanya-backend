@@ -1,5 +1,6 @@
 const pool = require('../config/db');
-
+ 
+// Récupère l'historique des appels de l'utilisateur connecté
 const getCalls = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
@@ -21,6 +22,7 @@ const getCalls = async (req, res) => {
   }
 };
 
+// Crée un nouvel appel (type 0 = audio, 1 = vidéo)
 const createCall = async (req, res) => {
   try {
     const { idReceiver, type = 0 } = req.body;
@@ -40,7 +42,7 @@ const createCall = async (req, res) => {
       `SELECT c.*, u.nom as receiver_nom, u.pseudo as receiver_pseudo
        FROM callHistory c
        JOIN users u ON c.idReceiver = u.alanyaID
-       WHERE c.IDcall = ?`,   // ← CORRIGÉ : IDcall (bigint PK réelle)
+       WHERE c.IDcall = ?`,   
       [result.insertId]
     );
 
@@ -50,13 +52,13 @@ const createCall = async (req, res) => {
   }
 };
 
+// Met à jour le statut de l'appel (0 = en cours, 1 = terminé, 2 = manqué)
 const endCall = async (req, res) => {
   try {
     const { id }       = req.params;
     const { status = 1 } = req.body;
     const alanyaID     = req.user.alanyaID;
-
-    // CORRIGÉ : IDcall (nom réel de la PK dans la DB)
+ 
     await pool.execute(
       `UPDATE callHistory
        SET status = ?,

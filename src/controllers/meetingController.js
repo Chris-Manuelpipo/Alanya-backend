@@ -1,20 +1,12 @@
 const pool = require('../config/db');
 const { notifyMeetingInvite } = require('../services/notificationService');
-
-// Les meetings stockent start_time en UTC pour un affichage cohérent quel que
-// soit le fuseau du serveur ou du client.
-//
-// toMysqlUtc : ISO8601 entrant (idéalement en UTC) → 'YYYY-MM-DD HH:MM:SS' UTC.
-// L'insertion d'une chaîne est littérale (indépendante du timezone mysql2).
+ 
 function toMysqlUtc(value) {
   const d = new Date(value);
   if (isNaN(d.getTime())) return value;
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
-
-// Fragment SELECT : renvoie les digits stockés tels quels, taggés Z, en
-// contournant la conversion Date locale de mysql2 (sinon décalage selon le
-// fuseau du serveur). À placer après `m.*` pour écraser la colonne brute.
+ 
 const START_TIME_UTC =
   "DATE_FORMAT(m.start_time, '%Y-%m-%dT%H:%i:%s.000Z') AS start_time";
 
@@ -98,10 +90,7 @@ const getMeetingById = async (req, res) => {
     throw error;
   }
 };
-
-// Résout une réunion à partir de son code de room. Permet à un utilisateur de
-// rejoindre par code même s'il n'est pas encore participant (getMeetings ne
-// renvoie que les réunions dont on est organisateur/participant).
+ 
 const getMeetingByRoom = async (req, res) => {
   try {
     const { room } = req.params;

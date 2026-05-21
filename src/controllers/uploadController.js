@@ -3,7 +3,7 @@ const pool = require('../config/db');
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
-// ── Upload avatar (profil ou groupe) ─────────────────────────────────
+// Upload avatar (profil ou groupe) 
 const uploadAvatar = async (req, res) => {
   try {
     if (!req.file) {
@@ -26,7 +26,7 @@ const uploadAvatar = async (req, res) => {
   }
 };
 
-// ── Upload média message (image, audio, vidéo, fichier) ───────────────
+// Upload média message (image, audio, vidéo, fichier) 
 const uploadMedia = async (req, res) => {
   try {
     if (!req.file) {

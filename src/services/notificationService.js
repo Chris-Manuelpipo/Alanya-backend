@@ -1,7 +1,3 @@
-// src/services/notificationService.js
-// Utilise Firebase Admin initialisé via src/config/firebase.js
-// (clé chargée depuis FIREBASE_SERVICE_ACCOUNT dans .env)
-
 const admin = require('../config/firebase');
 
 const sendDataOnlyNotification = async (fcmToken, data = {}) => {

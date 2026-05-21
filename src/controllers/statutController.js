@@ -1,4 +1,3 @@
-// src/controllers/statutController.js
 const pool = require('../config/db');
 const { notifyStatusView } = require('../services/notificationService');
 
@@ -113,13 +112,13 @@ const viewStatus = async (req, res) => {
       return res.status(404).json({ error: 'Statut introuvable ou expiré' });
     }
 
-    // ✅ Insérer dans statut_views (IGNORE si déjà vu → contrainte UNIQUE)
+    // Insérer dans statut_views (IGNORE si déjà vu → contrainte UNIQUE)
     await pool.execute(
       'INSERT IGNORE INTO statut_views (statutID, alanyaID, seenAt) VALUES (?, ?, NOW())',
       [id, alanyaID]
     );
 
-    // ✅ Incrémenter le compteur dénormalisé seulement si c'est la première vue
+    //Incrémenter le compteur dénormalisé seulement si c'est la première vue
     const [inserted] = await pool.execute(
       'SELECT id FROM statut_views WHERE statutID = ? AND alanyaID = ? AND seenAt >= NOW() - INTERVAL 1 SECOND',
       [id, alanyaID]

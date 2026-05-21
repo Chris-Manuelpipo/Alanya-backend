@@ -9,7 +9,7 @@ const sanitizeUrl = (url) => {
   return trimmed;
 };
 
-// ── GET /api/contacts  — liste des contacts préférés ──────────────────
+// Contacts préférés : liste, ajout, suppression, vérification
 const getPreferredContacts = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
@@ -51,7 +51,7 @@ const getPreferredContacts = async (req, res) => {
   }
 };
 
-// ── POST /api/contacts/:id  — ajouter un contact préféré ──────────────
+// Ajout d'un contact préféré 
 const addPreferredContact = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
@@ -112,7 +112,7 @@ const addPreferredContact = async (req, res) => {
   }
 };
 
-// ── DELETE /api/contacts/:id  — supprimer un contact préféré ─────────
+// Supprimer un contact préféré 
 const removePreferredContact = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
@@ -138,7 +138,7 @@ const removePreferredContact = async (req, res) => {
   }
 };
 
-// ── GET /api/contacts/check/:id  — vérifier si c'est un contact ───────
+// Vérifier si c'est un contact 
 const checkIsContact = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;

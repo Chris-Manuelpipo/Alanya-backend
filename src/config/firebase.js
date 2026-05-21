@@ -1,7 +1,4 @@
-// src/config/firebase.js
-// Initialise Firebase Admin UNE SEULE FOIS depuis la variable d'env
-// FIREBASE_SERVICE_ACCOUNT (JSON stringifié dans .env)
-
+// Configuration et initialisation de Firebase Admin SDK pour les notifications push
 const admin = require('firebase-admin');
 
 if (!admin.apps.length) {
@@ -17,10 +14,9 @@ if (!admin.apps.length) {
       credential: admin.credential.cert(serviceAccount),
     });
 
-    console.log('[Firebase] Admin SDK initialisé ✓');
+    console.log('[Firebase] Admin SDK initialisé avec succès');
   } catch (err) {
-    console.error('[Firebase] Échec initialisation:', err.message);
-    // On ne crash pas le serveur — les notifs seront silencieuses
+    console.error('[Firebase] Échec initialisation:', err.message); 
   }
 }
 

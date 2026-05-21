@@ -15,7 +15,7 @@ const joinConversation = (io, socket, userSockets) => {
 const messageSend = (io, socket, userSockets) => {
   socket.on('message:send', async (data) => {
     try {
-      // ✅ Vérifier authentification socket
+      // Vérifier authentification socket
       if (!socket.authenticated) {
         return socket.emit('error', { 
           message: 'Unauthenticated',
@@ -24,7 +24,7 @@ const messageSend = (io, socket, userSockets) => {
       }
 
       const { conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply = 0, clientId } = data;
-      const senderID = socket.alanyaID; // ✅ Utiliser l'ID du socket authentifié
+      const senderID = socket.alanyaID; // !! Utiliser l'ID du socket authentifié
 
       if (!conversationID || (!content && !mediaUrl)) {
         return socket.emit('error', { 
@@ -32,7 +32,7 @@ const messageSend = (io, socket, userSockets) => {
         });
       }
 
-      // ✅ ÉTAPE 1 : PERSISTER le message en DB
+      // ÉTAPE 1 : PERSISTER le message en DB
       const [result] = await pool.execute(
         `INSERT INTO message
            (senderID, conversationID, content, type, status, sendAt,
@@ -47,7 +47,7 @@ const messageSend = (io, socket, userSockets) => {
 
       const msgID = result.insertId;
 
-      // ✅ ÉTAPE 2 : Mettre à jour résumé conversation
+      // ÉTAPE 2 : Mettre à jour résumé conversation
       await pool.execute(
         `UPDATE conversation
          SET lastMessage = ?, lastMessageAt = NOW(),
@@ -59,13 +59,13 @@ const messageSend = (io, socket, userSockets) => {
         ]
       );
 
-      // ✅ ÉTAPE 3 : Incrémenter compteur non-lus pour autres participants
+      // ÉTAPE 3 : Incrémenter compteur non-lus pour autres participants
       await pool.execute(
         'UPDATE conv_participants SET unreadCount = unreadCount + 1 WHERE conversID = ? AND alanyaID != ?',
         [conversationID, senderID]
       );
 
-      // ✅ ÉTAPE 4 : Récupérer message complet avec infos sender
+      // ÉTAPE 4 : Récupérer message complet avec infos sender
       const [rows] = await pool.execute(
         `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar
          FROM message m
@@ -76,7 +76,7 @@ const messageSend = (io, socket, userSockets) => {
 
       const msg = rows[0];
 
-      // ✅ ÉTAPE 5 : BROADCAST le message via Socket.IO (maintenant persistent!)
+      // ÉTAPE 5 : BROADCAST le message via Socket.IO (maintenant persistent!)
       io.to(`conversation_${conversationID}`).emit('message:received', msg);
 
       // Aussi envoyer directement aux sockets des participants
@@ -90,7 +90,7 @@ const messageSend = (io, socket, userSockets) => {
         if (sid) io.to(sid).emit('message:received', msg);
       }
 
-      // ✅ ÉTAPE 6 : Notif FCM aux autres participants
+      // ÉTAPE 6 : Notif FCM aux autres participants
       const [sender] = await pool.execute(
         'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
       );
@@ -126,11 +126,8 @@ const typingStop = (io, socket, userSockets) => {
     socket.to(`conversation_${conversationID}`).emit('typing:stopped', { userID });
   });
 };
+ 
 
-// ── Accusés de réception / lecture ──────────────────────────────────
-// Notifie l'émetteur quand ses messages sont LIVRÉS (status=2) ou LUS
-// (status=3). Émet `message:status` dans la room + directement aux
-// sockets des participants (au cas où l'émetteur n'est pas dans la room).
 const _notifyStatus = async (io, conversationID, status, byUserID, userSockets) => {
   const payload = { conversationID: Number(conversationID), status, byUserID: Number(byUserID) };
   io.to(`conversation_${conversationID}`).emit('message:status', payload);
@@ -190,9 +187,7 @@ const messageRead = (io, socket, userSockets) => {
   });
 };
 
-// ── Présence ───────────────────────────────────────────────────────
-// Persiste is_online / last_seen en DB ET broadcast l'event à tous
-// les clients connectés.
+// Présence 
 const presenceOnline = (io, socket, userSockets) => {
   socket.on('presence:online', async (data) => {
     const userID = typeof data === 'object' ? data.userID : data;
@@ -241,18 +236,13 @@ const presenceOffline = (io, socket, userSockets) => {
     });
   });
 };
-
-// Appelé depuis server.js à la déconnexion brutale (fermeture app, perte
-// réseau, etc.). Met la DB à jour et prévient les autres clients.
+ 
 const handleDisconnect = async (io, socket, userSockets) => {
   const userID = socket.alanyaID;
   if (!userID) return;
 
   userSockets.delete(userID);
 
-  // Si l'utilisateur était dans une réunion, nettoyer proprement : prévenir les
-  // pairs (sinon ils gardent une tuile fantôme jusqu'au timeout ICE) et clôturer
-  // sa ligne participant en DB.
   const meetingID = socket.currentMeetingID;
   if (meetingID) {
     socket.to(`meeting_${meetingID}`).emit('meeting:user_left', {

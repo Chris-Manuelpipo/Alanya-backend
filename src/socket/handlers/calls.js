@@ -1,63 +1,19 @@
-// src/socket/handlers/calls.js
-//
-// Protocole aligné sur Flutter CallService.
-//
-// ── Appels 1-à-1 ──────────────────────────────────────────────────────
-// Flutter → Serveur
-//   call_user        { targetUserId, callerId, callerName, callerPhoto, isVideo, offer:{sdp,type} }
-//   answer_call      { callerId, answer:{sdp,type} }
-//   reject_call      { callerId }
-//   end_call         { targetUserId }
-//   ice_candidate    { targetUserId, candidate:{candidate,sdpMid,sdpMLineIndex} }
-//
-// Serveur → Flutter
-//   incoming_call    { callerId, callerName, callerPhoto, isVideo, offer:{sdp,type} }
-//   call_answered    { answer:{sdp,type} }
-//   call_rejected    {}
-//   call_ended       {}
-//   ice_candidate    { candidate:{candidate,sdpMid,sdpMLineIndex} }
-//
-// ── Appels de groupe ──────────────────────────────────────────────────
-// Flutter → Serveur
-//   create_group_call  { roomId, callerId, callerName, callerPhoto, isVideo, targetUserIds:[] }
-//   join_group_call    { roomId, userId, userName, userPhoto }
-//   leave_group_call   { roomId }
-//   end_group_call     { roomId }
-//   group_offer        { roomId, fromUserId, toUserId, offer:{sdp,type} }
-//   group_answer       { roomId, fromUserId, toUserId, answer:{sdp,type} }
-//   group_ice_candidate{ roomId, fromUserId, toUserId, candidate:{...} }
-//
-// Serveur → Flutter
-//   group_call_invite  { callerId, callerName, callerPhoto, isVideo, roomId }
-//   group_user_joined  { roomId, userId, userName, userPhoto }
-//   group_participants { roomId, participants:[] }
-//   group_offer        { fromUserId, offer:{sdp,type} }
-//   group_answer       { fromUserId, answer:{sdp,type} }
-//   group_ice_candidate{ fromUserId, candidate:{...} }
-//   group_call_ended   {}
-//   group_user_left    { roomId, userId }
 
 const pool = require('../../config/db');
 const { notifyIncomingCall, notifyGroupCall, notifyCallEnded } = require('../../services/notificationService');
-
-// State en mémoire des rooms de groupe
-// roomId → Map<alanyaID, { userName, userPhoto }>
+ 
 const groupRooms = new Map();
 
 function toInt(v) {
   const n = parseInt(v, 10);
   return isNaN(n) ? null : n;
 }
-
-// ─────────────────────────────────────────────────────────────────────
-//  APPELS 1-À-1
-// ─────────────────────────────────────────────────────────────────────
-
+ 
 const callUser = (io, socket, userSockets) => {
   socket.on('call_user', async (data) => {
     try {
       if (!socket.authenticated) {
-        console.warn('[Socket call_user] ❌ Tentative non authentifiée');
+        console.warn('[Socket call_user] ** Tentative non authentifiée');
         return;
       }
 
@@ -68,7 +24,7 @@ const callUser = (io, socket, userSockets) => {
       console.log(`[Socket call_user] 📞 Appel: ${callerID} → ${targetID} (${isVideo ? 'vidéo' : 'audio'})`);
 
       if (!targetID || !offer) {
-        console.warn('[Socket call_user] ❌ Données invalides', { targetID, offerExists: !!offer });
+        console.warn('[Socket call_user] ** Données invalides', { targetID, offerExists: !!offer });
         socket.emit('call_failed', { reason: 'Données d\'appel invalides' });
         return;
       }
@@ -89,7 +45,7 @@ const callUser = (io, socket, userSockets) => {
 
       const targetSocketId = userSockets.get(targetID);
       if (targetSocketId) {
-        console.log(`[Socket call_user] ✅ Envoi incoming_call à socket ${targetSocketId}`);
+        console.log(`[Socket call_user] !! Envoi incoming_call à socket ${targetSocketId}`);
         io.to(targetSocketId).emit('incoming_call', {
           callId:      callID != null ? String(callID) : null,
           callerId:    String(callerID),
@@ -99,12 +55,9 @@ const callUser = (io, socket, userSockets) => {
           offer,
         });
       } else {
-        console.warn(`[Socket call_user] ❌ Utilisateur ${targetID} non trouvé en socket — fallback FCM uniquement`);
+        console.warn(`[Socket call_user] ** Utilisateur ${targetID} non trouvé en socket — fallback FCM uniquement`);
       }
 
-      // Toujours envoyer la notif FCM : si l'app est tuée/background, c'est l'unique
-      // moyen d'afficher CallKit. Si l'app est au premier plan, le client déduplique
-      // via callId (notif ignorée si l'event socket est déjà arrivé).
       notifyIncomingCall(targetID, callerID, callerName, callerPhoto, isVideo, callID)
         .catch((err) => console.warn('[Socket call_user] FCM error:', err.message));
     } catch (error) {
@@ -118,7 +71,7 @@ const answerCall = (io, socket, userSockets) => {
   socket.on('answer_call', async (data) => {
     try {
       if (!socket.authenticated) {
-        console.warn('[Socket answer_call] ❌ Non authentifié');
+        console.warn('[Socket answer_call] ** Non authentifié');
         return;
       }
       const { callerId, answer } = data;
@@ -126,13 +79,12 @@ const answerCall = (io, socket, userSockets) => {
       const callerID   = toInt(callerId);
       const receiverID = socket.alanyaID;
       if (!callerID || !answer) {
-        console.warn('[Socket answer_call] ❌ Données invalides', { callerID, answerExists: !!answer });
+        console.warn('[Socket answer_call] ** Données invalides', { callerID, answerExists: !!answer });
         return;
       }
 
       console.log(`[Socket answer_call] 📞 Réponse: Receiver ${receiverID} → Caller ${callerID}`);
-
-      // CORRIGÉ : subquery pour éviter UPDATE + ORDER BY + LIMIT
+ 
       try {
         const [result] = await pool.execute(
           `UPDATE callHistory
@@ -147,17 +99,17 @@ const answerCall = (io, socket, userSockets) => {
            )`,
           [callerID, receiverID]
         );
-        console.log(`[Socket answer_call] ✅ DB updated: ${result.affectedRows} row(s)`);
+        console.log(`[Socket answer_call] !! DB updated: ${result.affectedRows} row(s)`);
       } catch (dbErr) {
         console.warn('[Socket answer_call] DB update failed:', dbErr.message);
       }
 
       const callerSocketId = userSockets.get(callerID);
       if (callerSocketId) {
-        console.log(`[Socket answer_call] ✅ Envoi call_answered à socket ${callerSocketId}`);
+        console.log(`[Socket answer_call] !! Envoi call_answered à socket ${callerSocketId}`);
         io.to(callerSocketId).emit('call_answered', { answer });
       } else {
-        console.warn(`[Socket answer_call] ❌ Caller ${callerID} non trouvé. UserSockets: [${Array.from(userSockets.keys()).join(', ')}]`);
+        console.warn(`[Socket answer_call] ** Caller ${callerID} non trouvé. UserSockets: [${Array.from(userSockets.keys()).join(', ')}]`);
       }
     } catch (error) {
       console.error('[Socket answer_call]', error.message);
@@ -172,9 +124,7 @@ const rejectCall = (io, socket, userSockets) => {
       const { callerId } = data;
       const callerID   = toInt(callerId);
       const receiverID = socket.alanyaID;
-      if (!callerID) return;
-
-      // CORRIGÉ : subquery pour éviter UPDATE + ORDER BY + LIMIT
+      if (!callerID) return; 
       try {
         await pool.execute(
           `UPDATE callHistory
@@ -198,7 +148,7 @@ const rejectCall = (io, socket, userSockets) => {
         io.to(callerSocketId).emit('call_rejected', {});
       }
 
-      // ✅ Envoyer FCM au caller pour arrêter la sonnerie (cas où receiver est en background)
+      // Envoyer FCM au caller pour arrêter la sonnerie (cas où receiver est en background)
       notifyCallEnded(callerID, receiverID, 'Destinataire')
         .catch((err) => console.warn('[Socket reject_call] FCM notifyCallEnded error:', err.message));
     } catch (error) {
@@ -260,7 +210,7 @@ const endCall = (io, socket, userSockets) => {
           io.to(targetSocketId).emit('call_ended', {});
         }
 
-        // ✅ Envoyer FCM au receiver pour arrêter la sonnerie (cas où receiver est en background)
+        // Envoyer FCM au receiver pour arrêter la sonnerie (cas où receiver est en background)
         notifyCallEnded(targetID, callerID, 'L\'appelant')
           .catch((err) => console.warn('[Socket end_call] FCM notifyCallEnded error:', err.message));
       }
@@ -273,9 +223,7 @@ const endCall = (io, socket, userSockets) => {
   });
 };
 
-// ─────────────────────────────────────────────────────────────────────
-//  APPELS DE GROUPE
-// ─────────────────────────────────────────────────────────────────────
+//  APPELS DE GROUPE 
 
 const createGroupCall = (io, socket, userSockets) => {
   socket.on('create_group_call', (data) => {

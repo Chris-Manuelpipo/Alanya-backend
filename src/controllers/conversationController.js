@@ -1,5 +1,6 @@
 const pool = require('../config/db');
-// ── Helper : nettoyer avatar_url avant envoi client ──────────────────
+
+// Nettoyer les URL d'avatar pour éviter les valeurs indésirables et les problèmes de sécurité
 const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
 const sanitizeUrl = (url) => {
   if (!url) return null;
@@ -8,7 +9,8 @@ const sanitizeUrl = (url) => {
   if (!trimmed.startsWith('http')) return null;
   return trimmed;
 };
-// ── Helper : attacher les participants (avec user info) à une conv ───────
+
+// Attacher les participants (avec user info) à une conversation
 async function attachParticipants(conversationRow) {
   if (!conversationRow) return conversationRow;
   const [parts] = await pool.execute(
@@ -23,7 +25,7 @@ async function attachParticipants(conversationRow) {
     alanyaID:    p.alanyaID,
     nom:         p.nom,
     pseudo:      p.pseudo,
-    avatar_url:  sanitizeUrl(p.avatar_url),   // ← nettoyage ici
+    avatar_url:  sanitizeUrl(p.avatar_url),    
     alanyaPhone: p.alanyaPhone,
     is_online:   p.is_online,
     last_seen:   p.last_seen,
@@ -31,10 +33,13 @@ async function attachParticipants(conversationRow) {
   return conversationRow;
 }
 
+
+// Attacher les participants à plusieurs conversations en parallèle
 async function attachParticipantsMany(rows) {
   return Promise.all(rows.map((r) => attachParticipants(r)));
 }
 
+// Récupère la liste des conversations de l'utilisateur connecté, avec les infos des participants et les métadonnées de la conversation
 const getConversations = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
@@ -59,6 +64,7 @@ const getConversations = async (req, res) => {
   }
 };
 
+// Récupère une conversation spécifique par son ID, avec les infos des participants et les métadonnées
 const getConversationById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -80,6 +86,7 @@ const getConversationById = async (req, res) => {
   }
 };
 
+// Créer une nouvelle conversation privée entre l'utilisateur connecté et un autre participant, ou un groupe si plusieurs participants sont fournis
 const createConversation = async (req, res) => {
   try {
     const { participantID } = req.body;

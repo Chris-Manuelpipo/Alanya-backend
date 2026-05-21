@@ -9,7 +9,7 @@ const authFirebase = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
+      return res.status(401).json({ error: 'Pas de token fourni' });
     }
 
     const token = authHeader.split('Bearer ')[1];
@@ -25,7 +25,7 @@ const authFirebase = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('[AuthFirebase] ERROR:', error.code, error.message);
-    return res.status(401).json({ error: 'Invalid or expired token' });
+    return res.status(401).json({ error: 'Token invalide ou expiré' });
   }
 };
 

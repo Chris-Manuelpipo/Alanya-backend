@@ -3,34 +3,11 @@ const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 require('dotenv').config();
 
-// ── REGISTER (idempotent) ─────────────────────────────────────────────
-// Crée (ou met à jour) le user en MySQL à partir du token Firebase et
-// des infos envoyées par le client.
-//
-// Aucun stockage de firebase_uid en base : on pose le phone comme
-// custom claim `talky_phone` sur le user Firebase. Les requêtes
-// authentifiées ultérieures pourront être mappées au user MySQL via
-// (token.phone_number || token.talky_phone) → users.alanyaPhone.
-//
-// Flux :
-//   - Le token Firebase valide nous donne `req.firebaseUser.uid`.
-//   - Priorité au phone du token (OTP), fallback sur le body (Google).
-//   - Si le phone existe déjà en base → on considère que c'est le même
-//     compte (idempotent), on met à jour les champs optionnels et on
-//     s'assure que le custom claim `talky_phone` est bien posé.
-//   - Sinon, insertion d'un nouveau user + pose du custom claim.
-//
-// NB : le unicité du phone est garantie à la fois par le check explicite
-//      ci-dessous et par le check côté `phoneExists` appelé avant par le
-//      client. Deux users Firebase qui tenteraient le même phone verront
-//      juste la même ligne DB (le 2ᵉ récupère la ligne existante), ce
-//      qui n'est pas idéal mais acceptable tant qu'on fait confiance au
-//      flux de setup profil et à la vérification préalable.
 const register = async (req, res) => {
   try {
     const firebaseUid = req.firebaseUser?.uid;
     if (!firebaseUid) {
-      return res.status(401).json({ error: 'Invalid Firebase token' });
+      return res.status(401).json({ error: 'Token Firebase invalide' });
     }
 
     const phone =
@@ -46,9 +23,6 @@ const register = async (req, res) => {
 
     const { nom, pseudo, avatar_url, idPays, fcm_token, device_ID } = req.body;
 
-    // Helper : pose `talky_phone` sur le user Firebase en préservant les
-    // autres custom claims éventuels. Si ça échoue, le client n'aura jamais
-    // le claim dans son JWT → 401 « No phone claim » sur /auth/me : on échoue explicitement.
     const setPhoneClaim = async () => {
       const fbUser = await admin.auth().getUser(firebaseUid);
       const existing = fbUser.customClaims || {};
@@ -61,12 +35,13 @@ const register = async (req, res) => {
       const got = verify.customClaims?.talky_phone;
       if (got !== phone) {
         throw new Error(
-          `talky_phone claim not applied (expected ${phone}, got ${got ?? 'undefined'})`,
+          `Alanya phone reclamé (${phone}) diffère de celui dans Firebase (${got})`,
         );
       }
     };
 
-    // 1) Un user avec ce phone existe-t-il déjà en MySQL ?
+    // Vérification en 2 étapes pour éviter les doublons de téléphone :
+    // L'utilisateur existe-t-il déjà ? (match par téléphone)
     const [byPhone] = await pool.execute(
       'SELECT alanyaID FROM users WHERE alanyaPhone = ?',
       [phone]
@@ -100,7 +75,7 @@ const register = async (req, res) => {
       return res.json(rows[0]);
     }
 
-    // 2) Nouvel utilisateur
+    // Nouvel utilisateur
     const [result] = await pool.execute(
       `INSERT INTO users
          (nom, pseudo, alanyaPhone, idPays, password, avatar_url,
@@ -131,14 +106,11 @@ const register = async (req, res) => {
   }
 };
 
-// ── PHONE EXISTS (public, sans auth) ──────────────────────────────────
-// Utilisé par le frontend pour détecter les doublons AVANT d'envoyer
-// un OTP de liaison.
 const phoneExists = async (req, res) => {
   try {
     const { phone } = req.params;
     if (!phone) {
-      return res.status(400).json({ error: 'phone parameter required' });
+      return res.status(400).json({ error: 'Alanya phone requis' });
     }
     const [rows] = await pool.execute(
       'SELECT alanyaID FROM users WHERE alanyaPhone = ?',
@@ -162,7 +134,7 @@ const verifyToken = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
 
     res.json({ user: rows[0] });
@@ -179,7 +151,7 @@ const getMe = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
 
     res.json(rows[0]);
@@ -198,15 +170,14 @@ const updateMe = async (req, res) => {
     if (pseudo)    { updates.push('pseudo = ?');    values.push(pseudo); }
     if (avatar_url){ updates.push('avatar_url = ?'); values.push(avatar_url); }
     if (fcm_token) { updates.push('fcm_token = ?'); values.push(fcm_token); }
-    if (device_ID) { updates.push('device_ID = ?'); values.push(device_ID); }
-    // is_online accepte 0 ou 1 — on teste !== undefined pour autoriser la valeur 0
+    if (device_ID) { updates.push('device_ID = ?'); values.push(device_ID); } 
     if (is_online !== undefined) {
       updates.push('is_online = ?, last_seen = NOW()');
       values.push(is_online ? 1 : 0);
     }
 
     if (updates.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour' });
     }
 
     values.push(req.user.alanyaID);

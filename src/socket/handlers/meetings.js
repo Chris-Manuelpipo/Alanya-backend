@@ -1,6 +1,3 @@
-// src/socket/handlers/meetings.js
-// meetingJoinRoom est maintenant exporté et DOIT être enregistré dans server.js
-
 const pool = require('../../config/db');
 
 function toInt(v) {
@@ -37,8 +34,7 @@ const meetingCreate = (io, socket, userSockets) => {
     }
   });
 };
-
-// CORRIGÉ : était défini mais jamais exporté ni enregistré dans server.js
+ 
 const meetingJoinRoom = (io, socket, userSockets) => {
   socket.on('meeting:join_room', (data) => {
     try {
@@ -251,7 +247,7 @@ const meetingIceCandidate = (io, socket, userSockets) => {
 
 module.exports = {
   meetingCreate,
-  meetingJoinRoom,      // ← MAINTENANT EXPORTÉ
+  meetingJoinRoom,     
   meetingJoinRequest,
   meetingJoinAccept,
   meetingJoinDecline,

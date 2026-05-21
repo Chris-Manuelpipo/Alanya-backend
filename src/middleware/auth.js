@@ -7,7 +7,7 @@ const auth = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
+      return res.status(401).json({ error: 'Pas de token fourni' });
     }
 
     const token = authHeader.split('Bearer ')[1];
@@ -17,14 +17,14 @@ const auth = async (req, res, next) => {
       decoded = jwt.verify(token, JWT_SECRET);
     } catch (err) {
       if (err.name === 'TokenExpiredError') {
-        return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+        return res.status(401).json({ error: 'Token expiré', code: 'TOKEN_EXPIRED' });
       }
-      return res.status(401).json({ error: 'Invalid token' });
+      return res.status(401).json({ error: 'Token invalide' });
     }
 
     // Vérifier que c'est bien un access token (pas un refresh token)
     if (decoded.type !== 'access') {
-      return res.status(401).json({ error: 'Invalid token type' });
+      return res.status(401).json({ error: 'Type de token invalide' });
     }
 
     const [rows] = await pool.execute(
@@ -33,7 +33,7 @@ const auth = async (req, res, next) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'User not found or banned' });
+      return res.status(401).json({ error: 'Utilisateur non trouvé ou banni' });
     }
 
     req.user = {
@@ -44,7 +44,7 @@ const auth = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('[Auth] ERROR:', error.message);
-    return res.status(401).json({ error: 'Authentication failed' });
+    return res.status(401).json({ error: 'Échec d\'authentification' });
   }
 };
 

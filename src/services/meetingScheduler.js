@@ -1,7 +1,3 @@
-// src/services/meetingScheduler.js
-//
-// Service de scheduler pour envoyer les notifications 10 minutes avant une réunion
-
 const pool = require('../config/db');
 const { notifyMeetingReminder } = require('./notificationService');
 

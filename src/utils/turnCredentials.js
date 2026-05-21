@@ -1,32 +1,3 @@
-// src/utils/turnCredentials.js
-//
-// Construit la liste iceServers (STUN/TURN) à servir aux clients via
-// /api/turn/credentials. Les credentials TURN ne doivent plus vivre côté
-// client — on les centralise ici, lus depuis env, pour pouvoir les roter.
-//
-// Variables d'environnement supportées :
-//   TURN_SERVERS     JSON array de serveurs TURN avec credentials
-//   TURN_SECRET      Secret partagé coturn (mode REST API éphémère, HMAC-SHA1) - optionnel
-//   TURN_TTL_SEC     TTL des credentials éphémères (défaut 3600) - optionnel
-//
-// Format TURN_SERVERS:
-// [
-//   {
-//     "urls": ["turn:host:80", "turn:host:80?transport=tcp"],
-//     "username": "user1",
-//     "credential": "pass1"
-//   },
-//   {
-//     "urls": ["turn:host2:3478"],
-//     "username": "user2",
-//     "credential": "pass2"
-//   }
-// ]
-//
-// Si TURN_SECRET est défini, on génère des credentials éphémères (recommandé).
-// Sinon, on utilise les credentials statiques de chaque serveur.
-// Si rien n'est défini, on retombe sur les STUN publics Google uniquement.
-
 const crypto = require('crypto');
 
 const DEFAULT_STUN = [
@@ -74,8 +45,7 @@ const buildIceServers = (userId) => {
   let iceServers;
   let ttlSec = 0;
 
-  if (process.env.TURN_SECRET) {
-    // Mode éphémère: générer credentials pour chaque serveur
+  if (process.env.TURN_SECRET) { 
     const ttl = parseInt(process.env.TURN_TTL_SEC, 10) || 3600;
     const eph = generateEphemeralCredentials(String(userId), ttl);
     
@@ -86,8 +56,7 @@ const buildIceServers = (userId) => {
     }));
     
     ttlSec = ttl;
-  } else {
-    // Mode statique: utiliser les credentials de chaque serveur
+  } else { 
     iceServers = turnServers.map(server => ({
       urls: server.urls,
       username: server.username,

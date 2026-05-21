@@ -6,14 +6,14 @@ const errorHandler = (err, req, res, next) => {
   }
 
   if (err.code === 'ER_DUP_ENTRY') {
-    return res.status(409).json({ error: 'Duplicate entry' });
+    return res.status(409).json({ error: 'Entrée en double' });
   }
 
   if (err.code === 'ER_NO_REFERENCED_2') {
-    return res.status(400).json({ error: 'Invalid reference' });
+    return res.status(400).json({ error: 'Référence invalide' });
   }
 
-  res.status(500).json({ error: 'Internal server error' });
+  res.status(500).json({ error: 'Erreur interne du serveur' });
 };
 
 module.exports = errorHandler;

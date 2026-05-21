@@ -1,4 +1,3 @@
-// src/controllers/messageController.js
 const pool = require('../config/db');
 const { notifyNewMessage } = require('../services/notificationService');
 
@@ -7,11 +6,7 @@ const getMessages = async (req, res) => {
     const { id } = req.params; // conversationID
     const alanyaID = req.user.alanyaID;
     const { limit = 50, before } = req.query;
-
-    // ✅ Filtre corrigé :
-    //   - isDeleted = 1 → supprimé pour tous → caché
-    //   - deletedForID = alanyaID → supprimé pour moi uniquement → caché
-    //   - sinon → visible
+ 
     let query = `
       SELECT m.*,
              u.nom        AS sender_nom,

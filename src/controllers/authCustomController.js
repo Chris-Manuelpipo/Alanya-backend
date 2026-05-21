@@ -5,7 +5,7 @@ const { generateAccessToken, generateRefreshToken, JWT_REFRESH_SECRET } = requir
 
 const SALT_ROUNDS = 10;
 
-// Génère un alanyaPhone unique à 6 chiffres
+// Génèration d'un alanyaPhone unique à 6 chiffres
 const generateAlanyaPhone = async () => {
   let alanyaPhone;
   let attempts = 0;
@@ -18,25 +18,25 @@ const generateAlanyaPhone = async () => {
     if (existing.length === 0) return alanyaPhone;
     attempts++;
   }
-  throw new Error('Unable to generate unique phone number');
-};
+  throw new Error('Impossible de générer un alanyaPhone unique après 20 tentatives');
+}; 
 
-// ── REGISTER ─────────────────────────────────────────────────────────
+// Création de compte 
 const register = async (req, res) => {
   try {
     const { email, password, nom, pseudo, idPays, fcm_token, device_ID } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password required' });
+      return res.status(400).json({ error: 'Email et mot de passe requis' });
     }
 
     if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      return res.status(400).json({ error: 'Le mot de passe doit faire au moins 6 caractères' });
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: 'Invalid email format' });
+      return res.status(400).json({ error: 'Email invalide' });
     }
 
     const [existingEmail] = await pool.execute(
@@ -44,7 +44,7 @@ const register = async (req, res) => {
       [email.toLowerCase().trim()]
     );
     if (existingEmail.length > 0) {
-      return res.status(409).json({ error: 'Email already in use' });
+      return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée' });
     }
 
     const alanyaPhone = await generateAlanyaPhone();
@@ -84,13 +84,13 @@ const register = async (req, res) => {
   }
 };
 
-// ── LOGIN ─────────────────────────────────────────────────────────────
+// Connexion
 const login = async (req, res) => {
   try {
     const { alanyaPhone, password, fcm_token, device_ID } = req.body;
 
     if (!alanyaPhone || !password) {
-      return res.status(400).json({ error: 'alanyaPhone and password required' });
+      return res.status(400).json({ error: 'Alanya phone et mot de passe requis' });
     }
 
     const [rows] = await pool.execute(
@@ -99,18 +99,18 @@ const login = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: 'Identifiants invalides' });
     }
 
     const user = rows[0];
 
     if (user.exclus === 1) {
-      return res.status(403).json({ error: 'Account banned' });
+      return res.status(403).json({ error: 'Compte banni' });
     }
 
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: 'Identifiants invalides' });
     }
 
     // Mettre à jour fcm_token et device_ID si fournis
@@ -132,17 +132,17 @@ const login = async (req, res) => {
     res.json({ user, accessToken, refreshToken });
   } catch (error) {
     console.error('[Login] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Login failed' });
+    res.status(500).json({ error: error.message || 'Echec de la connexion' });
   }
 };
 
-// ── REFRESH TOKEN ─────────────────────────────────────────────────────
+// Refresh token
 const refreshToken = async (req, res) => {
   try {
     const { refreshToken: token } = req.body;
 
     if (!token) {
-      return res.status(400).json({ error: 'refreshToken required' });
+      return res.status(400).json({ error: 'refreshToken requis' });
     }
 
     let decoded;
@@ -150,13 +150,13 @@ const refreshToken = async (req, res) => {
       decoded = jwt.verify(token, JWT_REFRESH_SECRET);
     } catch (err) {
       if (err.name === 'TokenExpiredError') {
-        return res.status(401).json({ error: 'Refresh token expired, please login again', code: 'REFRESH_EXPIRED' });
+        return res.status(401).json({ error: 'Refresh token expiré, veuillez vous reconnecter', code: 'REFRESH_EXPIRED' });
       }
-      return res.status(401).json({ error: 'Invalid refresh token' });
+      return res.status(401).json({ error: 'Refresh token invalide' });
     }
 
     if (decoded.type !== 'refresh') {
-      return res.status(401).json({ error: 'Invalid token type' });
+      return res.status(401).json({ error: 'Type de token invalide' });
     }
 
     // Vérifier que le user existe toujours et n'est pas banni
@@ -166,7 +166,7 @@ const refreshToken = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'User not found or banned' });
+      return res.status(401).json({ error: 'Utilisateur non trouvé ou banni' });
     }
 
     const tokenPayload    = { alanyaID: rows[0].alanyaID, email: rows[0].email };
@@ -176,15 +176,16 @@ const refreshToken = async (req, res) => {
     res.json({ accessToken: newAccessToken, refreshToken: newRefreshToken });
   } catch (error) {
     console.error('[RefreshToken] ERROR:', error);
-    res.status(500).json({ error: 'Token refresh failed' });
+    res.status(500).json({ error: 'Echec du refresh du token' });
   }
 };
 
-// ── GENERATE OTP ──────────────────────────────────────────────────────
+// Génération d'un OTP à 6 chiffres (mot de passe oublié)
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
+// Envoi de l'OTP par email pour la réinitialisation du mot de passe
 const sendPasswordResetOTP = async (email, otp) => {
   const fromEmail =process.env.SMTP_FROM ;
   const fromName = process.env.MAIL_FROM_NAME || 'Alanya';
@@ -199,18 +200,18 @@ const sendPasswordResetOTP = async (email, otp) => {
   `;
 
   if (!fromEmail) {
-    throw new Error('Email sender is not configured');
+    throw new Error("L'adresse email d\'envoi est requise (SMTP_FROM dans .env)");
   }
 
   if (!process.env.SMTP_HOST) {
-    throw new Error('Email service is not configured');
+    throw new Error("Le service email n'est pas configuré");
   }
 
   let nodemailer;
   try {
     nodemailer = require('nodemailer');
   } catch (error) {
-    throw new Error('Nodemailer is required for SMTP email sending');
+    throw new Error("Nodemailer est requis pour l'envoi d'email SMTP");
   }
 
   const transporter = nodemailer.createTransport({
@@ -231,24 +232,22 @@ const sendPasswordResetOTP = async (email, otp) => {
   });
 };
 
-// ── REQUEST PASSWORD RESET (Étape 1) ──────────────────────────────────
 // Envoie un OTP à l'email
 const requestPasswordReset = async (req, res) => {
   try {
     const { email } = req.body;
 
     if (!email) {
-      return res.status(400).json({ error: 'Email required' });
+      return res.status(400).json({ error: 'Email requis' });
     }
 
     const [rows] = await pool.execute(
       'SELECT alanyaID FROM users WHERE email = ?',
       [email.toLowerCase().trim()]
     );
-
-    // Réponse volontairement vague pour éviter l'énumération
+ 
     if (rows.length === 0) {
-      return res.json({ message: 'If this email exists, check your inbox for the OTP' });
+      return res.json({ message: 'Vérifiez votre email pour le code de réinitialisation' });
     }
 
     const otp = generateOTP();
@@ -261,21 +260,20 @@ const requestPasswordReset = async (req, res) => {
 
     await sendPasswordResetOTP(email.toLowerCase().trim(), otp);
 
-    res.json({ message: 'If this email exists, check your inbox for the OTP' });
+    res.json({ message: 'Vérifiez votre email pour le code de réinitialisation' });
   } catch (error) {
     console.error('[RequestPasswordReset] ERROR:', error);
     res.status(500).json({ error: error.message || 'Request failed' });
   }
 };
-
-// ── VALIDATE OTP (Étape 2) ────────────────────────────────────────────
+ 
 // Vérifie l'OTP et retourne un token temporaire
 const validateOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
 
     if (!email || !otp) {
-      return res.status(400).json({ error: 'Email and OTP required' });
+      return res.status(400).json({ error: 'Email et OTP requis' });
     }
 
     const [rows] = await pool.execute(
@@ -284,22 +282,22 @@ const validateOTP = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid email' });
+      return res.status(401).json({ error: 'Email invalide' });
     }
 
     const user = rows[0];
 
     // Vérifier que l'OTP existe et est valide
     if (!user.reset_otp) {
-      return res.status(400).json({ error: 'No OTP requested' });
+      return res.status(400).json({ error: 'Aucun OTP demandé' });
     }
 
     if (user.reset_otp !== otp) {
-      return res.status(401).json({ error: 'Invalid OTP' });
+      return res.status(401).json({ error: 'OTP invalide' });
     }
 
     if (new Date() > new Date(user.reset_otp_expires_at)) {
-      return res.status(401).json({ error: 'OTP expired' });
+      return res.status(401).json({ error: 'OTP expiré' });
     }
 
     // Générer un token temporaire valide 15 minutes pour changer le mot de passe
@@ -315,19 +313,18 @@ const validateOTP = async (req, res) => {
     res.status(500).json({ error: error.message || 'Validation failed' });
   }
 };
-
-// ── COMPLETE PASSWORD RESET (Étape 3) ─────────────────────────────────
+  
 // Change le mot de passe avec le reset token
 const completePasswordReset = async (req, res) => {
   try {
     const { resetToken, newPassword } = req.body;
 
     if (!resetToken || !newPassword) {
-      return res.status(400).json({ error: 'Reset token and new password required' });
+      return res.status(400).json({ error: 'Token de réinitialisation et nouveau mot de passe requis' });
     }
 
     if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères' });
     }
 
     // Vérifier le reset token
@@ -338,11 +335,11 @@ const completePasswordReset = async (req, res) => {
         process.env.JWT_SECRET || 'talky-secret-key-change-in-production'
       );
     } catch (err) {
-      return res.status(401).json({ error: 'Invalid or expired reset token' });
+      return res.status(401).json({ error: 'Token de réinitialisation invalide ou expiré' });
     }
 
     if (decoded.type !== 'password_reset') {
-      return res.status(401).json({ error: 'Invalid token type' });
+      return res.status(401).json({ error: 'Type de token invalide' });
     }
 
     // Hacher le nouveau mot de passe
@@ -361,17 +358,17 @@ const completePasswordReset = async (req, res) => {
   }
 };
 
-// ── RESET PASSWORD (Legacy - kept for backward compatibility) ─────────
+// 
 const resetPassword = async (req, res) => {
   try {
     const { email, newPassword } = req.body;
 
     if (!email || !newPassword) {
-      return res.status(400).json({ error: 'Email and new Password required' });
+      return res.status(400).json({ error: 'Email et nouveau mot de passe requis' });
     }
 
     if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères' });
     }
 
     const [rows] = await pool.execute(
@@ -379,9 +376,8 @@ const resetPassword = async (req, res) => {
       [email.toLowerCase().trim()]
     );
 
-    if (rows.length === 0) {
-      // Réponse volontairement vague pour éviter l'énumération
-      return res.json({ message: 'If this email exists, password has been reset' });
+    if (rows.length === 0) { 
+      return res.json({ message: 'Si cet email existe, le mot de passe a été réinitialisé' });
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
@@ -390,14 +386,14 @@ const resetPassword = async (req, res) => {
       [hashedPassword, rows[0].alanyaID]
     );
 
-    res.json({ message: 'Password updated successfully' });
+    res.json({ message: 'Mot de passe mis à jour avec succès' });
   } catch (error) {
     console.error('[ResetPassword] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Reset password failed' });
+    res.status(500).json({ error: error.message || 'Échec de la réinitialisation du mot de passe' });
   }
 };
 
-// ── GET ME ────────────────────────────────────────────────────────────
+// Profil de l'utilisateur connecté
 const getMe = async (req, res) => {
   try {
     const [rows] = await pool.execute(
@@ -406,7 +402,7 @@ const getMe = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
 
     res.json(rows[0]);
@@ -416,14 +412,12 @@ const getMe = async (req, res) => {
   }
 };
 
-// ── UPDATE FCM TOKEN ──────────────────────────────────────────────────
-// Endpoint léger dédié à la rotation du token FCM (mobile/web push).
-// Accepte { fcmToken } ou { fcm_token } pour rester compatible.
+// Mette à jour le token FCM pour les notifications push  
 const updateFcmToken = async (req, res) => {
   try {
     const token = req.body.fcmToken || req.body.fcm_token;
     if (!token || typeof token !== 'string' || token.length > 4096) {
-      return res.status(400).json({ error: 'fcmToken required' });
+      return res.status(400).json({ error: 'fcmToken requis' });
     }
 
     await pool.execute(
@@ -438,7 +432,7 @@ const updateFcmToken = async (req, res) => {
   }
 };
 
-// ── UPDATE ME ─────────────────────────────────────────────────────────
+// Met à jour les infos de l'utilisateur (nom, pseudo, avatar_url, fcm_token, device_ID, is_online)
 const updateMe = async (req, res) => {
   try {
     const { nom, pseudo, avatar_url, fcm_token, device_ID, is_online } = req.body;

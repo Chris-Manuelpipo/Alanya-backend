@@ -1,5 +1,3 @@
-// POST /notify — déclenche l'envoi FCM (appels hors ligne, etc.)
-// CORRIGÉ : utilise auth JWT au lieu de authFirebase
 const express = require('express');
 const auth    = require('../middleware/auth');
 const { sendToUser } = require('../services/notificationService');

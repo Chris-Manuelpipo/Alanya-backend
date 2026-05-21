@@ -7,7 +7,7 @@ const ensureDir = (dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 };
 
-// ── Storage : images (avatars, photos groupe) ─────────────────────────
+// Sauvegarde : images (avatars, photos groupe)
 const imageStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = path.join(__dirname, '../../uploads/images');
@@ -21,7 +21,7 @@ const imageStorage = multer.diskStorage({
   },
 });
 
-// ── Storage : médias messages (images, fichiers, audio) ───────────────
+// Sauvegarde : médias messages (images, fichiers, audio) 
 const mediaStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     let subDir = 'files';
@@ -40,11 +40,11 @@ const mediaStorage = multer.diskStorage({
   },
 });
 
-// ── Filtres ────────────────────────────────────────────────────────────
+// Filtres de fichiers
 const imageFilter = (req, file, cb) => {
   const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
   if (allowed.includes(file.mimetype)) return cb(null, true);
-  cb(new Error('Only images are allowed (jpeg, png, webp, gif)'), false);
+  cb(new Error('Seuls les formats d\'image suivants sont autorisés (jpeg, png, webp, gif)'), false);
 };
 
 const mediaFilter = (req, file, cb) => {
@@ -60,10 +60,10 @@ const mediaFilter = (req, file, cb) => {
     'text/plain',
   ];
   if (allowed.includes(file.mimetype)) return cb(null, true);
-  cb(new Error(`File type ${file.mimetype} not allowed`), false);
+  cb(new Error(`Type de fichier ${file.mimetype} non autorisé`), false);
 };
 
-// ── Instances multer ───────────────────────────────────────────────────
+// Multer middleware
 const uploadAvatar = multer({
   storage: imageStorage,
   limits:  { fileSize: 5 * 1024 * 1024 },  // 5 MB
@@ -76,11 +76,11 @@ const uploadMedia = multer({
   fileFilter: mediaFilter,
 });
 
-// ── Handler d'erreur Multer ────────────────────────────────────────────
+// Middleware de gestion des erreurs Multer
 const handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ error: 'File too large' });
+      return res.status(413).json({ error: 'Fichier trop volumineux' });
     }
     return res.status(400).json({ error: err.message });
   }

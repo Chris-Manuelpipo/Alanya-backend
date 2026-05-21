@@ -4,7 +4,7 @@ const pool = require('../config/db');
 const JWT_SECRET         = process.env.JWT_SECRET          || 'talky-secret-key-change-in-production';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET  || 'talky-refresh-secret-change-in-production';
 
-// Access token : 15 minutes (court — sécurité)
+// Access token : 15 minutes  
 const generateAccessToken = (payload) => {
   return jwt.sign({ ...payload, type: 'access' }, JWT_SECRET, { expiresIn: '15m' });
 };
@@ -14,12 +14,12 @@ const generateRefreshToken = (payload) => {
   return jwt.sign({ ...payload, type: 'refresh' }, JWT_REFRESH_SECRET, { expiresIn: '30d' });
 };
 
-// Middleware pour les routes protégées (access token uniquement)
+// Middleware pour les routes protégées  
 const authCustom = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
+      return res.status(401).json({ error: 'Pas de token fourni' });
     }
 
     const token = authHeader.split('Bearer ')[1];
@@ -29,13 +29,13 @@ const authCustom = async (req, res, next) => {
       decoded = jwt.verify(token, JWT_SECRET);
     } catch (err) {
       if (err.name === 'TokenExpiredError') {
-        return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+        return res.status(401).json({ error: 'Token expiré', code: 'TOKEN_EXPIRED' });
       }
-      return res.status(401).json({ error: 'Invalid token' });
+      return res.status(401).json({ error: 'Token invalide' });
     }
 
     if (decoded.type !== 'access') {
-      return res.status(401).json({ error: 'Invalid token type' });
+      return res.status(401).json({ error: 'Type de token invalide' });
     }
 
     const [rows] = await pool.execute(
@@ -44,7 +44,7 @@ const authCustom = async (req, res, next) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'User not found or banned' });
+      return res.status(401).json({ error: 'Utilisateur non trouvé ou banni' });
     }
 
     req.user = {
@@ -55,7 +55,7 @@ const authCustom = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('[AuthCustom] ERROR:', error.message);
-    return res.status(401).json({ error: 'Authentication failed' });
+    return res.status(401).json({ error: 'Échec d\'authentification' });
   }
 };
 

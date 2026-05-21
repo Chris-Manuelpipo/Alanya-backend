@@ -3,15 +3,6 @@ const pool = require('../../config/db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'talky-secret-key-change-in-production';
 
-/**
- * AUTH SOCKET.IO — JWT custom uniquement (Firebase supprimé)
- *
- * RACE CONDITION FIXÉE :
- *   - socket.authenticated démarre à false
- *   - Seul auth:login peut le passer à true
- *   - Les autres handlers vérifient socket.authenticated avant d'agir
- *   - presenceOnline n'est émis QUE par le serveur après auth réussie
- */
 const socketAuth = (io, socket, userSockets) => {
 
   socket.on('auth:login', async (data) => {
@@ -59,14 +50,11 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
   socket.alanyaID      = alanyaID;
   socket.authenticated = true;
 
-  // Gérer multi-session : si l'user était déjà connecté sur un autre socket,
-  // déconnecter l'ancien proprement
   const existingSocketId = userSockets.get(alanyaID);
   if (existingSocketId && existingSocketId !== socket.id) {
     const existingSocket = io.sockets.sockets.get(existingSocketId);
     if (existingSocket) {
       existingSocket.emit('auth:conflict', { message: 'Connexion depuis un autre appareil' });
-      // On ne déconnecte pas de force — le client Flutter gère
     }
   }
 
