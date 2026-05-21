@@ -5,7 +5,7 @@ const { uploadAvatar, uploadMedia: uploadMediaCtrl } = require('../controllers/u
 const { uploadAvatar: multerAvatar, uploadMedia: multerMedia, handleMulterError } = require('../middleware/upload');
 const { uploadLimiter } = require('../middleware/rateLimiter');
 
-// POST /api/upload/avatar  — upload photo de profil
+// Route pour l'upload d'avatar (image)
 router.post(
   '/avatar',
   auth,
@@ -15,7 +15,7 @@ router.post(
   uploadAvatar
 );
 
-// POST /api/upload/media  — upload média pour message (image, audio, vidéo, fichier)
+// Route pour l'upload de médias (images, vidéos)
 router.post(
   '/media',
   auth,
