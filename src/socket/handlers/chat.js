@@ -186,6 +186,29 @@ const handleDisconnect = async (io, socket, userSockets) => {
 
   userSockets.delete(userID);
 
+  // Si l'utilisateur était dans une réunion, nettoyer proprement : prévenir les
+  // pairs (sinon ils gardent une tuile fantôme jusqu'au timeout ICE) et clôturer
+  // sa ligne participant en DB.
+  const meetingID = socket.currentMeetingID;
+  if (meetingID) {
+    socket.to(`meeting_${meetingID}`).emit('meeting:user_left', {
+      meetingID,
+      userID: String(userID),
+    });
+    try {
+      await pool.execute(
+        `UPDATE participant
+         SET connecte = 0,
+             duree = TIMESTAMPDIFF(SECOND, start_time, NOW())
+         WHERE idMeeting = ? AND IDparticipant = ?`,
+        [meetingID, userID]
+      );
+    } catch (e) {
+      console.warn('[Socket disconnect] participant cleanup failed:', e.message);
+    }
+    socket.currentMeetingID = null;
+  }
+
   try {
     await pool.execute(
       'UPDATE users SET is_online = 0, last_seen = NOW() WHERE alanyaID = ?',

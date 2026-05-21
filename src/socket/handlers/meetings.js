@@ -1,9 +1,27 @@
 // src/socket/handlers/meetings.js
 // meetingJoinRoom est maintenant exporté et DOIT être enregistré dans server.js
 
+const pool = require('../../config/db');
+
 function toInt(v) {
   const n = parseInt(v, 10);
   return isNaN(n) ? null : n;
+}
+
+// Vérifie que le socket appartient à l'organisateur de la réunion.
+async function isOrganiser(socket, meetingID) {
+  const mID = toInt(meetingID);
+  if (!mID || !socket.alanyaID) return false;
+  try {
+    const [rows] = await pool.execute(
+      'SELECT idOrganiser FROM meeting WHERE idMeeting = ?',
+      [mID]
+    );
+    return rows.length > 0 && rows[0].idOrganiser === socket.alanyaID;
+  } catch (err) {
+    console.error('[Socket isOrganiser]', err.message);
+    return false;
+  }
 }
 
 const meetingCreate = (io, socket, userSockets) => {
@@ -91,17 +109,31 @@ const meetingJoinDecline = (io, socket, userSockets) => {
 };
 
 const meetingStart = (io, socket, userSockets) => {
-  socket.on('meeting:start', (data) => {
+  socket.on('meeting:start', async (data) => {
     if (!socket.authenticated) return;
     const { meetingID } = data;
+    if (!(await isOrganiser(socket, meetingID))) {
+      return socket.emit('error', { message: 'Seul l\'organisateur peut démarrer la réunion' });
+    }
     io.to(`meeting_${meetingID}`).emit('meeting:started', { meetingID });
   });
 };
 
 const meetingEnd = (io, socket, userSockets) => {
-  socket.on('meeting:end', (data) => {
+  socket.on('meeting:end', async (data) => {
     if (!socket.authenticated) return;
     const { meetingID } = data;
+
+    if (!(await isOrganiser(socket, meetingID))) {
+      return socket.emit('error', { message: 'Seul l\'organisateur peut terminer la réunion' });
+    }
+
+    try {
+      await pool.execute('UPDATE meeting SET isEnd = 1 WHERE idMeeting = ?', [meetingID]);
+    } catch (err) {
+      console.error('[Socket meeting:end] DB error:', err.message);
+    }
+
     io.to(`meeting_${meetingID}`).emit('meeting:ended', { meetingID });
 
     const roomSockets = io.sockets.adapter.rooms.get(`meeting_${meetingID}`);
@@ -121,6 +153,8 @@ const meetingChat = (io, socket, userSockets) => {
   socket.on('meeting:chat', (data) => {
     if (!socket.authenticated) return;
     const { meetingID, userID, message } = data;
+    // N'accepter le chat que d'un socket réellement présent dans la room.
+    if (socket.currentMeetingID !== toInt(meetingID)) return;
     io.to(`meeting_${meetingID}`).emit('meeting:message', {
       meetingID,
       userID,

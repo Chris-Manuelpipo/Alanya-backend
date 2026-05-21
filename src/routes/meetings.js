@@ -5,6 +5,7 @@ const {
   getMeetings,
   createMeeting,
   getMeetingById,
+  getMeetingByRoom,
   updateMeeting,
   deleteMeeting,
   joinMeeting,
@@ -16,6 +17,7 @@ const {
 
 router.get('/', auth, getMeetings);
 router.post('/', auth, createMeeting);
+router.get('/by-room/:room', auth, getMeetingByRoom);
 router.get('/:id', auth, getMeetingById);
 router.put('/:id', auth, updateMeeting);
 router.delete('/:id', auth, deleteMeeting);

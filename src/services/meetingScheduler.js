@@ -37,8 +37,8 @@ const checkAndNotifyUpcomingMeetings = async () => {
        FROM meeting m
        JOIN users u ON m.idOrganiser = u.alanyaID
        WHERE m.isEnd = 0
-         AND m.start_time > NOW() 
-         AND m.start_time <= DATE_ADD(NOW(), INTERVAL 10 MINUTE)
+         AND m.start_time > UTC_TIMESTAMP()
+         AND m.start_time <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)
          AND m.reminder_sent = 0`
     );
 
