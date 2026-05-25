@@ -57,19 +57,11 @@ const register = async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         nom        || 'Utilisateur',
-<<<<<<< HEAD
         pseudo     || nom || 'AlanyaUser',
         alanyaPhone,
         email.toLowerCase().trim(),
         hashedPassword,
         idPays     || 10,
-=======
-        pseudo     || nom || 'Kamite',
-        alanyaPhone,
-        email.toLowerCase().trim(),
-        hashedPassword,
-        idPays     || 1,
->>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
         'NON DEFINI',
         fcm_token  || 'INDEFINI',
         device_ID  || 'INDEFINI',
@@ -443,11 +435,7 @@ const updateFcmToken = async (req, res) => {
 // Met à jour les infos de l'utilisateur (nom, pseudo, avatar_url, fcm_token, device_ID, is_online)
 const updateMe = async (req, res) => {
   try {
-<<<<<<< HEAD
     const { nom, pseudo, avatar_url, fcm_token, device_ID, is_online, idPays } = req.body;
-=======
-    const { nom, pseudo, avatar_url, fcm_token, device_ID, is_online } = req.body;
->>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
     const updates = [];
     const values  = [];
 
@@ -456,10 +444,7 @@ const updateMe = async (req, res) => {
     if (avatar_url){ updates.push('avatar_url = ?'); values.push(avatar_url); }
     if (fcm_token) { updates.push('fcm_token = ?');  values.push(fcm_token); }
     if (device_ID) { updates.push('device_ID = ?');  values.push(device_ID); }
-<<<<<<< HEAD
     if (idPays)    { updates.push('idPays = ?');     values.push(idPays); }
-=======
->>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
     if (is_online !== undefined) {
       updates.push('is_online = ?, last_seen = NOW()');
       values.push(is_online ? 1 : 0);
@@ -476,11 +461,7 @@ const updateMe = async (req, res) => {
     );
 
     const [rows] = await pool.execute(
-<<<<<<< HEAD
       'SELECT alanyaID, nom, pseudo, alanyaPhone, email, idPays, avatar_url, is_online FROM users WHERE alanyaID = ?',
-=======
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, email, avatar_url, is_online FROM users WHERE alanyaID = ?',
->>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
       [req.user.alanyaID]
     );
 
