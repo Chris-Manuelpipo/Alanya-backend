@@ -258,26 +258,43 @@ Authorization: Bearer <firebase-id-token>
 
 | Méthode | Endpoint | Description | Auth | Body |
 |---------|----------|-------------|------|------|
+<<<<<<< HEAD
 | POST | `/auth/register` | Créer/MAJ user | ** | `{ uid, phone, nom, pseudo, avatar_url, fcm_token }` |
 | POST | `/auth/verify` | Vérifier token JWT | !! | `{ token }` |
 | GET | `/auth/me` | Profil de l'user courant | !! | - |
 | PUT | `/auth/me` | MAJ profil courant | !! | `{ nom?, pseudo?, avatar_url?, fcm_token? }` |
 | GET | `/auth/phone-exists/:phone` | Vérifier si tel existe | ** | - |
+=======
+| POST | `/auth/register` | Créer/MAJ user | ❌ | `{ uid, phone, nom, pseudo, avatar_url, fcm_token }` |
+| POST | `/auth/verify` | Vérifier token JWT | ✅ | `{ token }` |
+| GET | `/auth/me` | Profil de l'user courant | ✅ | - |
+| PUT | `/auth/me` | MAJ profil courant | ✅ | `{ nom?, pseudo?, avatar_url?, fcm_token? }` |
+| GET | `/auth/phone-exists/:phone` | Vérifier si tel existe | ❌ | - |
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 ### 👤 Utilisateurs (`/api/users`)
 
 | Méthode | Endpoint | Description | Auth | Query |
 |---------|----------|-------------|------|-------|
+<<<<<<< HEAD
 | GET | `/users/:id` | Récupérer user par ID | !! | - |
 | GET | `/users/phone/:phone` | Récupérer user par tél | !! | - |
 | GET | `/users/search` | Rechercher users | !! | `q=<nom\|pseudo\|tel>` |
 | POST | `/users/:id/block` | Bloquer user | !! | - |
 | DELETE | `/users/:id/block` | Débloquer user | !! | - |
+=======
+| GET | `/users/:id` | Récupérer user par ID | ✅ | - |
+| GET | `/users/phone/:phone` | Récupérer user par tél | ✅ | - |
+| GET | `/users/search` | Rechercher users | ✅ | `q=<nom\|pseudo\|tel>` |
+| POST | `/users/:id/block` | Bloquer user | ✅ | - |
+| DELETE | `/users/:id/block` | Débloquer user | ✅ | - |
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 ### 💬 Conversations (`/api/conversations`)
 
 | Méthode | Endpoint | Description | Auth | Body/Query |
 |---------|----------|-------------|------|------------|
+<<<<<<< HEAD
 | GET | `/conversations` | Lister conv | !! | `limit=20, offset=0` |
 | POST | `/conversations` | Créer conv | !! | `{ participantIDs: [id1, id2], name? }` |
 | GET | `/conversations/:id` | Détails conv | !! | - |
@@ -285,15 +302,31 @@ Authorization: Bearer <firebase-id-token>
 | DELETE | `/conversations/:id` | Quitter conv | !! | - |
 | POST | `/conversations/:id/leave` | Quitter conv (alt) | !! | - |
 | POST | `/conversations/:id/read` | Marquer lu | !! | - |
+=======
+| GET | `/conversations` | Lister conv | ✅ | `limit=20, offset=0` |
+| POST | `/conversations` | Créer conv | ✅ | `{ participantIDs: [id1, id2], name? }` |
+| GET | `/conversations/:id` | Détails conv | ✅ | - |
+| PUT | `/conversations/:id` | MAJ conv | ✅ | `{ name?, is_pinned?, is_archived? }` |
+| DELETE | `/conversations/:id` | Quitter conv | ✅ | - |
+| POST | `/conversations/:id/leave` | Quitter conv (alt) | ✅ | - |
+| POST | `/conversations/:id/read` | Marquer lu | ✅ | - |
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 ### 📨 Messages (`/api/conversations/:id/messages` + `/api/messages`)
 
 | Méthode | Endpoint | Description | Auth | Body |
 |---------|----------|-------------|------|------|
+<<<<<<< HEAD
 | GET | `/conversations/:id/messages` | Historique (pagination) | !! | `limit=50, offset=0` |
 | POST | `/conversations/:id/messages` | Envoyer message | !! | `{ content, type: 0, mediaUrl?, replyTo_ID? }` |
 | PUT | `/messages/:id` | Éditer message | !! | `{ content }` |
 | DELETE | `/messages/:id` | Supprimer message | !! | - |
+=======
+| GET | `/conversations/:id/messages` | Historique (pagination) | ✅ | `limit=50, offset=0` |
+| POST | `/conversations/:id/messages` | Envoyer message | ✅ | `{ content, type: 0, mediaUrl?, replyTo_ID? }` |
+| PUT | `/messages/:id` | Éditer message | ✅ | `{ content }` |
+| DELETE | `/messages/:id` | Supprimer message | ✅ | - |
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 **Message types** : `0=text`, `1=image`, `2=video`, `3=audio`, `4=file`
 
@@ -301,14 +334,21 @@ Authorization: Bearer <firebase-id-token>
 
 | Méthode | Endpoint | Description | Auth | Body |
 |---------|----------|-------------|------|------|
+<<<<<<< HEAD
 | GET | `/calls` | Historique appels | !! | `limit=20, offset=0` |
 | POST | `/calls` | Créer log appel | !! | `{ callerID, recipientID, call_type: "audio\|video" }` |
 | PUT | `/calls/:id/end` | Terminer appel | !! | `{ duration_seconds, status: "missed\|answered\|rejected" }` |
+=======
+| GET | `/calls` | Historique appels | ✅ | `limit=20, offset=0` |
+| POST | `/calls` | Créer log appel | ✅ | `{ callerID, recipientID, call_type: "audio\|video" }` |
+| PUT | `/calls/:id/end` | Terminer appel | ✅ | `{ duration_seconds, status: "missed\|answered\|rejected" }` |
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 ### 📅 Réunions (`/api/meetings`)
 
 | Méthode | Endpoint | Description | Auth | Body |
 |---------|----------|-------------|------|------|
+<<<<<<< HEAD
 | GET | `/meetings` | Lister réunions | !! | - |
 | POST | `/meetings` | Créer réunion | !! | `{ title, description?, scheduled_at, duration_min, meeting_type, participantIDs: [] }` |
 | GET | `/meetings/:id` | Détails réunion | !! | - |
@@ -317,23 +357,46 @@ Authorization: Bearer <firebase-id-token>
 | POST | `/meetings/:id/join` | Rejoindre réunion | !! | - |
 | POST | `/meetings/:id/accept/:userId` | Accepter invitation | !! | - |
 | POST | `/meetings/:id/decline/:userId` | Refuser invitation | !! | - |
+=======
+| GET | `/meetings` | Lister réunions | ✅ | - |
+| POST | `/meetings` | Créer réunion | ✅ | `{ title, description?, scheduled_at, duration_min, meeting_type, participantIDs: [] }` |
+| GET | `/meetings/:id` | Détails réunion | ✅ | - |
+| PUT | `/meetings/:id` | MAJ réunion | ✅ | `{ title?, scheduled_at?, duration_min?, participantIDs? }` |
+| DELETE | `/meetings/:id` | Supprimer réunion | ✅ | - |
+| POST | `/meetings/:id/join` | Rejoindre réunion | ✅ | - |
+| POST | `/meetings/:id/accept/:userId` | Accepter invitation | ✅ | - |
+| POST | `/meetings/:id/decline/:userId` | Refuser invitation | ✅ | - |
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 ### 📸 Statuts (`/api/status`)
 
 | Méthode | Endpoint | Description | Auth | Body |
 |---------|----------|-------------|------|------|
+<<<<<<< HEAD
 | GET | `/status` | Statuts des contacts | !! | - |
 | GET | `/status/:id` | Détails statut | !! | - |
 | POST | `/status` | Créer statut | !! | `{ content, type: "text\|image\|video", background_color?, media_url? }` |
 | DELETE | `/status/:id` | Supprimer statut | !! | - |
 | POST | `/status/:id/view` | Marquer vu | !! | - |
+=======
+| GET | `/status` | Statuts des contacts | ✅ | - |
+| GET | `/status/:id` | Détails statut | ✅ | - |
+| POST | `/status` | Créer statut | ✅ | `{ content, type: "text\|image\|video", background_color?, media_url? }` |
+| DELETE | `/status/:id` | Supprimer statut | ✅ | - |
+| POST | `/status/:id/view` | Marquer vu | ✅ | - |
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 ### 🌍 Autres endpoints
 
 | Méthode | Endpoint | Description | Auth |
 |---------|----------|-------------|------|
+<<<<<<< HEAD
 | GET | `/api/pays` | Liste des pays | ** |
 | POST | `/api/notify/test` | Envoyer notif test | !! |
+=======
+| GET | `/api/pays` | Liste des pays | ❌ |
+| POST | `/api/notify/test` | Envoyer notif test | ✅ |
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 ---
 
@@ -581,7 +644,11 @@ socket.on('disconnect', () => {
 
 ### Mapping Firebase → MySQL
 
+<<<<<<< HEAD
 ** **Point critique** : Il y a deux sources pour le phone :
+=======
+⚠️ **Point critique** : Il y a deux sources pour le phone :
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 1. **OTP Firebase** : `decoded.phone_number` (claim natif)
 2. **Google Sign-In** : `decoded.talky_phone` (custom claim, posé par `/auth/register`)
@@ -595,6 +662,7 @@ const phone = decoded.phone_number ?? decoded.talky_phone ?? null;
 
 | Aspect | Implémentation | Status |
 |--------|-----------------|--------|
+<<<<<<< HEAD
 | **Authentification** | Firebase Admin SDK (vérification ID token) | !! |
 | **JWT Verification** | Middleware sur toutes les routes protégées | !! |
 | **CORS** | Configuré (actuellement tout accepté) | ** |
@@ -604,6 +672,17 @@ const phone = decoded.phone_number ?? decoded.talky_phone ?? null;
 | **Rate limiting** | ** À implémenter |
 | **HTTPS/SSL** | À activer en production | !! |
 | **Secrets** | Variables d'env (.env) | !! |
+=======
+| **Authentification** | Firebase Admin SDK (vérification ID token) | ✅ |
+| **JWT Verification** | Middleware sur toutes les routes protégées | ✅ |
+| **CORS** | Configuré (actuellement tout accepté) | ⚠️ |
+| **Validation entrées** | express-validator sur routes | ✅ |
+| **Gestion erreurs centralisée** | Middleware errorHandler.js | ✅ |
+| **Password hashing** | N/A (Firebase handles) | ✅ |
+| **Rate limiting** | ❌ À implémenter |
+| **HTTPS/SSL** | À activer en production | ✅ |
+| **Secrets** | Variables d'env (.env) | ✅ |
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 ### À sécuriser avant production
 
@@ -824,7 +903,11 @@ socket.on('connect', () => console.log('Connected!'));
 
 ---
 
+<<<<<<< HEAD
 ##  Logs & Debugging
+=======
+## 📝 Logs & Debugging
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 Activer plus de logs :
 ```bash

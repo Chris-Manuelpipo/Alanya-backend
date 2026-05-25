@@ -29,7 +29,11 @@ CREATE TABLE IF NOT EXISTS pays (
 CREATE TABLE IF NOT EXISTS users (
   alanyaID    INT          NOT NULL AUTO_INCREMENT,
   nom         VARCHAR(60)  NOT NULL,
+<<<<<<< HEAD
   pseudo      VARCHAR(80)  NOT NULL DEFAULT 'alanyaUser',
+=======
+  pseudo      VARCHAR(80)  NOT NULL DEFAULT 'Kamite',
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
   alanyaPhone VARCHAR(20)  NOT NULL,
   idPays      SMALLINT     NOT NULL,
   password    VARCHAR(255) NOT NULL,

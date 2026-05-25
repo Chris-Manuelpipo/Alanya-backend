@@ -47,11 +47,19 @@ const messageSend = (io, socket, userSockets) => {
 
       const msgID = result.insertId;
 
+<<<<<<< HEAD
       // ÉTAPE 2 : Mettre à jour résumé conversation (statut 1 = envoyé)
       await pool.execute(
         `UPDATE conversation
          SET lastMessage = ?, lastMessageAt = NOW(),
              lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
+=======
+      // ÉTAPE 2 : Mettre à jour résumé conversation
+      await pool.execute(
+        `UPDATE conversation
+         SET lastMessage = ?, lastMessageAt = NOW(),
+             lastMessageSenderID = ?, lastMessageType = ?
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
          WHERE conversID = ?`,
         [
           content ? content.substring(0, 200) : (mediaName ?? 'Média'),
@@ -76,18 +84,30 @@ const messageSend = (io, socket, userSockets) => {
 
       const msg = rows[0];
 
+<<<<<<< HEAD
       // ÉTAPE 5 : Diffuser le message UNE SEULE FOIS à chaque autre participant.
       // On vise la room personnelle `user_<id>` (rejointe à l'auth) — fiable que
       // le destinataire ait ou non ouvert la conversation. L'émetteur n'est PAS
       // notifié ici : il reçoit son propre message via `message:sent` (évite les
       // doublons côté émetteur).
+=======
+      // ÉTAPE 5 : BROADCAST le message via Socket.IO (maintenant persistent!)
+      io.to(`conversation_${conversationID}`).emit('message:received', msg);
+
+      // Aussi envoyer directement aux sockets des participants
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
       const [participants] = await pool.execute(
         'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
         [conversationID, senderID]
       );
 
       for (const p of participants) {
+<<<<<<< HEAD
         io.to(`user_${p.alanyaID}`).emit('message:received', msg);
+=======
+        const sid = userSockets.get(p.alanyaID);
+        if (sid) io.to(sid).emit('message:received', msg);
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
       }
 
       // ÉTAPE 6 : Notif FCM aux autres participants
@@ -157,12 +177,15 @@ const messageDelivered = (io, socket, userSockets) => {
          WHERE conversationID = ? AND senderID != ? AND status = 1`,
         [conversationID, userID]
       );
+<<<<<<< HEAD
       // Reflète l'accusé "livré" sur l'aperçu (dernier message = celui de l'autre).
       await pool.execute(
         `UPDATE conversation SET lastMessageStatus = 2
          WHERE conversID = ? AND lastMessageSenderID <> ? AND lastMessageStatus < 2`,
         [conversationID, userID]
       );
+=======
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
       await _notifyStatus(io, conversationID, 2, userID, userSockets);
     } catch (e) {
       console.warn('[Socket message:delivered]', e.message);
@@ -186,12 +209,15 @@ const messageRead = (io, socket, userSockets) => {
         'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
         [conversationID, userID]
       );
+<<<<<<< HEAD
       // Reflète l'accusé "lu" (✓✓ bleu) sur l'aperçu du dernier message.
       await pool.execute(
         `UPDATE conversation SET lastMessageStatus = 3
          WHERE conversID = ? AND lastMessageSenderID <> ? AND lastMessageStatus < 3`,
         [conversationID, userID]
       );
+=======
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
       await _notifyStatus(io, conversationID, 3, userID, userSockets);
     } catch (e) {
       console.warn('[Socket message:read]', e.message);

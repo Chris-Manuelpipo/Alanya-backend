@@ -29,7 +29,10 @@ const notifyRoutes       = require('./src/routes/notify');
 const uploadRoutes       = require('./src/routes/upload');
 const contactRoutes      = require('./src/routes/contacts');
 const turnRoutes         = require('./src/routes/turn');
+<<<<<<< HEAD
 const adminRoutes        = require('./src/routes/admin');
+=======
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 
 // ── Socket handlers ───────────────────────────────────────────────────
 const socketAuth = require('./src/socket/handlers/auth');
@@ -63,7 +66,10 @@ const io     = new Server(server, {
 
 const userSockets = new Map();
 
+<<<<<<< HEAD
 app.set('trust proxy', 1);
+=======
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 app.set('io', io);
 app.set('userSockets', userSockets);
 
@@ -88,7 +94,10 @@ app.use('/api/meetings',      meetingRoutes);
 app.use('/api/upload',        uploadRoutes);
 app.use('/api/contacts',      contactRoutes);
 app.use('/api/turn',          turnRoutes);
+<<<<<<< HEAD
 app.use('/api/admin',         adminRoutes);
+=======
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
 app.use('/notify',            notifyRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'Serveur ok', timestamp: new Date().toISOString() }));

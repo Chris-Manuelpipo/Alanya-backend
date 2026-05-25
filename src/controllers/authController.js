@@ -85,7 +85,11 @@ const register = async (req, res) => {
         nom || 'Utilisateur',
         pseudo || nom || 'Kamite',
         phone,
+<<<<<<< HEAD
         idPays || 10,
+=======
+        idPays || 1,
+>>>>>>> 8a90f7ef9ac7fb9772ef63710a2c1b4705e094d9
         '',
         avatar_url || 'NON DEFINI',
         fcm_token || 'INDEFINI',
