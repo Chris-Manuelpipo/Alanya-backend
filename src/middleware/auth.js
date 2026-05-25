@@ -1,0 +1,51 @@
+const jwt = require('jsonwebtoken');
+const pool = require('../config/db');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'talky-secret-key-change-in-production';
+
+const auth = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Pas de token fourni' });
+    }
+
+    const token = authHeader.split('Bearer ')[1];
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (err) {
+      if (err.name === 'TokenExpiredError') {
+        return res.status(401).json({ error: 'Token expiré', code: 'TOKEN_EXPIRED' });
+      }
+      return res.status(401).json({ error: 'Token invalide' });
+    }
+
+    // Vérifier que c'est bien un access token (pas un refresh token)
+    if (decoded.type !== 'access') {
+      return res.status(401).json({ error: 'Type de token invalide' });
+    }
+
+    const [rows] = await pool.execute(
+      'SELECT alanyaID, alanyaPhone, email FROM users WHERE alanyaID = ? AND exclus = 0',
+      [decoded.alanyaID]
+    );
+
+    if (rows.length === 0) {
+      return res.status(401).json({ error: 'Utilisateur non trouvé ou banni' });
+    }
+
+    req.user = {
+      alanyaID: rows[0].alanyaID,
+      phone: rows[0].alanyaPhone,
+      email: rows[0].email,
+    };
+    next();
+  } catch (error) {
+    console.error('[Auth] ERROR:', error.message);
+    return res.status(401).json({ error: 'Échec d\'authentification' });
+  }
+};
+
+module.exports = auth;

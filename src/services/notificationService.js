@@ -1,0 +1,148 @@
+const admin = require('../config/firebase');
+
+const sendDataOnlyNotification = async (fcmToken, data = {}) => {
+  if (!fcmToken || fcmToken === 'INDEFINI') return;
+
+  try {
+    if (!admin.apps.length) {
+      console.warn('[FCM] Firebase non initialisé — notification ignorée');
+      return;
+    }
+
+    const message = {
+      token: fcmToken,
+      data: Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)])
+      ),
+      android: {
+        priority: data.type === 'call' || data.type === 'group_call' ? 'high' : 'normal',
+      },
+      apns: {
+        payload: { aps: { 'content-available': 1 } },
+      },
+    };
+
+    await admin.messaging().send(message);
+  } catch (error) {
+    // Ne pas faire crasher le serveur pour une notif ratée
+    console.error('[FCM] Send error:', error.message);
+  }
+};
+
+const sendToUser = async (alanyaID, data = {}) => {
+  try {
+    const pool = require('../config/db');
+    const [rows] = await pool.execute(
+      'SELECT fcm_token FROM users WHERE alanyaID = ? AND fcm_token != "INDEFINI"',
+      [alanyaID]
+    );
+    if (rows.length > 0) {
+      await sendDataOnlyNotification(rows[0].fcm_token, data);
+    }
+  } catch (error) {
+    console.error('[FCM] sendToUser error:', error.message);
+  }
+};
+
+const notifyNewMessage = async (conversationID, senderID, senderName, content, type = 0) => {
+  try {
+    const pool = require('../config/db');
+    const [participants] = await pool.execute(
+      'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+      [conversationID, senderID]
+    );
+    for (const p of participants) {
+      await sendToUser(p.alanyaID, {
+        type:           'message',
+        title:          senderName,
+        body:           content ? content.substring(0, 100) : 'Nouveau média',
+        conversationId: String(conversationID),
+        callerId:       String(senderID),
+        msgType:        String(type),
+      });
+    }
+  } catch (error) {
+    console.error('[FCM] notifyNewMessage error:', error.message);
+  }
+};
+
+const notifyIncomingCall = async (idReceiver, callerID, callerName, callerPhoto, isVideo, callId) => {
+  await sendToUser(idReceiver, {
+    type:       'call',
+    title:      callerName || 'Appel entrant',
+    body:       `${callerName || 'Quelqu\'un'} vous appelle`,
+    callerId:   String(callerID),
+    callerName: String(callerName ?? ''),
+    photo:      String(callerPhoto ?? ''),
+    isVideo:    String(isVideo ?? false),
+    callId:     String(callId ?? ''),
+  });
+};
+
+const notifyGroupCall = async (targetUserIds = [], callerID, callerName, callerPhoto, isVideo, roomId) => {
+  for (const uid of targetUserIds) {
+    await sendToUser(uid, {
+      type:       'group_call',
+      title:      callerName || 'Appel de groupe',
+      body:       `${callerName || 'Quelqu\'un'} démarre un appel de groupe`,
+      callerId:   String(callerID),
+      callerName: String(callerName ?? ''),
+      photo:      String(callerPhoto ?? ''),
+      isVideo:    String(isVideo ?? false),
+      roomId:     String(roomId ?? ''),
+    });
+  }
+};
+
+const notifyStatusView = async (statusOwnerID, viewerName) => {
+  await sendToUser(statusOwnerID, {
+    type:  'status_view',
+    title: 'Nouveau spectateur',
+    body:  `${viewerName} a vu votre statut`,
+  });
+};
+
+const notifyMeetingInvite = async (participantId, organiserName, meetingTitle, meetingTime, meetingId) => {
+  await sendToUser(participantId, {
+    type:          'meeting_invite',
+    title:         'Nouvelle réunion',
+    body:          `${organiserName} vous invite à : ${meetingTitle}`,
+    meetingTitle:  String(meetingTitle),
+    organiserName: String(organiserName),
+    meetingTime:   String(meetingTime),
+    meetingId:     String(meetingId ?? ''),
+  });
+};
+
+const notifyMeetingReminder = async (participantId, meetingTitle, organiserName, meetingId) => {
+  await sendToUser(participantId, {
+    type:          'meeting_reminder',
+    title:         'Réunion dans moins de 10 minutes',
+    body:          `${meetingTitle} démarre dans moins de 10 minutes`,
+    meetingTitle:  String(meetingTitle),
+    organiserName: String(organiserName),
+    meetingId:     String(meetingId ?? ''),
+  });
+};
+
+const notifyCallEnded = async (receiverId, callerId, callerName) => {
+  await sendToUser(receiverId, {
+    type:       'call_ended',
+    title:      'Appel terminé',
+    body:       `${callerName || 'L\'appel'} a raccroché`,
+    callerId:   String(callerId),
+    callerName: String(callerName ?? ''),
+  });
+};
+
+module.exports = {
+  sendDataOnlyNotification,
+  sendToUser,
+  notifyNewMessage,
+  notifyIncomingCall,
+  notifyGroupCall,
+  notifyStatusView,
+  notifyMeetingInvite,
+  notifyMeetingReminder,
+  notifyCallEnded,
+};

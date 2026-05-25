@@ -1,0 +1,30 @@
+const express = require('express');
+const router = express.Router();
+const auth = require('../middleware/auth');
+const {
+  getMeetings,
+  createMeeting,
+  getMeetingById,
+  getMeetingByRoom,
+  updateMeeting,
+  deleteMeeting,
+  joinMeeting,
+  acceptJoinRequest,
+  declineJoinRequest,
+  inviteParticipants,
+  leaveMeeting,
+} = require('../controllers/meetingController');
+
+router.get('/', auth, getMeetings);
+router.post('/', auth, createMeeting);
+router.get('/by-room/:room', auth, getMeetingByRoom);
+router.get('/:id', auth, getMeetingById);
+router.put('/:id', auth, updateMeeting);
+router.delete('/:id', auth, deleteMeeting);
+router.post('/:id/join', auth, joinMeeting);
+router.post('/:id/leave', auth, leaveMeeting);
+router.post('/:id/invite', auth, inviteParticipants);
+router.post('/:id/accept/:userId', auth, acceptJoinRequest);
+router.post('/:id/decline/:userId', auth, declineJoinRequest);
+
+module.exports = router;
