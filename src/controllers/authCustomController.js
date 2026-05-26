@@ -5,6 +5,39 @@ const { generateAccessToken, generateRefreshToken, JWT_REFRESH_SECRET } = requir
 
 const SALT_ROUNDS = 10;
 
+// Journalise une connexion (login, inscription, refresh) dans userAccess.
+// Best-effort : ne fait jamais échouer la requête appelante.
+// `device` doit être un libellé lisible (marque + modèle, ex. "Samsung SM-A715F").
+const logUserAccess = async (req, alanyaID, { device, osSystem } = {}) => {
+  try {
+    const ipAdress =
+      req.ip ||
+      req.headers['x-forwarded-for'] ||
+      req.connection?.remoteAddress ||
+      'INDEFINI';
+    const ua = req.headers['user-agent'] || '';
+    const os = osSystem || _osFromUserAgent(ua) || 'INDEFINI';
+    await pool.execute(
+      `INSERT INTO userAccess (alanyaID, device, dateLogin, ipAdress, os_system)
+       VALUES (?, ?, NOW(), ?, ?)`,
+      [alanyaID, device || 'INDEFINI', ipAdress, os]
+    );
+  } catch (error) {
+    console.warn('[userAccess] insert failed:', error.message);
+  }
+};
+
+const _osFromUserAgent = (ua) => {
+  if (!ua) return null;
+  const s = ua.toLowerCase();
+  if (s.includes('android')) return 'Android';
+  if (s.includes('iphone') || s.includes('ipad') || s.includes('ios')) return 'iOS';
+  if (s.includes('mac os')) return 'macOS';
+  if (s.includes('windows')) return 'Windows';
+  if (s.includes('linux')) return 'Linux';
+  return null;
+};
+
 // Génèration d'un alanyaPhone unique à 6 chiffres
 const generateAlanyaPhone = async () => {
   let alanyaPhone;
@@ -24,7 +57,7 @@ const generateAlanyaPhone = async () => {
 // Création de compte 
 const register = async (req, res) => {
   try {
-    const { email, password, nom, pseudo, idPays, fcm_token, device_ID } = req.body;
+    const { email, password, nom, pseudo, idPays, fcm_token, device_ID, device_model, os_system } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email et mot de passe requis' });
@@ -77,6 +110,12 @@ const register = async (req, res) => {
       [result.insertId]
     );
 
+    // Journalise l'inscription comme premier "login" dans userAccess.
+    logUserAccess(req, result.insertId, {
+      device: device_model || device_ID,
+      osSystem: os_system,
+    });
+
     res.status(201).json({ user: rows[0], accessToken, refreshToken });
   } catch (error) {
     console.error('[Register] ERROR:', error);
@@ -87,7 +126,7 @@ const register = async (req, res) => {
 // Connexion
 const login = async (req, res) => {
   try {
-    const { alanyaPhone, password, fcm_token, device_ID } = req.body;
+    const { alanyaPhone, password, fcm_token, device_ID, device_model, os_system } = req.body;
 
     if (!alanyaPhone || !password) {
       return res.status(400).json({ error: 'Alanya phone et mot de passe requis' });
@@ -129,6 +168,13 @@ const login = async (req, res) => {
 
     delete user.password;
     delete user.exclus;
+
+    // Journalise la connexion dans userAccess (best-effort).
+    logUserAccess(req, user.alanyaID, {
+      device: device_model || device_ID,
+      osSystem: os_system,
+    });
+
     res.json({ user, accessToken, refreshToken });
   } catch (error) {
     console.error('[Login] ERROR:', error);

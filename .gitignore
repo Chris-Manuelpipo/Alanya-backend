@@ -39,3 +39,6 @@ serviceAccountKey.json
 # zip
 src.zip
 uploads/
+
+code_source.dart
+kernel_blob.bin

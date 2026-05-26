@@ -13,7 +13,12 @@ const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, idPays, avatar_url, is_online, last_seen FROM users WHERE alanyaID = ?',
+      `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
+              u.avatar_url, u.is_online, u.last_seen,
+              p.libelle AS pays_libelle, p.prefix AS pays_prefix
+         FROM users u
+         LEFT JOIN pays p ON u.idPays = p.idPays
+        WHERE u.alanyaID = ?`,
       [id]
     );
 
