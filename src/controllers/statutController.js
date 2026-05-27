@@ -7,7 +7,8 @@ const {
 } = require('../services/statusSocketService');
 
 // ── GET /api/status ─────────────────────────────────────────────────
-// Statuts actifs des auteurs qui m'ont en contact préféré
+// Statuts actifs des auteurs avec lesquels j'ai un lien "favori réciproque" :
+// l'auteur m'a en contact préféré ET je l'ai en contact préféré.
 const getStatus = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
@@ -24,13 +25,14 @@ const getStatus = async (req, res) => {
                 WHERE sv2.statutID = s.ID AND sv2.alanyaID = ?
               ) AS seenByMe
        FROM statut s
-       JOIN users u             ON s.alanyaID = u.alanyaID
-       JOIN preferredContact pc ON pc.alanyaID = s.alanyaID AND pc.idFriend = ?
+       JOIN users u              ON s.alanyaID = u.alanyaID
+       JOIN preferredContact pc1 ON pc1.alanyaID = s.alanyaID AND pc1.idFriend = ?
+       JOIN preferredContact pc2 ON pc2.alanyaID = ?           AND pc2.idFriend = s.alanyaID
        WHERE s.expiredAt > NOW()
          AND s.alanyaID != ?
        ORDER BY s.alanyaID, s.createdAt ASC
        LIMIT 500`,
-      [alanyaID, alanyaID, alanyaID, alanyaID]
+      [alanyaID, alanyaID, alanyaID, alanyaID, alanyaID]
     );
 
     res.json(rows);

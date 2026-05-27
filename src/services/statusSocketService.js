@@ -1,12 +1,20 @@
 const pool = require('../config/db');
 
 /**
- * Récupère la liste des userIDs qui ont l'auteur en contact préféré
- * (i.e. l'audience qui doit voir ses statuts).
+ * Audience d'un auteur = ses contacts préférés réciproques.
+ * On ne diffuse les statuts qu'aux utilisateurs X tels que :
+ *   - l'auteur a ajouté X en contact préféré, ET
+ *   - X a ajouté l'auteur en contact préféré.
+ * Cette règle est symétrique au filtre de GET /api/status.
  */
 const getAudienceForAuthor = async (authorID) => {
   const [rows] = await pool.execute(
-    'SELECT alanyaID FROM preferredContact WHERE idFriend = ?',
+    `SELECT mine.idFriend AS alanyaID
+       FROM preferredContact AS mine
+       JOIN preferredContact AS theirs
+         ON theirs.alanyaID = mine.idFriend
+        AND theirs.idFriend = mine.alanyaID
+      WHERE mine.alanyaID = ?`,
     [authorID]
   );
   return rows.map((r) => r.alanyaID);
