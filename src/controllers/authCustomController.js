@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
+const mailService = require('../services/mailService');
 const { generateAccessToken, generateRefreshToken, JWT_REFRESH_SECRET } = require('../middleware/authCustom');
 
 const SALT_ROUNDS = 10;
@@ -235,14 +236,39 @@ const generateOTP = () => {
 const sendPasswordResetOTP = async (email, otp) => {
   const fromEmail =process.env.SMTP_FROM ;
   const fromName = process.env.MAIL_FROM_NAME || 'Alanya';
-  const subject = 'Alanya password reset OTP';
-  const text = `Your Alanya password reset OTP is ${otp}. It expires in 10 minutes. `;
+  const appName = process.env.APP_NAME || 'Alanya';
+  const logoUrl = process.env.LOGO_URL || '';
+  const supportEmail = process.env.SUPPORT_EMAIL || process.env.SMTP_FROM || 'support@example.com';
+  const expiryMin = Number(process.env.OTP_EXPIRY_MIN || 10);
+
+  const subject = `Réinitialisation de votre mot de passe ${appName}`;
+
+  const text = `Bonjour,\n\n` +
+    `Nous avons reçu une demande de réinitialisation du mot de passe pour le compte associé à ${email}.\n\n` +
+    `Votre code de réinitialisation : ${otp}\n` +
+    `Ce code est valable pendant ${expiryMin} minutes.\n\n` +
+    `Si vous n'êtes pas à l'origine de cette demande, ignorez ce message ou contactez le support : ${supportEmail}.\n\n` +
+    `Ne partagez jamais ce code avec qui que ce soit.\n\n` +
+    `Cordialement,\nL'équipe ${appName}`;
+
   const html = `
-    <p>Your Alanya password reset OTP is:</p>
-    <p>Votre code OTP pour réinitialiser le mot de passe Alanya est:</p>
-    <p style="font-size:24px;font-weight:700;letter-spacing:4px;">${otp}</p>
-    <p>This code expires in 10 minutes.</p>
-    <p>Ce code expire dans 10 minutes.</p>
+    <div style="font-family:Arial,Helvetica,sans-serif;color:#111;line-height:1.4">
+      <div style="max-width:600px;margin:0 auto;padding:20px;border:1px solid #e6e6e6;border-radius:6px;">
+        ${logoUrl ? `<div style="text-align:center;margin-bottom:18px;"><img src=\"${logoUrl}\" alt=\"${appName}\" style=\"height:48px;object-fit:contain;\"/></div>` : ''}
+        <h2 style="margin:0 0 12px 0;color:#222;font-weight:600">Réinitialisation de votre mot de passe</h2>
+        <p>Bonjour,</p>
+        <p>Nous avons reçu une demande pour réinitialiser le mot de passe du compte lié à <strong>${email}</strong>.</p>
+
+        <p style="text-align:center;margin:18px 0;">
+          <span style="display:inline-block;padding:14px 18px;background:#f3f4f6;border-radius:8px;font-weight:700;font-size:20px;letter-spacing:3px;">${otp}</span>
+        </p>
+        <p style="font-size:13px;color:#555;margin-top:6px">Ce code expire dans ${expiryMin} minutes.</p>
+
+        <hr style="border:none;border-top:1px solid #eee;margin:18px 0"/>
+        <p style="font-size:13px;color:#666">Si vous n'avez pas demandé cette réinitialisation, ignorez ce courriel ou contactez-nous : <a href=\"mailto:${supportEmail}\">${supportEmail}</a>.</p>
+        <p style="font-size:13px;color:#888;margin-top:12px">Cordialement,<br/>L'équipe ${appName}</p>
+      </div>
+    </div>
   `;
 
   if (!fromEmail) {
@@ -252,24 +278,8 @@ const sendPasswordResetOTP = async (email, otp) => {
   if (!process.env.SMTP_HOST) {
     throw new Error("Le service email n'est pas configuré");
   }
-
-  let nodemailer;
-  try {
-    nodemailer = require('nodemailer');
-  } catch (error) {
-    throw new Error("Nodemailer est requis pour l'envoi d'email SMTP");
-  }
-
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: process.env.SMTP_USER && process.env.SMTP_PASS
-      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-      : undefined,
-  });
-
-  await transporter.sendMail({
+  // Delegate to mailService
+  await mailService.sendMail({
     from: `"${fromName}" <${fromEmail}>`,
     to: email,
     subject,
