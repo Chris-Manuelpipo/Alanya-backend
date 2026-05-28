@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
-const { sendMail } = require('../services/mailService');
+const { sendMail, renderHtmlEmail, escapeHtml } = require('../services/mailService');
 const {
   generateAccessToken,
   generateRefreshToken,
@@ -21,48 +21,6 @@ const _buildUserMailFrom = () => {
   return fromEmail ? `"${fromName}" <${fromEmail}>` : undefined;
 };
 
-const _buildAccountActionMail = ({ nom, action, reason }) => {
-  const title = action === 'ban' ? 'Compte suspendu' : 'Compte supprimé';
-  const accent = action === 'ban' ? '#e11d48' : '#111827';
-  const lead = action === 'ban'
-    ? `Votre compte sur ${_appName} a été suspendu par un administrateur.`
-    : `Votre compte sur ${_appName} a été supprimé par un administrateur.`;
-  const politeName = nom || 'utilisateur';
-  const reasonBlock = reason
-    ? `
-        <div style="margin-top:18px;padding:14px 16px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px">
-          <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6b7280;font-weight:700;margin-bottom:6px">Motif</div>
-          <div style="color:#111827">${reason}</div>
-        </div>`
-    : '';
-
-  const text = `${lead}${reason ? `\n\nMotif : ${reason}` : ''}\n\nSi vous pensez qu'il s'agit d'une erreur, contactez le support.`;
-
-  const html = `
-    <div style="margin:0;padding:0;background:#f3f4f6">
-      <div style="max-width:680px;margin:0 auto;padding:32px 16px;font-family:Inter,Arial,Helvetica,sans-serif;color:#111827">
-        <div style="overflow:hidden;border-radius:20px;background:#ffffff;border:1px solid #e5e7eb;box-shadow:0 12px 40px rgba(15,23,42,.08)">
-          <div style="padding:26px 28px;background:linear-gradient(135deg,#111827 0%,#1f2937 55%,${accent} 100%);color:#fff">
-            <div style="display:inline-block;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,.16);font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:700">${_appName}</div>
-            <h1 style="margin:16px 0 0 0;font-size:28px;line-height:1.15">${title}</h1>
-            <p style="margin:10px 0 0 0;opacity:.92;font-size:15px;line-height:1.6">Notification de sécurité et de compte</p>
-          </div>
-          <div style="padding:28px">
-            <p style="margin:0 0 12px 0;font-size:16px;line-height:1.6">Bonjour ${politeName},</p>
-            <p style="margin:0;font-size:16px;line-height:1.7;color:#374151">${lead}</p>
-            ${reasonBlock}
-            <div style="margin-top:24px;padding:16px 18px;border-left:4px solid ${accent};background:#f9fafb;border-radius:12px;color:#374151;line-height:1.7">
-              Si vous pensez qu'il s'agit d'une erreur, contactez le support.
-            </div>
-            <p style="margin:24px 0 0 0;font-size:13px;color:#6b7280">Cet email est envoyé automatiquement, merci de ne pas y répondre.</p>
-          </div>
-        </div>
-      </div>
-    </div>`;
-
-  return { text, html };
-};
-
 const _notifyUserAccountAction = async ({ email, nom, action, reason }) => {
   if (!email) return;
 
@@ -70,7 +28,27 @@ const _notifyUserAccountAction = async ({ email, nom, action, reason }) => {
     action === 'ban'
       ? `Votre compte a été banni sur ${_appName}`
       : `Votre compte a été supprimé sur ${_appName}`;
-  const { text, html } = _buildAccountActionMail({ nom, action, reason });
+  const title = action === 'ban' ? 'Compte suspendu' : 'Compte supprimé';
+  const lead = action === 'ban'
+    ? `Votre compte sur ${_appName} a été suspendu par un administrateur.`
+    : `Votre compte sur ${_appName} a été supprimé par un administrateur.`;
+  const safeReason = reason ? escapeHtml(reason) : '';
+  const bodyHtml = `
+    <p>Bonjour ${escapeHtml(nom || 'utilisateur')},</p>
+    <p>${escapeHtml(lead)}</p>
+    ${reason ? `<div style="margin-top:18px;padding:14px 16px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px"><div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6b7280;font-weight:700;margin-bottom:6px">Motif</div><div style="color:#111827">${safeReason}</div></div>` : ''}
+    <p style="margin-top:18px;">Si vous pensez qu'il s'agit d'une erreur, contactez le support.</p>`;
+  const text = `${lead}${reason ? `\n\nMotif : ${reason}` : ''}\n\nSi vous pensez qu'il s'agit d'une erreur, contactez le support.`;
+  const html = renderHtmlEmail({
+    title,
+    preheader: title,
+    eyebrow: _appName,
+    heading: title,
+    intro: 'Notification de sécurité et de compte',
+    bodyHtml,
+    accent: action === 'ban' ? '#e11d48' : '#111827',
+    footerNote: 'Cet email est envoyé automatiquement, merci de ne pas y répondre.',
+  });
 
   await sendMail({
     from: _buildUserMailFrom(),
