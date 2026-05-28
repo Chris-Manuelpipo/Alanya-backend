@@ -154,7 +154,7 @@ const createGroup = async (req, res) => {
 
     const [result] = await pool.execute(
       'INSERT INTO conversation (isGroup, GroupName, groupPhoto, lastMessageAt) VALUES (1, ?, ?, NOW())',
-      [groupName || 'Group', groupPhoto || null]
+      [groupName || 'Groupe', groupPhoto || null]
     );
     const conversID = result.insertId;
 
