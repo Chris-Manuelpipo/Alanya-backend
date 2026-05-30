@@ -10,6 +10,7 @@ const {
   deleteConversation,
   markAsRead,
   leaveGroup,
+  addParticipants,
 } = require('../controllers/conversationController');
 
 router.get('/', auth, getConversations);
@@ -20,5 +21,6 @@ router.put('/:id', auth, updateConversation);
 router.delete('/:id', auth, deleteConversation);
 router.post('/:id/read', auth, markAsRead);
 router.post('/:id/leave', auth, leaveGroup);
+router.post('/:id/participants', auth, addParticipants);
 
 module.exports = router;

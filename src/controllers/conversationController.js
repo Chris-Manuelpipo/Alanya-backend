@@ -268,6 +268,77 @@ const markAsRead = async (req, res) => {
   }
 };
 
+// POST /conversations/:id/participants — ajoute des participants à un groupe.
+// L'appelant doit déjà être membre. Idempotent : ignore les IDs déjà présents.
+const addParticipants = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { participantIDs } = req.body;
+    const alanyaID = req.user.alanyaID;
+
+    if (!participantIDs || !Array.isArray(participantIDs) || participantIDs.length === 0) {
+      return res.status(400).json({ error: 'participantIDs required as array' });
+    }
+
+    // Vérifier que la conv est bien un groupe et que l'appelant est membre.
+    const [convRows] = await pool.execute(
+      `SELECT c.isGroup FROM conversation c
+       JOIN conv_participants cp ON cp.conversID = c.conversID AND cp.alanyaID = ?
+       WHERE c.conversID = ?`,
+      [alanyaID, id]
+    );
+    if (convRows.length === 0) {
+      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée' });
+    }
+    if (!convRows[0].isGroup) {
+      return res.status(400).json({ error: 'Pas un groupe' });
+    }
+
+    // IDs déjà présents → on les filtre pour ne pas violer la PK.
+    const [existing] = await pool.execute(
+      'SELECT alanyaID FROM conv_participants WHERE conversID = ?',
+      [id]
+    );
+    const existingIds = new Set(existing.map((r) => Number(r.alanyaID)));
+
+    const toAdd = participantIDs
+      .map((p) => parseInt(p, 10))
+      .filter((p) => !isNaN(p) && !existingIds.has(p));
+
+    for (const pid of toAdd) {
+      await pool.execute(
+        'INSERT INTO conv_participants (conversID, alanyaID) VALUES (?, ?)',
+        [id, pid]
+      );
+    }
+
+    // Conv enrichie pour la réponse + diffusion temps réel à tous les membres
+    // (existants + nouveaux). Les clients upsertent et voient la liste des
+    // participants mise à jour.
+    const [rows] = await pool.execute(
+      `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived
+       FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID
+       WHERE c.conversID = ? AND cp.alanyaID = ?`,
+      [id, alanyaID]
+    );
+    const enriched = await attachParticipants(rows[0]);
+
+    const io = req.app.get('io');
+    const userSockets = req.app.get('userSockets');
+    if (io && userSockets) {
+      const allMemberIds = [...existingIds, ...toAdd];
+      for (const pid of allMemberIds) {
+        const sid = userSockets.get(parseInt(pid));
+        if (sid) io.to(sid).emit('conversation:created', enriched);
+      }
+    }
+
+    res.json(enriched);
+  } catch (error) {
+    throw error;
+  }
+};
+
 const leaveGroup = async (req, res) => {
   try {
     const { id } = req.params;
@@ -297,4 +368,5 @@ module.exports = {
   deleteConversation,
   markAsRead,
   leaveGroup,
+  addParticipants,
 };
