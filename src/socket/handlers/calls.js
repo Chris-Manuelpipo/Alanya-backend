@@ -1,6 +1,7 @@
 
 const pool = require('../../config/db');
 const { notifyIncomingCall, notifyGroupCall, notifyCallEnded } = require('../../services/notificationService');
+const pendingCalls = require('../state/pendingCalls');
  
 const groupRooms = new Map();
 
@@ -43,19 +44,25 @@ const callUser = (io, socket, userSockets) => {
         console.warn('[Socket call_user] DB insert failed:', dbErr.message);
       }
 
+      const incomingPayload = {
+        callId:      callID != null ? String(callID) : null,
+        callerId:    String(callerID),
+        callerName:  callerName  || '',
+        callerPhoto: callerPhoto || null,
+        isVideo:     isVideo     || false,
+        offer,
+      };
+
+      // Bufferise l'appel : si le destinataire est hors-ligne (app fermée), il sera
+      // réveillé par FCM puis l'event `incoming_call` lui sera rejoué à sa reconnexion.
+      pendingCalls.set(targetID, incomingPayload);
+
       const targetSocketId = userSockets.get(targetID);
       if (targetSocketId) {
         console.log(`[Socket call_user] !! Envoi incoming_call à socket ${targetSocketId}`);
-        io.to(targetSocketId).emit('incoming_call', {
-          callId:      callID != null ? String(callID) : null,
-          callerId:    String(callerID),
-          callerName:  callerName  || '',
-          callerPhoto: callerPhoto || null,
-          isVideo:     isVideo     || false,
-          offer,
-        });
+        io.to(targetSocketId).emit('incoming_call', incomingPayload);
       } else {
-        console.warn(`[Socket call_user] ** Utilisateur ${targetID} non trouvé en socket — fallback FCM uniquement`);
+        console.warn(`[Socket call_user] ** Utilisateur ${targetID} non trouvé en socket — fallback FCM + rejeu à la reconnexion`);
       }
 
       notifyIncomingCall(targetID, callerID, callerName, callerPhoto, isVideo, callID)
@@ -84,7 +91,10 @@ const answerCall = (io, socket, userSockets) => {
       }
 
       console.log(`[Socket answer_call] 📞 Réponse: Receiver ${receiverID} → Caller ${callerID}`);
- 
+
+      // L'appel est traité : plus besoin de le rejouer au destinataire.
+      pendingCalls.clear(receiverID);
+
       try {
         const [result] = await pool.execute(
           `UPDATE callHistory
@@ -124,7 +134,11 @@ const rejectCall = (io, socket, userSockets) => {
       const { callerId } = data;
       const callerID   = toInt(callerId);
       const receiverID = socket.alanyaID;
-      if (!callerID) return; 
+      if (!callerID) return;
+
+      // Appel refusé : ne pas le rejouer au destinataire.
+      pendingCalls.clear(receiverID);
+
       try {
         await pool.execute(
           `UPDATE callHistory
@@ -182,6 +196,9 @@ const endCall = (io, socket, userSockets) => {
       const { targetUserId } = data;
       const targetID = toInt(targetUserId);
       const callerID = socket.alanyaID;
+
+      // Appel terminé/annulé : ne pas le rejouer au destinataire.
+      if (targetID) pendingCalls.clear(targetID);
 
       if (callerID) {
         try {

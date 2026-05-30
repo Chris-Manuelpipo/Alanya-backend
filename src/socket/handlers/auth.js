@@ -1,5 +1,6 @@
 const jwt  = require('jsonwebtoken');
 const pool = require('../../config/db');
+const pendingCalls = require('../state/pendingCalls');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'talky-secret-key-change-in-production';
 
@@ -61,6 +62,16 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
   userSockets.set(alanyaID, socket.id);
   socket.join(`user_${alanyaID}`);
   socket.emit('auth:verified', { success: true, alanyaID });
+
+  // Rejeu d'un appel entrant en attente : si l'utilisateur vient d'être réveillé
+  // par un push FCM (app fermée), l'event `incoming_call` initial a été perdu.
+  // On le lui rejoue maintenant que son socket est authentifié, avec l'offre WebRTC.
+  const pending = pendingCalls.get(alanyaID);
+  if (pending) {
+    console.log(`[Socket] !! Rejeu incoming_call à User ${alanyaID} (appel en attente)`);
+    socket.emit('incoming_call', pending);
+    pendingCalls.clear(alanyaID);
+  }
 }
 
 module.exports = socketAuth;
