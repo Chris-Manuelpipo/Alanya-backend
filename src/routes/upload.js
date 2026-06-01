@@ -5,7 +5,40 @@ const { uploadAvatar, uploadMedia: uploadMediaCtrl } = require('../controllers/u
 const { uploadAvatar: multerAvatar, uploadMedia: multerMedia, handleMulterError } = require('../middleware/upload');
 const { uploadLimiter } = require('../middleware/rateLimiter');
 
-// Route pour l'upload d'avatar (image)
+/**
+ * @swagger
+ * /api/upload/avatar:
+ *   post:
+ *     summary: Uploader un avatar
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - file
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *                 description: Image (max 5MB)
+ *     responses:
+ *       200:
+ *         description: Avatar uploadé
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 url:
+ *                   type: string
+ *                 filename:
+ *                   type: string
+ */
 router.post(
   '/avatar',
   auth,
@@ -15,7 +48,48 @@ router.post(
   uploadAvatar
 );
 
-// Route pour l'upload de médias (images, vidéos)
+/**
+ * @swagger
+ * /api/upload/media:
+ *   post:
+ *     summary: Uploader un média (image, audio, vidéo, fichier)
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - file
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *                 description: Fichier média (max 50MB)
+ *     responses:
+ *       200:
+ *         description: Média uploadé
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 url:
+ *                   type: string
+ *                 filename:
+ *                   type: string
+ *                 originalName:
+ *                   type: string
+ *                 mimetype:
+ *                   type: string
+ *                 size:
+ *                   type: integer
+ *                 msgType:
+ *                   type: integer
+ */
 router.post(
   '/media',
   auth,

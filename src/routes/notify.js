@@ -4,6 +4,52 @@ const { sendToUser } = require('../services/notificationService');
 
 const router = express.Router();
 
+/**
+ * @swagger
+ * /notify:
+ *   post:
+ *     summary: Envoyer une notification push à un utilisateur
+ *     tags: [Notifications]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - toUserId
+ *             properties:
+ *               toUserId:
+ *                 type: integer
+ *               title:
+ *                 type: string
+ *               body:
+ *                 type: string
+ *               type:
+ *                 type: string
+ *               conversationId:
+ *                 type: string
+ *               callerId:
+ *                 type: string
+ *               offer:
+ *                 type: string
+ *               roomId:
+ *                 type: string
+ *               isVideo:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Notification envoyée
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ */
 router.post('/', auth, async (req, res, next) => {
   try {
     const {
