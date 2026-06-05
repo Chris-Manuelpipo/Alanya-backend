@@ -7,9 +7,15 @@ const {
   getAnalytics,
   getActivityFeed,
   getAllMedia,
+  deleteMedia,
   getAllGroups,
   getGroupById,
   deleteGroup,
+  getAllMeetings,
+  endMeeting,
+  deleteMeeting,
+  getSettings,
+  updateSettings,
   getUsers,
   getUserById,
   getUserActivity,
@@ -165,6 +171,127 @@ router.get('/activity',                    adminAuth, getActivityFeed);
  *         description: Liste des médias
  */
 router.get('/media',                       adminAuth, getAllMedia);
+
+/**
+ * @swagger
+ * /api/admin/media/{id}:
+ *   delete:
+ *     summary: Masque un média (soft-delete du message)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Média supprimé
+ *       404:
+ *         description: Média introuvable
+ */
+router.delete('/media/:id',                adminAuth, deleteMedia);
+
+/**
+ * @swagger
+ * /api/admin/meetings:
+ *   get:
+ *     summary: Toutes les réunions de l'application
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 200
+ *     responses:
+ *       200:
+ *         description: Liste des réunions
+ */
+router.get('/meetings',                    adminAuth, getAllMeetings);
+
+/**
+ * @swagger
+ * /api/admin/meetings/{id}/end:
+ *   post:
+ *     summary: Termine une réunion en cours
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Réunion terminée
+ *       404:
+ *         description: Réunion introuvable
+ */
+router.post('/meetings/:id/end',           adminAuth, endMeeting);
+
+/**
+ * @swagger
+ * /api/admin/meetings/{id}:
+ *   delete:
+ *     summary: Supprime une réunion (+ participants)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Réunion supprimée
+ *       404:
+ *         description: Réunion introuvable
+ */
+router.delete('/meetings/:id',             adminAuth, deleteMeeting);
+
+/**
+ * @swagger
+ * /api/admin/settings:
+ *   get:
+ *     summary: Paramètres applicatifs (maintenance, nom, URL API)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Paramètres courants
+ *   put:
+ *     summary: Met à jour les paramètres (super-admin)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               maintenance:
+ *                 type: boolean
+ *               appName:
+ *                 type: string
+ *               apiUrl:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Paramètres mis à jour
+ */
+router.get('/settings',                    adminAuth, getSettings);
+router.put('/settings',                    adminAuth, superAdminAuth, updateSettings);
 
 /**
  * @swagger
