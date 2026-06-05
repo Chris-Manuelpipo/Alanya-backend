@@ -4,6 +4,12 @@ const { adminAuth, superAdminAuth } = require('../middleware/adminAuth');
 const {
   adminLogin,
   getStats,
+  getAnalytics,
+  getActivityFeed,
+  getAllMedia,
+  getAllGroups,
+  getGroupById,
+  deleteGroup,
   getUsers,
   getUserById,
   getUserActivity,
@@ -77,6 +83,149 @@ router.post('/auth/login', adminLogin);
  *         description: Statistiques
  */
 router.get('/stats',                       adminAuth, getStats);
+
+/**
+ * @swagger
+ * /api/admin/analytics:
+ *   get:
+ *     summary: Analytics avancées (messagerie, appels, stories, réunions, users)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: from
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Date début (ISO, défaut J-7)
+ *       - in: query
+ *         name: to
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Date fin (ISO, défaut maintenant)
+ *     responses:
+ *       200:
+ *         description: Agrégations analytiques groupées par domaine
+ */
+router.get('/analytics',                   adminAuth, getAnalytics);
+
+/**
+ * @swagger
+ * /api/admin/activity:
+ *   get:
+ *     summary: Feed d'activité récente (événements fusionnés et triés)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Liste des derniers événements
+ */
+router.get('/activity',                    adminAuth, getActivityFeed);
+
+/**
+ * @swagger
+ * /api/admin/media:
+ *   get:
+ *     summary: Médias partagés (images, vidéos, audios, fichiers)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: type
+ *         schema:
+ *           type: integer
+ *           enum: [1, 2, 3, 4]
+ *         description: 1=image 2=vidéo 3=audio 4=fichier
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 200
+ *     responses:
+ *       200:
+ *         description: Liste des médias
+ */
+router.get('/media',                       adminAuth, getAllMedia);
+
+/**
+ * @swagger
+ * /api/admin/groups:
+ *   get:
+ *     summary: Tous les groupes de l'application
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 200
+ *     responses:
+ *       200:
+ *         description: Liste des groupes
+ */
+router.get('/groups',                      adminAuth, getAllGroups);
+
+/**
+ * @swagger
+ * /api/admin/groups/{id}:
+ *   get:
+ *     summary: Détails d'un groupe + membres
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Détails du groupe
+ *       404:
+ *         description: Groupe introuvable
+ *   delete:
+ *     summary: Supprime un groupe (messages + participants)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Groupe supprimé
+ */
+router.get('/groups/:id',                  adminAuth, getGroupById);
+router.delete('/groups/:id',               adminAuth, deleteGroup);
 
 /**
  * @swagger
