@@ -1,7 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 
-// ── Paramètres applicatifs (stockés dans un fichier JSON, pas de table) ──
+// Paramètres applicatifs (stockés dans un fichier JSON, pas de table)
 const _SETTINGS_DEFAULTS = { maintenance: false, appName: 'Alanya', apiUrl: '' };
 // __dirname = src/controllers/admin → racine projet = ../../../
 const _SETTINGS_FILE = path.join(__dirname, '../../../data/app-settings.json');
@@ -20,7 +20,7 @@ const _writeSettings = async (settings) => {
   await fs.writeFile(_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
 };
 
-// ── GET /api/admin/settings ────────────────────────────────────────
+// Admin : récupère les paramètres applicatifs (maintenance, appName, apiUrl)
 const getSettings = async (req, res) => {
   try {
     res.json(await _readSettings());
@@ -30,7 +30,7 @@ const getSettings = async (req, res) => {
   }
 };
 
-// ── PUT /api/admin/settings (super-admin) ──────────────────────────
+// Super admin : met à jour les paramètres applicatifs (maintenance, appName, apiUrl)
 const updateSettings = async (req, res) => {
   try {
     const { maintenance, appName, apiUrl } = req.body;

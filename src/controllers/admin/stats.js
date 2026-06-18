@@ -1,7 +1,7 @@
 const pool = require('../../config/db');
 const { _daysAgoIso, _appName, _relativeTime } = require('./helpers');
 
-// ── GET /api/admin/stats?from=&to= ─────────────────────────────────
+
 // Renvoie KPIs + séries temporelles pour le dashboard
 const getStats = async (req, res) => {
   try {
@@ -93,7 +93,6 @@ const getStats = async (req, res) => {
   }
 };
 
-// ── GET /api/admin/activity?limit=20 ───────────────────────────────
 // Feed temps réel : fusion des derniers événements (inscriptions,
 // messages, appels, stories, réunions), triés par date décroissante.
 const getActivityFeed = async (req, res) => {

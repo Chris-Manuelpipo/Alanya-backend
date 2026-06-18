@@ -1,7 +1,7 @@
 const pool = require('../../config/db');
 const { _notifyUserAccountAction } = require('./helpers');
 
-// ── GET /api/admin/users?search=&status=&from=&to=&idPays=&sort=&page=&limit= ──
+// Utilisateurs (liste complète, détails, bannissement, rôle, suppression…)
 const getUsers = async (req, res) => {
   try {
     const {
@@ -40,9 +40,7 @@ const getUsers = async (req, res) => {
     const offset = (pageN - 1) * limitN;
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-
-    // NB: LIMIT/OFFSET interpolés (mysql2 ne supporte pas le bind sur ces
-    // tokens via prepared statements). Valeurs validées en entiers ci-dessus.
+ 
     const [items] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
               u.type_compte, u.is_online, u.last_seen, u.exclus, u.exclude_at,
@@ -67,7 +65,7 @@ const getUsers = async (req, res) => {
   }
 };
 
-// ── GET /api/admin/users/:id ───────────────────────────────────────
+// Détails d'un utilisateur par ID (alanyaID)
 const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -89,7 +87,7 @@ const getUserById = async (req, res) => {
   }
 };
 
-// ── GET /api/admin/users/:id/activity ──────────────────────────────
+// Activité d'un utilisateur : messages, appels, stories, conversations
 const getUserActivity = async (req, res) => {
   try {
     const { id } = req.params;
@@ -119,7 +117,7 @@ const getUserActivity = async (req, res) => {
   }
 };
 
-// ── GET /api/admin/users/:id/logins?limit=50 ───────────────────────
+// Dernières connexions des utilisateurs (userAccess) : device, dateLogin, ipAdress, os_system
 const getUserLogins = async (req, res) => {
   try {
     const { id } = req.params;
@@ -139,7 +137,7 @@ const getUserLogins = async (req, res) => {
   }
 };
 
-// ── POST /api/admin/users/:id/ban ──────────────────────────────────
+// Bannir un utilisateur (exclus = 1) : soft-delete, il ne peut plus se connecter. Super-admin uniquement.
 const banUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -177,7 +175,7 @@ const banUser = async (req, res) => {
   }
 };
 
-// ── DELETE /api/admin/users/:id/ban ────────────────────────────────
+// Débannir un utilisateur (exclus = 0) : il peut se reconnecter. Super-admin uniquement.
 const unbanUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -195,8 +193,7 @@ const unbanUser = async (req, res) => {
   }
 };
 
-// ── PUT /api/admin/users/:id/role { type_compte } ─────────────────
-// Super-admin uniquement
+// Promouvoir ou rétrograder un utilisateur (type_compte = 0, 1 ou 2). Super-admin uniquement.
 const setAccountType = async (req, res) => {
   try {
     const { id } = req.params;
@@ -228,8 +225,7 @@ const setAccountType = async (req, res) => {
   }
 };
 
-// ── DELETE /api/admin/users/:id ────────────────────────────────────
-// Super-admin uniquement
+// Supprimer un utilisateur (DELETE) : supprime définitivement le compte + données associées. Super-admin uniquement.
 const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;

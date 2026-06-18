@@ -4,9 +4,8 @@ const {
   generateAccessToken,
   generateRefreshToken,
 } = require('../../middleware/authCustom');
-
-// ── POST /api/admin/auth/login ─────────────────────────────────────
-// Login dédié web : email + password, refuse type_compte = 0
+ 
+// Login admin  dédié web : email + password, refuse type_compte = 0
 const adminLogin = async (req, res) => {
   try {
     const { email, password } = req.body;

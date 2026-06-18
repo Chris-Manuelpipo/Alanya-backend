@@ -1,8 +1,6 @@
 const pool = require('../../config/db');
-
-// ── GET /api/admin/groups?search=&limit= ───────────────────────────
-// Tous les groupes de l'application (pas seulement ceux de l'admin),
-// avec nombre de membres et date de création approchée (1er joinedAt).
+ 
+// Tous les groupes de l'application avec nombre de membres et date de création
 const getAllGroups = async (req, res) => {
   try {
     const { search = '' } = req.query;
@@ -33,8 +31,7 @@ const getAllGroups = async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 };
-
-// ── GET /api/admin/groups/:id ──────────────────────────────────────
+ 
 // Détails d'un groupe + liste complète des membres.
 const getGroupById = async (req, res) => {
   try {
@@ -88,8 +85,7 @@ const getGroupById = async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 };
-
-// ── DELETE /api/admin/groups/:id ───────────────────────────────────
+ 
 // Supprime un groupe + ses messages + ses participants.
 const deleteGroup = async (req, res) => {
   try {

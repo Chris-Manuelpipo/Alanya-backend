@@ -9,15 +9,10 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD || '',
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0,
-  // mysql2 interprète/sérialise les DATETIME en UTC ("...Z" en JSON).
+  queueLimit: 0, 
   timezone: 'Z',
 });
-
-// Force chaque connexion en UTC pour que NOW() écrive en UTC et que les
-// lectures soient cohérentes quel que soit le fuseau de l'hôte. Combiné à
-// timezone:'Z', toute la chaîne sendAt/lastMessageAt est en UTC, et les
-// clients font .toLocal() pour l'affichage.
+ 
 pool.on('connection', (conn) => {
   conn.query("SET time_zone = '+00:00'");
 });

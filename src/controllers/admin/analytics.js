@@ -7,21 +7,21 @@ const {
   _ROLE_LABELS,
 } = require('./helpers');
 
-// ── GET /api/admin/analytics?from=&to= ─────────────────────────────
-// Agrégations avancées (messagerie, appels, stories, réunions, users…)
-// Calque le pattern de getStats : Promise.all de sous-requêtes paramétrées.
+// Analytics  (messagerie, appels, stories, réunions, users…) 
 const getAnalytics = async (req, res) => {
   try {
+    // Plage de dates par défaut : 7 derniers jours
     const from = req.query.from || _daysAgoIso(7);
     const to   = req.query.to   || new Date().toISOString();
 
-    // Période précédente de même durée → tendances (comparison)
+    // Calcule la période précédente de même durée pour les comparaisons YoY
     const fromMs = new Date(from).getTime();
     const toMs   = new Date(to).getTime();
     const spanMs = Math.max(0, toMs - fromMs);
     const prevFrom = new Date(fromMs - spanMs).toISOString();
     const prevTo   = from;
 
+    // Lance en parallèle 13 requêtes pour agrégations et tendances
     const [
       [msgByType],
       [msgByDay],
@@ -146,6 +146,7 @@ const getAnalytics = async (req, res) => {
       ),
     ]);
 
+    // Normalise les métriques principales avec helper _num()
     const callsTotal = _num(callAgg.total);
     const callsAnswered = _num(callAgg.answered);
     const storyTotal = _num(storyAgg.total);
@@ -156,12 +157,14 @@ const getAnalytics = async (req, res) => {
     const mInvited  = _num(meetingAgg.invited);
     const mResponses = mAccepted + mDeclined + mInvited;
 
+    // Construit la réponse JSON avec transformations et calculs de taux
     res.json({
       messagesByType: msgByType.map((r) => ({
         type: r.type,
         label: _MESSAGE_TYPE_LABELS[r.type] ?? `Type ${r.type}`,
         count: _num(r.n),
       })),
+      // Courbe temporelle des messages
       messagesByDay: msgByDay.map((r) => ({ date: r.date, count: _num(r.count) })),
       calls: {
         total: callsTotal,
@@ -172,6 +175,7 @@ const getAnalytics = async (req, res) => {
         rejected: _num(callAgg.rejected),
         avgDuration: _num(callAgg.avgDuration),
         totalDuration: _num(callAgg.totalDuration),
+        // Taux de réussite (appels répondus / total)
         successRate: callsTotal ? Math.round((callsAnswered / callsTotal) * 100) : 0,
       },
       callsByDay: callsByDay.map((r) => ({
@@ -181,7 +185,9 @@ const getAnalytics = async (req, res) => {
         total: storyTotal,
         totalViews: storyViews,
         totalLikes: storyLikes,
+        // Moyenne de vues par story
         avgViews: storyTotal ? Math.round(storyViews / storyTotal) : 0,
+        // Ratio likes/vues en pourcentage
         engagementRate: storyViews ? Math.round((storyLikes / storyViews) * 100) : 0,
         byType: storyByType.map((r) => ({
           type: r.type,
@@ -195,7 +201,9 @@ const getAnalytics = async (req, res) => {
         accepted: mAccepted,
         declined: mDeclined,
         invited: mInvited,
+        // % de participants ayant accepté
         attendanceRate: mResponses ? Math.round((mAccepted / mResponses) * 100) : 0,
+        // % de non-réponses (refus + invités sans action)
         noShowRate: mResponses ? Math.round(((mDeclined + mInvited) / mResponses) * 100) : 0,
       },
       users: {
@@ -215,6 +223,7 @@ const getAnalytics = async (req, res) => {
         oneToOne: _num(convAgg.oneToOne),
         avgGroupSize: _num(convAgg.avgGroupSize),
       },
+      // Matrice jour/heure des activités de messagerie (pour calendrier thermique)
       heatmap: heatmap.map((r) => ({
         dow: _num(r.dow), hour: _num(r.hour), count: _num(r.count),
       })),
@@ -224,6 +233,7 @@ const getAnalytics = async (req, res) => {
         statuses: _num(comparison.statuses),
         registrations: _num(comparison.registrations),
       },
+      // Délimites temporelles pour front-end et cache
       period: { from, to },
       previousPeriod: { from: prevFrom, to: prevTo },
     });

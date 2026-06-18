@@ -1,8 +1,6 @@
-const pool = require('../../config/db');
+const pool = require('../../config/db'); 
 
-// ── GET /api/admin/meetings?limit= ─────────────────────────────────
-// Toutes les réunions de l'application (pas seulement celles de l'admin),
-// avec organisateur et nombre de participants.
+// Toutes les réunions de l'application avec organisateur et nombre de participants.
 const getAllMeetings = async (req, res) => {
   try {
     const limitN = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
@@ -31,8 +29,7 @@ const getAllMeetings = async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 };
-
-// ── POST /api/admin/meetings/:id/end ───────────────────────────────
+ 
 // Termine une réunion en cours (isEnd = 1).
 const endMeeting = async (req, res) => {
   try {
@@ -46,8 +43,7 @@ const endMeeting = async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 };
-
-// ── DELETE /api/admin/meetings/:id ─────────────────────────────────
+ 
 // Supprime une réunion + ses participants (sans restriction d'organisateur).
 const deleteMeeting = async (req, res) => {
   try {

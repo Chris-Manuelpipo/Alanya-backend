@@ -1,6 +1,5 @@
 const pool = require('../../config/db');
 
-// ── GET /api/admin/media?type=&search=&page=&limit= ────────────────
 // Médias partagés (messages de type image/vidéo/audio/fichier) avec
 // expéditeur + nom de conversation. Renvoie un tableau MediaItem[].
 const getAllMedia = async (req, res) => {
@@ -56,11 +55,10 @@ const getAllMedia = async (req, res) => {
     res.status(500).json({ error: 'Erreur serveur' });
   }
 };
-
-// ── DELETE /api/admin/media/:id ────────────────────────────────────
+ 
 // Masque un média : soft-delete du message (isDeleted = 1). Il disparaît de
-// la liste admin (filtrée sur isDeleted = 0) et côté app, tout en restant
-// récupérable en base.
+// la liste admin (filtrée sur isDeleted = 0) et côté app, tout en restant récupérable en base.
+
 const deleteMedia = async (req, res) => {
   try {
     const { id } = req.params;
