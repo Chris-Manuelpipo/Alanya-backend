@@ -113,17 +113,51 @@ const messageSend = (io, socket, userSockets) => {
   });
 };
 
+const _emitTypingToParticipants = async (io, socket, conversationID, senderID, event, payload) => {
+  const [participants] = await pool.execute(
+    'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+    [conversationID, senderID]
+  );
+  for (const p of participants) {
+    io.to(`user_${p.alanyaID}`).emit(event, payload);
+  }
+  // Compat : destinataires ayant la conversation ouverte (room conversation).
+  socket.to(`conversation_${conversationID}`).emit(event, payload);
+};
+
 const typingStart = (io, socket, userSockets) => {
-  socket.on('typing:start', (data) => {
-    const { conversationID, userID } = data;
-    socket.to(`conversation_${conversationID}`).emit('typing:started', { userID });
+  socket.on('typing:start', async (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const { conversationID } = data || {};
+      if (!conversationID) return;
+      const userID = socket.alanyaID;
+      const payload = {
+        conversationID: Number(conversationID),
+        userID: Number(userID),
+      };
+      await _emitTypingToParticipants(io, socket, conversationID, userID, 'typing:started', payload);
+    } catch (error) {
+      console.error('[Socket typing:start]', error.message);
+    }
   });
 };
 
 const typingStop = (io, socket, userSockets) => {
-  socket.on('typing:stop', (data) => {
-    const { conversationID, userID } = data;
-    socket.to(`conversation_${conversationID}`).emit('typing:stopped', { userID });
+  socket.on('typing:stop', async (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const { conversationID } = data || {};
+      if (!conversationID) return;
+      const userID = socket.alanyaID;
+      const payload = {
+        conversationID: Number(conversationID),
+        userID: Number(userID),
+      };
+      await _emitTypingToParticipants(io, socket, conversationID, userID, 'typing:stopped', payload);
+    } catch (error) {
+      console.error('[Socket typing:stop]', error.message);
+    }
   });
 };
  
