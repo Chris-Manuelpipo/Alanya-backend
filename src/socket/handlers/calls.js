@@ -1,6 +1,7 @@
 
 const pool = require('../../config/db');
 const { notifyIncomingCall, notifyGroupCall, notifyCallEnded } = require('../../services/notificationService');
+const { maxParticipants, maxInvitees } = require('../../constants/participantLimits');
 const pendingCalls = require('../state/pendingCalls');
  
 const groupRooms = new Map();
@@ -8,6 +9,19 @@ const groupRooms = new Map();
 function toInt(v) {
   const n = parseInt(v, 10);
   return isNaN(n) ? null : n;
+}
+
+function getRoomParticipants(room) {
+  if (!room) return null;
+  return room.participants ?? room;
+}
+
+function createRoomState(isVideo, callerID, callerInfo) {
+  const participants = new Map();
+  if (callerID != null) {
+    participants.set(callerID, callerInfo);
+  }
+  return { isVideo: !!isVideo, participants };
 }
  
 const callUser = (io, socket, userSockets) => {
@@ -250,19 +264,32 @@ const createGroupCall = (io, socket, userSockets) => {
       if (!roomId || !Array.isArray(targetUserIds)) return;
 
       const callerID = toInt(callerId) || socket.alanyaID;
+      const videoCall = !!isVideo;
+      const inviteLimit = maxInvitees(videoCall);
+      const uniqueTargets = [...new Set(
+        targetUserIds.map(toInt).filter((id) => id && id !== callerID),
+      )];
 
-      groupRooms.set(roomId, new Map([[
-        callerID,
-        { userName: callerName || '', userPhoto: callerPhoto || null },
-      ]]));
+      if (uniqueTargets.length > inviteLimit) {
+        return socket.emit('error', {
+          message: `Maximum ${maxParticipants(videoCall)} participants en ${videoCall ? 'vidéo' : 'audio'} (vous inclus)`,
+          code: 'GROUP_CALL_TOO_MANY',
+        });
+      }
+
+      groupRooms.set(
+        roomId,
+        createRoomState(videoCall, callerID, {
+          userName: callerName || '',
+          userPhoto: callerPhoto || null,
+        }),
+      );
 
       socket.join(`group_${roomId}`);
       socket.currentGroupRoom = roomId;
 
       const fcmTargets = [];
-      for (const uid of targetUserIds) {
-        const targetID = toInt(uid);
-        if (!targetID) continue;
+      for (const targetID of uniqueTargets) {
         fcmTargets.push(targetID);
         const targetSocketId = userSockets.get(targetID);
         if (targetSocketId) {
@@ -270,14 +297,14 @@ const createGroupCall = (io, socket, userSockets) => {
             callerId:    String(callerID),
             callerName:  callerName  || '',
             callerPhoto: callerPhoto || null,
-            isVideo:     isVideo     || false,
+            isVideo:     videoCall,
             roomId,
           });
         }
       }
 
       // FCM en parallèle pour les destinataires hors-ligne / app fermée
-      notifyGroupCall(fcmTargets, callerID, callerName, callerPhoto, isVideo, roomId)
+      notifyGroupCall(fcmTargets, callerID, callerName, callerPhoto, videoCall, roomId)
         .catch((err) => console.warn('[Socket create_group_call] FCM error:', err.message));
     } catch (error) {
       console.error('[Socket create_group_call]', error.message);
@@ -294,12 +321,22 @@ const joinGroupCall = (io, socket, userSockets) => {
 
       const userID = toInt(userId) || socket.alanyaID;
 
-      if (!groupRooms.has(roomId)) {
-        groupRooms.set(roomId, new Map());
+      let room = groupRooms.get(roomId);
+      if (!room || !(room.participants instanceof Map)) {
+        room = createRoomState(false, null, null);
+        groupRooms.set(roomId, room);
       }
 
-      const room = groupRooms.get(roomId);
-      room.set(userID, { userName: userName || '', userPhoto: userPhoto || null });
+      const participants = getRoomParticipants(room);
+      const limit = maxParticipants(room.isVideo);
+      if (!participants.has(userID) && participants.size >= limit) {
+        return socket.emit('error', {
+          message: `Cet appel ${room.isVideo ? 'vidéo' : 'audio'} est complet (${limit} participants max)`,
+          code: 'GROUP_CALL_FULL',
+        });
+      }
+
+      participants.set(userID, { userName: userName || '', userPhoto: userPhoto || null });
 
       socket.join(`group_${roomId}`);
       socket.currentGroupRoom = roomId;
@@ -311,7 +348,7 @@ const joinGroupCall = (io, socket, userSockets) => {
         userPhoto: userPhoto || null,
       });
 
-      const participants = Array.from(room.keys()).map(String);
+      const participants = Array.from(getRoomParticipants(room).keys()).map(String);
       socket.emit('group_participants', { roomId, participants });
     } catch (error) {
       console.error('[Socket join_group_call]', error.message);
@@ -324,10 +361,11 @@ const leaveGroupCall = (io, socket, userSockets) => {
     try {
       const { roomId } = data || {};
       const room = roomId ? groupRooms.get(roomId) : null;
+      const participants = getRoomParticipants(room);
 
-      if (room && socket.alanyaID) {
-        room.delete(socket.alanyaID);
-        if (room.size === 0) groupRooms.delete(roomId);
+      if (participants && socket.alanyaID) {
+        participants.delete(socket.alanyaID);
+        if (participants.size === 0) groupRooms.delete(roomId);
       }
 
       const rId = roomId || socket.currentGroupRoom;

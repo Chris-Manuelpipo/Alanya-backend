@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { notifyMeetingInvite } = require('../services/notificationService');
+const { maxParticipantsForMeeting } = require('../constants/participantLimits');
  
 function toMysqlUtc(value) {
   const d = new Date(value);
@@ -183,20 +184,41 @@ const joinMeeting = async (req, res) => {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
 
+    const [meetings] = await pool.execute(
+      'SELECT type_media FROM meeting WHERE idMeeting = ?',
+      [id],
+    );
+    if (meetings.length === 0) {
+      return res.status(404).json({ error: 'Meeting not found' });
+    }
+
+    const limit = maxParticipantsForMeeting(meetings[0].type_media ?? 0);
+
     const [existing] = await pool.execute(
       'SELECT * FROM participant WHERE idMeeting = ? AND IDparticipant = ?',
       [id, alanyaID]
     );
 
-    if (existing.length > 0) {
+    if (existing.length === 0) {
+      const [countRows] = await pool.execute(
+        'SELECT COUNT(*) AS total FROM participant WHERE idMeeting = ?',
+        [id],
+      );
+      const currentCount = countRows[0]?.total ?? 0;
+      if (currentCount >= limit) {
+        return res.status(403).json({
+          error: `Maximum ${limit} participants pour cette réunion`,
+        });
+      }
+
       await pool.execute(
-        'UPDATE participant SET connecte = 1, start_time = NOW() WHERE idMeeting = ? AND IDparticipant = ?',
+        `INSERT INTO participant (idMeeting, IDparticipant, status, start_time, connecte, duree) 
+         VALUES (?, ?, 0, NOW(), 1, 0)`,
         [id, alanyaID]
       );
     } else {
       await pool.execute(
-        `INSERT INTO participant (idMeeting, IDparticipant, status, start_time, connecte, duree) 
-         VALUES (?, ?, 0, NOW(), 1, 0)`,
+        'UPDATE participant SET connecte = 1, start_time = NOW() WHERE idMeeting = ? AND IDparticipant = ?',
         [id, alanyaID]
       );
     }
@@ -254,9 +276,19 @@ const inviteParticipants = async (req, res) => {
     }
 
     const meeting = meetings[0];
+    const limit = maxParticipantsForMeeting(meeting.type_media ?? 0);
+
+    const [countRows] = await pool.execute(
+      'SELECT COUNT(*) AS total FROM participant WHERE idMeeting = ?',
+      [id],
+    );
+    const currentCount = countRows[0]?.total ?? 0;
 
     // Ajouter les participants directement acceptés (status 1), non connectés (0)
+    let added = 0;
     for (const participantId of participant_ids) {
+      if (currentCount + added >= limit) break;
+
       const [existing] = await pool.execute(
         'SELECT * FROM participant WHERE idMeeting = ? AND IDparticipant = ?',
         [id, participantId]
@@ -267,6 +299,7 @@ const inviteParticipants = async (req, res) => {
           'INSERT INTO participant (idMeeting, IDparticipant, status, start_time, connecte, duree) VALUES (?, ?, 1, NOW(), 0, 0)',
           [id, participantId]
         );
+        added += 1;
 
         // Envoyer la notification d'invitation
         try {
@@ -283,7 +316,13 @@ const inviteParticipants = async (req, res) => {
       }
     }
 
-    res.json({ message: 'Participants invited' });
+    if (participant_ids.length > 0 && added === 0 && currentCount >= limit) {
+      return res.status(403).json({
+        error: `Maximum ${limit} participants pour cette réunion`,
+      });
+    }
+
+    res.json({ message: 'Participants invited', added, limit });
   } catch (error) {
     throw error;
   }
