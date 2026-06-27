@@ -1,6 +1,8 @@
 const pool = require('../config/db');
 const { notifyNewMessage } = require('../services/notificationService');
 
+const MESSAGE_EDIT_WINDOW_MINUTES = 30;
+
 const getMessages = async (req, res) => {
   try {
     const { id } = req.params; // conversationID
@@ -154,6 +156,14 @@ const updateMessage = async (req, res) => {
 
     if (existing.length === 0) {
       return res.status(404).json({ error: 'Message introuvable ou non autorisé' });
+    }
+
+    const sentAt = new Date(existing[0].sendAt);
+    const ageMinutes = (Date.now() - sentAt.getTime()) / 60000;
+    if (ageMinutes > MESSAGE_EDIT_WINDOW_MINUTES) {
+      return res.status(403).json({
+        error: `La modification n'est possible que dans les ${MESSAGE_EDIT_WINDOW_MINUTES} minutes suivant l'envoi`,
+      });
     }
 
     await pool.execute(
