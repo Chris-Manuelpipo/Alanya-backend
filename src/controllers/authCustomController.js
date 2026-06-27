@@ -1,4 +1,5 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { sendMail, renderHtmlEmail, escapeHtml } = require('../services/mailService');
@@ -83,18 +84,22 @@ const register = async (req, res) => {
 
     const alanyaPhone = await generateAlanyaPhone();
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+    // vault_salt n'est pas secret : seul le mot de passe l'est. Le client le
+    // récupère pour dériver sa clé de coffre E2EE (voir ARCHITECTURE.md §3).
+    const vaultSalt = crypto.randomBytes(16);
 
     const [result] = await pool.execute(
       `INSERT INTO users
-        (nom, pseudo, alanyaPhone, email, password, idPays, avatar_url,
+        (nom, pseudo, alanyaPhone, email, password, vault_salt, idPays, avatar_url,
          fcm_token, device_ID, last_seen, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         nom        || 'Utilisateur',
         pseudo     || nom || 'AlanyaUser',
         alanyaPhone,
         email.toLowerCase().trim(),
         hashedPassword,
+        vaultSalt,
         idPays     || 10,
         'NON DEFINI',
         fcm_token  || 'INDEFINI',
@@ -117,7 +122,12 @@ const register = async (req, res) => {
       osSystem: os_system,
     });
 
-    res.status(201).json({ user: rows[0], accessToken, refreshToken });
+    res.status(201).json({
+      user: rows[0],
+      accessToken,
+      refreshToken,
+      vaultSalt: vaultSalt.toString('base64'),
+    });
   } catch (error) {
     console.error('[Register] ERROR:', error);
     res.status(500).json({ error: error.message || 'Registration failed' });

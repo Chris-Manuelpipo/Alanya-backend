@@ -23,38 +23,74 @@ const messageSend = (io, socket, userSockets) => {
         });
       }
 
-      const { conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply = 0, clientId } = data;
+      const {
+        conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration,
+        replyToID, replyToContent, isStatusReply = 0, clientId,
+        ciphertext, archiveBlob, signalMessageType,
+      } = data;
       const senderID = socket.alanyaID; // !! Utiliser l'ID du socket authentifié
+      const isEncrypted = !!ciphertext;
 
-      if (!conversationID || (!content && !mediaUrl)) {
-        return socket.emit('error', { 
-          message: 'conversationID and (content or mediaUrl) required' 
+      if (!conversationID || (!content && !mediaUrl && !isEncrypted)) {
+        return socket.emit('error', {
+          message: 'conversationID and (content, mediaUrl or ciphertext) required',
         });
       }
+
+      // Le chiffrement E2EE (Double Ratchet 1-à-1) ne couvre que les
+      // conversations privées : pas de sender keys de groupe pour l'instant.
+      if (isEncrypted) {
+        const [convRows] = await pool.execute(
+          'SELECT isGroup FROM conversation WHERE conversID = ?',
+          [conversationID]
+        );
+        if (convRows.length === 0) {
+          return socket.emit('error', { message: 'Conversation introuvable' });
+        }
+        if (convRows[0].isGroup) {
+          return socket.emit('error', {
+            message: 'Le chiffrement E2EE n\'est pas encore supporté pour les groupes',
+            code: 'E2EE_GROUP_UNSUPPORTED',
+          });
+        }
+      }
+
+      // Le serveur ne lit jamais l'intérieur de ciphertext/archive_blob : ce
+      // sont des blobs opaques chiffrés côté client (voir ARCHITECTURE.md §1).
+      const ciphertextBuf  = isEncrypted ? Buffer.from(ciphertext, 'base64') : null;
+      const archiveBlobBuf = archiveBlob ? Buffer.from(archiveBlob, 'base64') : null;
 
       // ÉTAPE 1 : PERSISTER le message en DB
       const [result] = await pool.execute(
         `INSERT INTO message
            (senderID, conversationID, content, type, status, sendAt,
-            mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply)
-         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?)`,
+            mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply,
+            ciphertext, archive_blob, signal_message_type)
+         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          senderID, conversationID, content ?? null, type,
+          senderID, conversationID, isEncrypted ? null : (content ?? null), type,
           mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
           replyToID ?? null, replyToContent ?? null, isStatusReply,
+          ciphertextBuf, archiveBlobBuf, isEncrypted ? (signalMessageType ?? 2) : null,
         ]
       );
 
       const msgID = result.insertId;
 
       // ÉTAPE 2 : Mettre à jour résumé conversation (statut 1 = envoyé)
+      // Pour un message chiffré, on n'affiche jamais le contenu en clair dans
+      // l'aperçu de conversation : seul un libellé générique est stocké.
+      const lastMessagePreview = isEncrypted
+        ? '🔒 Message chiffré'
+        : (content ? content.substring(0, 200) : (mediaName ?? 'Média'));
+
       await pool.execute(
         `UPDATE conversation
          SET lastMessage = ?, lastMessageAt = NOW(),
              lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
          WHERE conversID = ?`,
         [
-          content ? content.substring(0, 200) : (mediaName ?? 'Média'),
+          lastMessagePreview,
           senderID, type, conversationID,
         ]
       );
@@ -75,6 +111,10 @@ const messageSend = (io, socket, userSockets) => {
       );
 
       const msg = rows[0];
+      // Les colonnes binaires reviennent en Buffer : on les encode en base64
+      // pour un transport JSON homogène avec l'API REST (cf. keysController).
+      if (msg.ciphertext)   msg.ciphertext   = msg.ciphertext.toString('base64');
+      if (msg.archive_blob) msg.archive_blob = msg.archive_blob.toString('base64');
 
       // ÉTAPE 5 : Diffuser le message UNE SEULE FOIS à chaque autre participant.
       // On vise la room personnelle `user_<id>` (rejointe à l'auth) — fiable que
@@ -99,7 +139,10 @@ const messageSend = (io, socket, userSockets) => {
       // Import async pour éviter circular dependency
       setTimeout(() => {
         const { notifyNewMessage } = require('../../services/notificationService');
-        notifyNewMessage(conversationID, senderID, senderName, content, type).catch(e => 
+        // Pour un message chiffré, ne jamais transmettre de plaintext à FCM :
+        // le serveur n'en a de toute façon plus connaissance (content = NULL).
+        const notifBody = isEncrypted ? '🔒 Message chiffré' : content;
+        notifyNewMessage(conversationID, senderID, senderName, notifBody, type).catch(e =>
           console.warn('[FCM notification]', e.message)
         );
       }, 0);

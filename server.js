@@ -30,6 +30,7 @@ const uploadRoutes       = require('./src/routes/upload');
 const contactRoutes      = require('./src/routes/contacts');
 const turnRoutes         = require('./src/routes/turn');
 const adminRoutes        = require('./src/routes/admin');
+const keysRoutes         = require('./src/routes/keys');
 
 // ── Socket handlers ───────────────────────────────────────────────────
 const socketAuth = require('./src/socket/handlers/auth');
@@ -89,6 +90,7 @@ app.use('/api/upload',        uploadRoutes);
 app.use('/api/contacts',      contactRoutes);
 app.use('/api/turn',          turnRoutes);
 app.use('/api/admin',         adminRoutes);
+app.use('/api/keys',          keysRoutes);
 app.use('/notify',            notifyRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'Serveur ok', timestamp: new Date().toISOString() }));
