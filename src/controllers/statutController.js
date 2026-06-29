@@ -30,9 +30,13 @@ const getStatus = async (req, res) => {
        JOIN preferredContact pc2 ON pc2.alanyaID = ?           AND pc2.idFriend = s.alanyaID
        WHERE s.expiredAt > NOW()
          AND s.alanyaID != ?
+         AND NOT EXISTS (
+           SELECT 1 FROM blocked b
+           WHERE b.alanyaID = s.alanyaID AND b.idCallerBlock = ?
+         )
        ORDER BY s.alanyaID, s.createdAt ASC
        LIMIT 500`,
-      [alanyaID, alanyaID, alanyaID, alanyaID, alanyaID]
+      [alanyaID, alanyaID, alanyaID, alanyaID, alanyaID, alanyaID]
     );
 
     res.json(rows);

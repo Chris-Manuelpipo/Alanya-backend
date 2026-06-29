@@ -2,6 +2,7 @@
 const pool = require('../../config/db');
 const { notifyIncomingCall, notifyGroupCall, notifyCallEnded } = require('../../services/notificationService');
 const { maxParticipants, maxInvitees } = require('../../constants/participantLimits');
+const { isBlockedEitherWay } = require('../../utils/blockUtils');
 const pendingCalls = require('../state/pendingCalls');
  
 const groupRooms = new Map();
@@ -41,6 +42,11 @@ const callUser = (io, socket, userSockets) => {
       if (!targetID || !offer) {
         console.warn('[Socket call_user] ** Données invalides', { targetID, offerExists: !!offer });
         socket.emit('call_failed', { reason: 'Données d\'appel invalides' });
+        return;
+      }
+
+      if (await isBlockedEitherWay(callerID, targetID)) {
+        socket.emit('call_failed', { reason: 'Appel impossible', code: 'CALL_BLOCKED' });
         return;
       }
 

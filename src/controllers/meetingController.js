@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { notifyMeetingInvite } = require('../services/notificationService');
 const { maxParticipantsForMeeting } = require('../constants/participantLimits');
+const { isBlockedEitherWay } = require('../utils/blockUtils');
  
 function toMysqlUtc(value) {
   const d = new Date(value);
@@ -288,6 +289,13 @@ const inviteParticipants = async (req, res) => {
     let added = 0;
     for (const participantId of participant_ids) {
       if (currentCount + added >= limit) break;
+
+      if (await isBlockedEitherWay(alanyaID, participantId)) {
+        return res.status(403).json({
+          error: 'Impossible d\'inviter un contact bloqué',
+          code: 'INVITE_BLOCKED',
+        });
+      }
 
       const [existing] = await pool.execute(
         'SELECT * FROM participant WHERE idMeeting = ? AND IDparticipant = ?',

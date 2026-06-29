@@ -14,8 +14,12 @@ const getAudienceForAuthor = async (authorID) => {
        JOIN preferredContact AS theirs
          ON theirs.alanyaID = mine.idFriend
         AND theirs.idFriend = mine.alanyaID
-      WHERE mine.alanyaID = ?`,
-    [authorID]
+      WHERE mine.alanyaID = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM blocked b
+          WHERE b.alanyaID = ? AND b.idCallerBlock = mine.idFriend
+        )`,
+    [authorID, authorID]
   );
   return rows.map((r) => r.alanyaID);
 };

@@ -1,4 +1,5 @@
 const pool = require('../../config/db');
+const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy, getDirectConversationPeer } = require('../../utils/blockUtils');
 
 const joinConversation = (io, socket, userSockets) => {
   socket.on('join_conversation', async (data) => {
@@ -32,6 +33,15 @@ const messageSend = (io, socket, userSockets) => {
         });
       }
 
+      const blockEval = await evaluateDirectMessageSend(conversationID, senderID);
+      if (blockEval.isDirect && blockEval.action === 'reject') {
+        return socket.emit('error', {
+          message: 'Cannot message blocked user',
+          code: blockEval.code || 'BLOCKED_BY_SENDER',
+        });
+      }
+      const silentDrop = blockEval.isDirect && blockEval.action === 'silent';
+
       // ÉTAPE 1 : PERSISTER le message en DB
       const [result] = await pool.execute(
         `INSERT INTO message
@@ -47,23 +57,25 @@ const messageSend = (io, socket, userSockets) => {
 
       const msgID = result.insertId;
 
-      // ÉTAPE 2 : Mettre à jour résumé conversation (statut 1 = envoyé)
-      await pool.execute(
-        `UPDATE conversation
-         SET lastMessage = ?, lastMessageAt = NOW(),
-             lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
-         WHERE conversID = ?`,
-        [
-          content ? content.substring(0, 200) : (mediaName ?? 'Média'),
-          senderID, type, conversationID,
-        ]
-      );
+      if (!silentDrop) {
+        // ÉTAPE 2 : Mettre à jour résumé conversation (statut 1 = envoyé)
+        await pool.execute(
+          `UPDATE conversation
+           SET lastMessage = ?, lastMessageAt = NOW(),
+               lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
+           WHERE conversID = ?`,
+          [
+            content ? content.substring(0, 200) : (mediaName ?? 'Média'),
+            senderID, type, conversationID,
+          ]
+        );
 
-      // ÉTAPE 3 : Incrémenter compteur non-lus pour autres participants
-      await pool.execute(
-        'UPDATE conv_participants SET unreadCount = unreadCount + 1 WHERE conversID = ? AND alanyaID != ?',
-        [conversationID, senderID]
-      );
+        // ÉTAPE 3 : Incrémenter compteur non-lus pour autres participants
+        await pool.execute(
+          'UPDATE conv_participants SET unreadCount = unreadCount + 1 WHERE conversID = ? AND alanyaID != ?',
+          [conversationID, senderID]
+        );
+      }
 
       // ÉTAPE 4 : Récupérer message complet avec infos sender
       const [rows] = await pool.execute(
@@ -76,33 +88,30 @@ const messageSend = (io, socket, userSockets) => {
 
       const msg = rows[0];
 
-      // ÉTAPE 5 : Diffuser le message UNE SEULE FOIS à chaque autre participant.
-      // On vise la room personnelle `user_<id>` (rejointe à l'auth) — fiable que
-      // le destinataire ait ou non ouvert la conversation. L'émetteur n'est PAS
-      // notifié ici : il reçoit son propre message via `message:sent` (évite les
-      // doublons côté émetteur).
-      const [participants] = await pool.execute(
-        'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-        [conversationID, senderID]
-      );
-
-      for (const p of participants) {
-        io.to(`user_${p.alanyaID}`).emit('message:received', msg);
-      }
-
-      // ÉTAPE 6 : Notif FCM aux autres participants
-      const [sender] = await pool.execute(
-        'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
-      );
-      const senderName = sender[0]?.nom ?? 'Talky';
-      
-      // Import async pour éviter circular dependency
-      setTimeout(() => {
-        const { notifyNewMessage } = require('../../services/notificationService');
-        notifyNewMessage(conversationID, senderID, senderName, content, type).catch(e => 
-          console.warn('[FCM notification]', e.message)
+      if (!silentDrop) {
+        // ÉTAPE 5 : Diffuser le message UNE SEULE FOIS à chaque autre participant.
+        const [participants] = await pool.execute(
+          'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+          [conversationID, senderID]
         );
-      }, 0);
+
+        for (const p of participants) {
+          io.to(`user_${p.alanyaID}`).emit('message:received', msg);
+        }
+
+        // ÉTAPE 6 : Notif FCM aux autres participants
+        const [sender] = await pool.execute(
+          'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
+        );
+        const senderName = sender[0]?.nom ?? 'Talky';
+
+        setTimeout(() => {
+          const { notifyNewMessage } = require('../../services/notificationService');
+          notifyNewMessage(conversationID, senderID, senderName, content, type).catch(e =>
+            console.warn('[FCM notification]', e.message)
+          );
+        }, 0);
+      }
 
       // Renvoyer clientId pour que l'émetteur retrouve son message optimiste.
       socket.emit('message:sent', { msgID, clientId, ...msg });
@@ -118,11 +127,18 @@ const _emitTypingToParticipants = async (io, socket, conversationID, senderID, e
     'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
     [conversationID, senderID]
   );
+  let emitToRoom = false;
   for (const p of participants) {
+    const suppressed = await shouldSuppressDirectInteraction(
+      conversationID, senderID, p.alanyaID,
+    );
+    if (suppressed) continue;
     io.to(`user_${p.alanyaID}`).emit(event, payload);
+    emitToRoom = true;
   }
-  // Compat : destinataires ayant la conversation ouverte (room conversation).
-  socket.to(`conversation_${conversationID}`).emit(event, payload);
+  if (emitToRoom) {
+    socket.to(`conversation_${conversationID}`).emit(event, payload);
+  }
 };
 
 const typingStart = (io, socket, userSockets) => {
@@ -186,6 +202,9 @@ const messageDelivered = (io, socket, userSockets) => {
     const userID = socket.alanyaID;
     if (!conversationID || !userID) return;
     try {
+      const peerId = await getDirectConversationPeer(conversationID, userID);
+      if (peerId != null && await isBlockedBy(userID, peerId)) return;
+
       await pool.execute(
         `UPDATE message SET status = 2
          WHERE conversationID = ? AND senderID != ? AND status = 1`,
@@ -211,6 +230,9 @@ const messageRead = (io, socket, userSockets) => {
     const userID = socket.alanyaID;
     if (!conversationID || !userID) return;
     try {
+      const peerId = await getDirectConversationPeer(conversationID, userID);
+      if (peerId != null && await isBlockedBy(userID, peerId)) return;
+
       await pool.execute(
         `UPDATE message SET status = 3, readAt = NOW()
          WHERE conversationID = ? AND senderID != ? AND status < 3`,

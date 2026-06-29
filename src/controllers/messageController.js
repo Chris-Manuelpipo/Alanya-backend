@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { notifyNewMessage } = require('../services/notificationService');
+const { evaluateDirectMessageSend } = require('../utils/blockUtils');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
 
@@ -8,7 +9,7 @@ const getMessages = async (req, res) => {
     const { id } = req.params; // conversationID
     const alanyaID = req.user.alanyaID;
     const { limit = 50, before } = req.query;
- 
+
     let query = `
       SELECT m.*,
              u.nom        AS sender_nom,
@@ -19,8 +20,15 @@ const getMessages = async (req, res) => {
       WHERE m.conversationID = ?
         AND m.isDeleted = 0
         AND (m.deletedForID IS NULL OR m.deletedForID != ?)
+        AND NOT EXISTS (
+          SELECT 1 FROM blocked b
+          WHERE b.alanyaID = ?
+            AND b.idCallerBlock = m.senderID
+            AND m.senderID != ?
+            AND m.sendAt >= b.dateBlock
+        )
     `;
-    const params = [id, alanyaID];
+    const params = [id, alanyaID, alanyaID, alanyaID];
 
     if (before) {
       query += ' AND m.msgID < ?';
@@ -29,16 +37,14 @@ const getMessages = async (req, res) => {
 
     query += ' ORDER BY m.sendAt DESC LIMIT ?';
     params.push(parseInt(limit) || 50);
- 
+
     const [rows] = await pool.query(query, params);
-    // Marquer comme lus les messages non lus de l'interlocuteur
+
     await pool.execute(
       `UPDATE message SET status = 3, readAt = NOW()
        WHERE conversationID = ? AND senderID != ? AND status < 3`,
       [id, alanyaID]
     );
-
-    // Remettre unreadCount à 0 pour cet utilisateur
     await pool.execute(
       'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
       [id, alanyaID]
@@ -50,9 +56,96 @@ const getMessages = async (req, res) => {
   }
 };
 
+const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) => {
+  const {
+    content, type = 0, mediaUrl, mediaName, mediaDuration,
+    replyToID, replyToContent, isStatusReply = 0,
+  } = fields;
+
+  const blockEval = await evaluateDirectMessageSend(conversationID, senderID);
+  if (blockEval.isDirect && blockEval.action === 'reject') {
+    const err = new Error('Cannot message blocked user');
+    err.status = 403;
+    err.code = blockEval.code || 'BLOCKED_BY_SENDER';
+    throw err;
+  }
+
+  const silentDrop = blockEval.isDirect && blockEval.action === 'silent';
+
+  const [result] = await pool.execute(
+    `INSERT INTO message
+       (senderID, conversationID, content, type, status, sendAt,
+        mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply)
+     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?)`,
+    [
+      senderID, conversationID, content ?? null, type,
+      mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
+      replyToID ?? null, replyToContent ?? null, isStatusReply,
+    ]
+  );
+
+  const msgID = result.insertId;
+
+  if (!silentDrop) {
+    await pool.execute(
+      `UPDATE conversation
+       SET lastMessage = ?, lastMessageAt = NOW(),
+           lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
+       WHERE conversID = ?`,
+      [
+        content ? content.substring(0, 200) : (mediaName ?? 'Média'),
+        senderID, type, conversationID,
+      ]
+    );
+
+    await pool.execute(
+      'UPDATE conv_participants SET unreadCount = unreadCount + 1 WHERE conversID = ? AND alanyaID != ?',
+      [conversationID, senderID]
+    );
+  }
+
+  const [rows] = await pool.execute(
+    `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar
+     FROM message m
+     JOIN users u ON m.senderID = u.alanyaID
+     WHERE m.msgID = ?`,
+    [msgID]
+  );
+
+  const msg = rows[0];
+
+  if (!silentDrop) {
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`conversation_${conversationID}`).emit('message:received', msg);
+
+      const userSockets = req.app.get('userSockets');
+      if (userSockets) {
+        const [participants] = await pool.execute(
+          'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+          [conversationID, senderID]
+        );
+        for (const p of participants) {
+          const sid = userSockets.get(p.alanyaID);
+          if (sid) io.to(sid).emit('message:received', msg);
+          io.to(`user_${p.alanyaID}`).emit('message:received', msg);
+        }
+      }
+    }
+
+    const [sender] = await pool.execute(
+      'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
+    );
+    const senderName = sender[0]?.nom ?? 'Talky';
+    await notifyNewMessage(conversationID, senderID, senderName, content, type);
+  }
+
+  return { msg, silentDrop };
+};
+
 const sendMessage = async (req, res) => {
   try {
-    const { id } = req.params; // conversationID
+    const { id } = req.params;
     const {
       content, type = 0, mediaUrl, mediaName, mediaDuration,
       replyToID, replyToContent, isStatusReply = 0,
@@ -63,78 +156,16 @@ const sendMessage = async (req, res) => {
       return res.status(400).json({ error: 'content ou mediaUrl requis' });
     }
 
-    const [result] = await pool.execute(
-      `INSERT INTO message
-         (senderID, conversationID, content, type, status, sendAt,
-          mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply)
-       VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?)`,
-      [
-        senderID, id, content ?? null, type, 
-        mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
-        replyToID ?? null, replyToContent ?? null, isStatusReply,
-      ]
-    );
-
-    const msgID = result.insertId;
-
-    // Mettre à jour le résumé de la conversation
-    await pool.execute(
-      `UPDATE conversation
-       SET lastMessage = ?, lastMessageAt = NOW(),
-           lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
-       WHERE conversID = ?`,
-      [
-        content ? content.substring(0, 200) : (mediaName ?? 'Média'),
-        senderID, type, id,
-      ]
-    );
-
-    // Incrémenter unreadCount pour tous les autres participants
-    await pool.execute(
-      'UPDATE conv_participants SET unreadCount = unreadCount + 1 WHERE conversID = ? AND alanyaID != ?',
-      [id, senderID]
-    );
-
-    // Récupérer le message complet avec infos sender
-    const [rows] = await pool.execute(
-      `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar
-       FROM message m
-       JOIN users u ON m.senderID = u.alanyaID
-       WHERE m.msgID = ?`,
-      [msgID]
-    );
-
-    const msg = rows[0];
-
-    // ── Broadcast temps réel via Socket.IO ─────────────────────────────
-    const io = req.app.get('io');
-    if (io) {
-      io.to(`conversation_${id}`).emit('message:received', msg);
-
-      // Émettre aussi directement aux sockets des participants qui ne
-      // sont peut-être pas dans la room (app en arrière-plan mais connectée)
-      const userSockets = req.app.get('userSockets');
-      if (userSockets) {
-        const [participants] = await pool.execute(
-          'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-          [id, senderID]
-        );
-        for (const p of participants) {
-          const sid = userSockets.get(p.alanyaID);
-          if (sid) io.to(sid).emit('message:received', msg);
-        }
-      }
-    }
-
-    // Notification FCM data-only aux autres participants
-    const [sender] = await pool.execute(
-      'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
-    );
-    const senderName = sender[0]?.nom ?? 'Talky';
-    await notifyNewMessage(id, senderID, senderName, content, type);
+    const { msg } = await _persistAndDeliverMessage(req, id, senderID, {
+      content, type, mediaUrl, mediaName, mediaDuration,
+      replyToID, replyToContent, isStatusReply,
+    });
 
     res.json(msg);
   } catch (error) {
+    if (error.status === 403) {
+      return res.status(403).json({ error: error.message, code: error.code });
+    }
     throw error;
   }
 };
@@ -188,7 +219,7 @@ const updateMessage = async (req, res) => {
 const deleteMessage = async (req, res) => {
   try {
     const { id } = req.params;
-    const { all } = req.query; // ?all=true → supprimer pour tout le monde
+    const { all } = req.query;
     const senderID = req.user.alanyaID;
 
     const [existing] = await pool.execute(
@@ -201,13 +232,11 @@ const deleteMessage = async (req, res) => {
     }
 
     if (all === 'true') {
-      // Supprimer pour tout le monde
       await pool.execute(
         'UPDATE message SET isDeleted = 1, deletedForID = NULL WHERE msgID = ?',
         [id]
       );
     } else {
-      // Supprimer uniquement pour moi
       await pool.execute(
         'UPDATE message SET deletedForID = ? WHERE msgID = ?',
         [senderID, id]

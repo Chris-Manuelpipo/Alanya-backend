@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { getBlockPair } = require('../utils/blockUtils');
 
 // Nettoyer les URL d'avatar pour éviter les valeurs indésirables et les problèmes de sécurité
 const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
@@ -11,7 +12,7 @@ const sanitizeUrl = (url) => {
 };
 
 // Attacher les participants (avec user info) à une conversation
-async function attachParticipants(conversationRow) {
+async function attachParticipants(conversationRow, viewerId = null) {
   if (!conversationRow) return conversationRow;
   const [parts] = await pool.execute(
     `SELECT u.alanyaID, u.nom, u.pseudo, u.avatar_url,
@@ -30,13 +31,27 @@ async function attachParticipants(conversationRow) {
     is_online:   p.is_online,
     last_seen:   p.last_seen,
   }));
+
+  if (viewerId != null && !conversationRow.isGroup) {
+    const other = conversationRow.participants.find(
+      (p) => Number(p.alanyaID) !== Number(viewerId),
+    );
+    if (other) {
+      const pair = await getBlockPair(viewerId, other.alanyaID);
+      conversationRow.blockStatus = {
+        isBlocked: pair.iBlockedThem,
+        blockedByThem: pair.theyBlockedMe,
+      };
+    }
+  }
+
   return conversationRow;
 }
 
 
 // Attacher les participants à plusieurs conversations en parallèle
-async function attachParticipantsMany(rows) {
-  return Promise.all(rows.map((r) => attachParticipants(r)));
+async function attachParticipantsMany(rows, viewerId = null) {
+  return Promise.all(rows.map((r) => attachParticipants(r, viewerId)));
 }
 
 // Récupère la liste des conversations de l'utilisateur connecté, avec les infos des participants et les métadonnées de la conversation
@@ -48,16 +63,10 @@ const getConversations = async (req, res) => {
        FROM conversation c
        JOIN conv_participants cp ON c.conversID = cp.conversID
        WHERE cp.alanyaID = ?
-       AND c.conversID NOT IN (
-          SELECT cp2.conversID 
-          FROM conv_participants cp2
-          JOIN blocked b ON b.idCallerBlock = cp2.alanyaID
-          WHERE b.alanyaID = ?
-       )
        ORDER BY cp.isPinned DESC, c.lastMessageAt DESC`,
-      [alanyaID, alanyaID]
+      [alanyaID]
     );
-    const enriched = await attachParticipantsMany(rows);
+    const enriched = await attachParticipantsMany(rows, alanyaID);
     res.json(enriched);
   } catch (error) {
     throw error;
@@ -79,7 +88,7 @@ const getConversationById = async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Conversation not found' });
     }
-    const enriched = await attachParticipants(rows[0]);
+    const enriched = await attachParticipants(rows[0], alanyaID);
     res.json(enriched);
   } catch (error) {
     throw error;
@@ -105,7 +114,7 @@ const createConversation = async (req, res) => {
     );
 
     if (existing.length > 0) {
-      const enriched = await attachParticipants(existing[0]);
+      const enriched = await attachParticipants(existing[0], alanyaID);
       return res.json(enriched);
     }
 
@@ -127,7 +136,7 @@ const createConversation = async (req, res) => {
       'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
       [conversID, alanyaID]
     );
-    const enriched = await attachParticipants(rows[0]);
+    const enriched = await attachParticipants(rows[0], alanyaID);
 
     // Notifier l'autre participant en temps réel
     const io = req.app.get('io');
@@ -174,7 +183,7 @@ const createGroup = async (req, res) => {
       'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
       [conversID, alanyaID]
     );
-    const enriched = await attachParticipants(rows[0]);
+    const enriched = await attachParticipants(rows[0], alanyaID);
 
     // Notifier tous les membres du groupe en temps réel
     const io = req.app.get('io');
@@ -220,7 +229,7 @@ const updateConversation = async (req, res) => {
       'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
       [id, alanyaID]
     );
-    const enriched = await attachParticipants(rows[0]);
+    const enriched = await attachParticipants(rows[0], alanyaID);
     res.json(enriched);
   } catch (error) {
     throw error;
@@ -321,7 +330,7 @@ const addParticipants = async (req, res) => {
        WHERE c.conversID = ? AND cp.alanyaID = ?`,
       [id, alanyaID]
     );
-    const enriched = await attachParticipants(rows[0]);
+    const enriched = await attachParticipants(rows[0], alanyaID);
 
     const io = req.app.get('io');
     const userSockets = req.app.get('userSockets');

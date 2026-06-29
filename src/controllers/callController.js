@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { isBlockedEitherWay } = require('../utils/blockUtils');
  
 // Récupère l'historique des appels de l'utilisateur connecté
 const getCalls = async (req, res) => {
@@ -30,6 +31,10 @@ const createCall = async (req, res) => {
 
     if (!idReceiver) {
       return res.status(400).json({ error: 'idReceiver required' });
+    }
+
+    if (await isBlockedEitherWay(idCaller, idReceiver)) {
+      return res.status(403).json({ error: 'Appel impossible', code: 'CALL_BLOCKED' });
     }
 
     const [result] = await pool.execute(

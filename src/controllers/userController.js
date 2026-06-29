@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { getBlockPair } = require('../utils/blockUtils');
 
 const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
 const sanitizeUrl = (url) => {
@@ -12,6 +13,8 @@ const sanitizeUrl = (url) => {
 const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
+    const viewerId = req.user.alanyaID;
+    const targetId = parseInt(id, 10);
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
               u.avatar_url, u.is_online, u.last_seen,
@@ -26,7 +29,17 @@ const getUserById = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json({ ...rows[0], avatar_url: sanitizeUrl(rows[0].avatar_url) });
+    const pair = await getBlockPair(viewerId, targetId);
+    const base = { ...rows[0], avatar_url: sanitizeUrl(rows[0].avatar_url) };
+    if (pair.theyBlockedMe) {
+      return res.json({
+        ...base,
+        avatar_url: null,
+        is_online: 0,
+        last_seen: null,
+      });
+    }
+    res.json(base);
   } catch (error) {
     throw error;
   }
@@ -114,18 +127,13 @@ const unblockUser = async (req, res) => {
   }
 };
 
-// Indique si j'ai bloqué l'utilisateur ciblé (owner = moi).
+// Statut de blocage bidirectionnel entre moi et :id
 const getBlockStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
-
-    const [rows] = await pool.execute(
-      'SELECT 1 FROM blocked WHERE alanyaID = ? AND idCallerBlock = ? LIMIT 1',
-      [alanyaID, id]
-    );
-
-    res.json({ isBlocked: rows.length > 0 });
+    const pair = await getBlockPair(alanyaID, parseInt(id, 10));
+    res.json({ isBlocked: pair.iBlockedThem, blockedByThem: pair.theyBlockedMe });
   } catch (error) {
     throw error;
   }
