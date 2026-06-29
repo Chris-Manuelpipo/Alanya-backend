@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { getBlockPair } = require('../utils/blockUtils');
+const { normalize, isNumericQuery } = require('../utils/alanyaPhone');
 
 const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
 const sanitizeUrl = (url) => {
@@ -48,9 +49,10 @@ const getUserById = async (req, res) => {
 const getUserByPhone = async (req, res) => {
   try {
     const { phone } = req.params;
+    const canonical = normalize(phone);
     const [rows] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, avatar_url, is_online FROM users WHERE alanyaPhone = ?',
-      [phone]
+      'SELECT alanyaID, nom, pseudo, alanyaPhone, avatar_url, is_online FROM users WHERE alanyaPhone = ? AND exclus = 0',
+      [canonical]
     );
 
     if (rows.length === 0) {
@@ -70,16 +72,29 @@ const searchUsers = async (req, res) => {
       return res.status(400).json({ error: 'Search query required' });
     }
 
-    const [rows] = await pool.execute(
-      `SELECT alanyaID, nom, pseudo, alanyaPhone, avatar_url, is_online 
-       FROM users 
-       WHERE (nom LIKE ? OR pseudo LIKE ? OR alanyaPhone LIKE ?) 
-       AND exclus = 0
-       LIMIT 20`,
-      [`%${q}%`, `%${q}%`, `%${q}%`]
-    );
+    const trimmed = String(q).trim();
+    let rows;
 
-    res.json(rows);
+    if (isNumericQuery(trimmed)) {
+      const canonical = normalize(trimmed);
+      [rows] = await pool.execute(
+        `SELECT alanyaID, nom, pseudo, alanyaPhone, avatar_url, is_online
+         FROM users
+         WHERE alanyaPhone = ? AND exclus = 0
+         LIMIT 20`,
+        [canonical]
+      );
+    } else {
+      [rows] = await pool.execute(
+        `SELECT alanyaID, nom, pseudo, alanyaPhone, avatar_url, is_online
+         FROM users
+         WHERE (nom = ? OR pseudo = ?) AND exclus = 0
+         LIMIT 20`,
+        [trimmed, trimmed]
+      );
+    }
+
+    res.json(rows.map((u) => ({ ...u, avatar_url: sanitizeUrl(u.avatar_url) })));
   } catch (error) {
     throw error;
   }

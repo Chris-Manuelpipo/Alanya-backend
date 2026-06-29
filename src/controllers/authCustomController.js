@@ -3,6 +3,8 @@ const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { sendMail, renderHtmlEmail, escapeHtml } = require('../services/mailService');
 const { generateAccessToken, generateRefreshToken, JWT_REFRESH_SECRET } = require('../middleware/authCustom');
+const { normalize } = require('../utils/alanyaPhone');
+const { generateUniquePhone } = require('../services/alanyaPhoneService');
 
 const SALT_ROUNDS = 10;
 
@@ -55,21 +57,8 @@ const _osFromUserAgent = (ua) => {
   return null;
 };
 
-// Génèration d'un alanyaPhone unique à 6 chiffres
-const generateAlanyaPhone = async () => {
-  let alanyaPhone;
-  let attempts = 0;
-  while (attempts < 20) {
-    alanyaPhone = Math.floor(100000 + Math.random() * 900000).toString();
-    const [existing] = await pool.execute(
-      'SELECT alanyaID FROM users WHERE alanyaPhone = ?',
-      [alanyaPhone]
-    );
-    if (existing.length === 0) return alanyaPhone;
-    attempts++;
-  }
-  throw new Error('Impossible de générer un alanyaPhone unique après 20 tentatives');
-}; 
+// Génération d'un alanyaPhone unique à 8 chiffres
+const generateAlanyaPhone = async () => generateUniquePhone(8);
 
 // Création de compte 
 const register = async (req, res) => {
@@ -154,9 +143,11 @@ const login = async (req, res) => {
       return res.status(400).json({ error: 'Alanya phone et mot de passe requis' });
     }
 
+    const phoneCanonical = normalize(alanyaPhone);
+
     const [rows] = await pool.execute(
       'SELECT alanyaID, nom, pseudo, alanyaPhone, email, password, avatar_url, is_online, exclus FROM users WHERE alanyaPhone = ?',
-      [alanyaPhone]
+      [phoneCanonical]
     );
 
     if (rows.length === 0) {
