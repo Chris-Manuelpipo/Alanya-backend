@@ -59,7 +59,7 @@ const getMessages = async (req, res) => {
 const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) => {
   const {
     content, type = 0, mediaUrl, mediaName, mediaDuration,
-    replyToID, replyToContent, isStatusReply = 0,
+    replyToID, replyToContent, isStatusReply = 0, isForwarded = 0,
   } = fields;
 
   const blockEval = await evaluateDirectMessageSend(conversationID, senderID);
@@ -75,12 +75,13 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
   const [result] = await pool.execute(
     `INSERT INTO message
        (senderID, conversationID, content, type, status, sendAt,
-        mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply)
-     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?)`,
+        mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded)
+     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?)`,
     [
       senderID, conversationID, content ?? null, type,
       mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
       replyToID ?? null, replyToContent ?? null, isStatusReply,
+      isForwarded ? 1 : 0,
     ]
   );
 
@@ -148,7 +149,7 @@ const sendMessage = async (req, res) => {
     const { id } = req.params;
     const {
       content, type = 0, mediaUrl, mediaName, mediaDuration,
-      replyToID, replyToContent, isStatusReply = 0,
+      replyToID, replyToContent, isStatusReply = 0, isForwarded = 0,
     } = req.body;
     const senderID = req.user.alanyaID;
 
@@ -158,7 +159,7 @@ const sendMessage = async (req, res) => {
 
     const { msg } = await _persistAndDeliverMessage(req, id, senderID, {
       content, type, mediaUrl, mediaName, mediaDuration,
-      replyToID, replyToContent, isStatusReply,
+      replyToID, replyToContent, isStatusReply, isForwarded,
     });
 
     res.json(msg);
