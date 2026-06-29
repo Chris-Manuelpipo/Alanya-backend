@@ -81,5 +81,6 @@ module.exports = {
   _num,
   _relativeTime,
   _appName,
+  _buildUserMailFrom,
   _notifyUserAccountAction,
 };

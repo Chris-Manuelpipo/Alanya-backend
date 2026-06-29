@@ -24,6 +24,11 @@ const {
   unbanUser,
   setAccountType,
   deleteUser,
+  createUser,
+  updateUserPhone,
+  listReservedPhones,
+  addReservedPhone,
+  removeReservedPhone,
 } = require('../controllers/adminController');
 
 /**
@@ -410,6 +415,7 @@ router.delete('/groups/:id',               adminAuth, deleteGroup);
  *         description: Liste des utilisateurs
  */
 router.get('/users',                       adminAuth, getUsers);
+router.post('/users',                      adminAuth, createUser);
 
 /**
  * @swagger
@@ -565,6 +571,11 @@ router.delete('/users/:id/ban',            adminAuth, unbanUser);
  *         description: Rôle mis à jour
  */
 router.put('/users/:id/role',              adminAuth, superAdminAuth, setAccountType);
+router.put('/users/:id/phone',             adminAuth, superAdminAuth, updateUserPhone);
 router.delete('/users/:id',                adminAuth, superAdminAuth, deleteUser);
+
+router.get('/reserved-alanya-phones',      adminAuth, superAdminAuth, listReservedPhones);
+router.post('/reserved-alanya-phones',     adminAuth, superAdminAuth, addReservedPhone);
+router.delete('/reserved-alanya-phones/:phone', adminAuth, superAdminAuth, removeReservedPhone);
 
 module.exports = router;
