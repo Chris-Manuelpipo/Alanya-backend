@@ -1,5 +1,5 @@
 const pool = require('../config/db');
-const { getBlockPair } = require('../utils/blockUtils');
+const { getBlockPair, maskPresenceIfBlocked } = require('../utils/blockUtils');
 
 // Nettoyer les URL d'avatar pour éviter les valeurs indésirables et les problèmes de sécurité
 const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
@@ -22,28 +22,32 @@ async function attachParticipants(conversationRow, viewerId = null) {
      WHERE cp.conversID = ?`,
     [conversationRow.conversID]
   );
-  conversationRow.participants = parts.map((p) => ({
-    alanyaID:    p.alanyaID,
-    nom:         p.nom,
-    pseudo:      p.pseudo,
-    avatar_url:  sanitizeUrl(p.avatar_url),    
-    alanyaPhone: p.alanyaPhone,
-    is_online:   p.is_online,
-    last_seen:   p.last_seen,
-  }));
 
-  if (viewerId != null && !conversationRow.isGroup) {
-    const other = conversationRow.participants.find(
-      (p) => Number(p.alanyaID) !== Number(viewerId),
+  const participants = [];
+  for (const p of parts) {
+    const masked = await maskPresenceIfBlocked(
+      viewerId, p.alanyaID, p.is_online, p.last_seen,
     );
-    if (other) {
-      const pair = await getBlockPair(viewerId, other.alanyaID);
+    participants.push({
+      alanyaID:    p.alanyaID,
+      nom:         p.nom,
+      pseudo:      p.pseudo,
+      avatar_url:  sanitizeUrl(p.avatar_url),
+      alanyaPhone: p.alanyaPhone,
+      is_online:   masked.is_online,
+      last_seen:   masked.last_seen,
+    });
+
+    if (viewerId != null && !conversationRow.isGroup
+        && Number(p.alanyaID) !== Number(viewerId)) {
+      const pair = await getBlockPair(viewerId, p.alanyaID);
       conversationRow.blockStatus = {
         isBlocked: pair.iBlockedThem,
         blockedByThem: pair.theyBlockedMe,
       };
     }
   }
+  conversationRow.participants = participants;
 
   return conversationRow;
 }

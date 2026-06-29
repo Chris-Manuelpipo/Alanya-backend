@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy, getDirectConversationPeer } = require('../../utils/blockUtils');
+const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy, getDirectConversationPeer, emitPresenceUpdate } = require('../../utils/blockUtils');
 
 const joinConversation = (io, socket, userSockets) => {
   socket.on('join_conversation', async (data) => {
@@ -273,7 +273,7 @@ const presenceOnline = (io, socket, userSockets) => {
       console.warn('[Socket presence:online] DB update failed:', e.message);
     }
 
-    io.emit('presence:updated', {
+    await emitPresenceUpdate(io, userID, {
       userID: Number(userID),
       online: true,
       lastSeen: new Date().toISOString(),
@@ -297,7 +297,7 @@ const presenceOffline = (io, socket, userSockets) => {
       console.warn('[Socket presence:offline] DB update failed:', e.message);
     }
 
-    io.emit('presence:updated', {
+    await emitPresenceUpdate(io, userID, {
       userID: Number(userID),
       online: false,
       lastSeen: new Date().toISOString(),
@@ -340,7 +340,7 @@ const handleDisconnect = async (io, socket, userSockets) => {
     console.warn('[Socket disconnect] DB update failed:', e.message);
   }
 
-  io.emit('presence:updated', {
+  await emitPresenceUpdate(io, userID, {
     userID: Number(userID),
     online: false,
     lastSeen: new Date().toISOString(),

@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { maskPresenceIfBlocked } = require('../utils/blockUtils');
 
 const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
 const sanitizeUrl = (url) => {
@@ -32,17 +33,23 @@ const getPreferredContacts = async (req, res) => {
       [alanyaID]
     );
 
-    const contacts = rows.map(r => ({
-      idPrefContact: r.idPrefContact,
-      addedAt:       r.created_at,
-      alanyaID:      r.alanyaID,
-      nom:           r.nom,
-      pseudo:        r.pseudo,
-      alanyaPhone:   r.alanyaPhone,
-      avatar_url:    sanitizeUrl(r.avatar_url),
-      is_online:     r.is_online,
-      last_seen:     r.last_seen,
-    }));
+    const contacts = [];
+    for (const r of rows) {
+      const masked = await maskPresenceIfBlocked(
+        alanyaID, r.alanyaID, r.is_online, r.last_seen,
+      );
+      contacts.push({
+        idPrefContact: r.idPrefContact,
+        addedAt:       r.created_at,
+        alanyaID:      r.alanyaID,
+        nom:           r.nom,
+        pseudo:        r.pseudo,
+        alanyaPhone:   r.alanyaPhone,
+        avatar_url:    sanitizeUrl(r.avatar_url),
+        is_online:     masked.is_online,
+        last_seen:     masked.last_seen,
+      });
+    }
 
     res.json(contacts);
   } catch (error) {

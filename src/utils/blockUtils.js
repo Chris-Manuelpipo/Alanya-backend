@@ -90,6 +90,31 @@ const shouldSuppressDirectInteraction = async (conversationID, fromUserId, toUse
   return isBlockedEitherWay(fromUserId, toUserId);
 };
 
+/** Masque is_online / last_seen si subjectId a bloqué viewerId */
+const maskPresenceIfBlocked = async (viewerId, subjectId, isOnline, lastSeen) => {
+  if (viewerId == null || Number(viewerId) === Number(subjectId)) {
+    return { is_online: isOnline, last_seen: lastSeen };
+  }
+  if (await isBlockedBy(subjectId, viewerId)) {
+    return { is_online: 0, last_seen: null };
+  }
+  return { is_online: isOnline, last_seen: lastSeen };
+};
+
+/** Ne pas notifier la présence aux utilisateurs bloqués par subjectUserId */
+const emitPresenceUpdate = async (io, subjectUserId, payload) => {
+  const [blocked] = await pool.execute(
+    'SELECT idCallerBlock FROM blocked WHERE alanyaID = ?',
+    [subjectUserId],
+  );
+  const exceptRooms = blocked.map((r) => `user_${r.idCallerBlock}`);
+  if (exceptRooms.length > 0) {
+    io.except(exceptRooms).emit('presence:updated', payload);
+  } else {
+    io.emit('presence:updated', payload);
+  }
+};
+
 module.exports = {
   isBlockedBy,
   isBlockedEitherWay,
@@ -98,4 +123,6 @@ module.exports = {
   getDirectConversationPeer,
   evaluateDirectMessageSend,
   shouldSuppressDirectInteraction,
+  maskPresenceIfBlocked,
+  emitPresenceUpdate,
 };
