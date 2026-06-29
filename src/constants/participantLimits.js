@@ -1,5 +1,5 @@
 const MAX_VIDEO_PARTICIPANTS = 4;
-const MAX_AUDIO_PARTICIPANTS = 5;
+const MAX_AUDIO_PARTICIPANTS = 8;
 
 function maxParticipants(isVideo) {
   return isVideo ? MAX_VIDEO_PARTICIPANTS : MAX_AUDIO_PARTICIPANTS;
