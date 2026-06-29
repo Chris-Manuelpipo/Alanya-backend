@@ -348,8 +348,8 @@ const joinGroupCall = (io, socket, userSockets) => {
         userPhoto: userPhoto || null,
       });
 
-      const participants = Array.from(getRoomParticipants(room).keys()).map(String);
-      socket.emit('group_participants', { roomId, participants });
+      const participantIds = Array.from(participants.keys()).map(String);
+      socket.emit('group_participants', { roomId, participants: participantIds });
     } catch (error) {
       console.error('[Socket join_group_call]', error.message);
     }

@@ -6,6 +6,22 @@ const { generateAccessToken, generateRefreshToken, JWT_REFRESH_SECRET } = requir
 
 const SALT_ROUNDS = 10;
 
+const _selectUserWithPays = `
+  SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.idPays,
+         u.avatar_url, u.type_compte, u.is_online, u.last_seen,
+         p.libelle AS pays_libelle, p.prefix AS pays_prefix
+  FROM users u
+  LEFT JOIN pays p ON u.idPays = p.idPays
+  WHERE u.alanyaID = ?
+`;
+
+const countryExists = async (idPays) => {
+  const id = Number(idPays);
+  if (!Number.isFinite(id) || id <= 0) return false;
+  const [rows] = await pool.execute('SELECT idPays FROM pays WHERE idPays = ?', [id]);
+  return rows.length > 0;
+};
+
 // Journalise une connexion (login, inscription, refresh) dans userAccess.
 // Best-effort : ne fait jamais échouer la requête appelante.
 // `device` doit être un libellé lisible (marque + modèle, ex. "Samsung SM-A715F").
@@ -84,6 +100,11 @@ const register = async (req, res) => {
     const alanyaPhone = await generateAlanyaPhone();
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
 
+    const resolvedIdPays = idPays != null ? Number(idPays) : 10;
+    if (!(await countryExists(resolvedIdPays))) {
+      return res.status(400).json({ error: 'Pays invalide' });
+    }
+
     const [result] = await pool.execute(
       `INSERT INTO users
         (nom, pseudo, alanyaPhone, email, password, idPays, avatar_url,
@@ -95,7 +116,7 @@ const register = async (req, res) => {
         alanyaPhone,
         email.toLowerCase().trim(),
         hashedPassword,
-        idPays     || 10,
+        resolvedIdPays,
         'NON DEFINI',
         fcm_token  || 'INDEFINI',
         device_ID  || 'INDEFINI',
@@ -449,10 +470,7 @@ const resetPassword = async (req, res) => {
 // Profil de l'utilisateur connecté
 const getMe = async (req, res) => {
   try {
-    const [rows] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, email, idPays, avatar_url, type_compte, is_online, last_seen FROM users WHERE alanyaID = ?',
-      [req.user.alanyaID]
-    );
+    const [rows] = await pool.execute(_selectUserWithPays, [req.user.alanyaID]);
 
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
@@ -497,7 +515,13 @@ const updateMe = async (req, res) => {
     if (avatar_url){ updates.push('avatar_url = ?'); values.push(avatar_url); }
     if (fcm_token) { updates.push('fcm_token = ?');  values.push(fcm_token); }
     if (device_ID) { updates.push('device_ID = ?');  values.push(device_ID); }
-    if (idPays)    { updates.push('idPays = ?');     values.push(idPays); }
+    if (idPays != null) {
+      if (!(await countryExists(idPays))) {
+        return res.status(400).json({ error: 'Pays invalide' });
+      }
+      updates.push('idPays = ?');
+      values.push(Number(idPays));
+    }
     if (is_online !== undefined) {
       updates.push('is_online = ?, last_seen = NOW()');
       values.push(is_online ? 1 : 0);
@@ -513,10 +537,7 @@ const updateMe = async (req, res) => {
       values
     );
 
-    const [rows] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, email, idPays, avatar_url, is_online FROM users WHERE alanyaID = ?',
-      [req.user.alanyaID]
-    );
+    const [rows] = await pool.execute(_selectUserWithPays, [req.user.alanyaID]);
 
     res.json(rows[0]);
   } catch (error) {
