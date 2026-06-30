@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { updateMessage, deleteMessage } = require('../controllers/messageController');
+const { updateMessage, deleteMessage, pinMessage } = require('../controllers/messageController');
 
 /**
  * @swagger
@@ -53,5 +53,6 @@ const { updateMessage, deleteMessage } = require('../controllers/messageControll
  */
 router.put('/:id', auth, updateMessage);
 router.delete('/:id', auth, deleteMessage);
+router.patch('/:id/pin', auth, pinMessage);
 
 module.exports = router;
