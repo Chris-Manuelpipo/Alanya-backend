@@ -5,11 +5,11 @@
 -- =============================================================
 
 -- Création de la base de données
-CREATE DATABASE IF NOT EXISTS talky
+CREATE DATABASE IF NOT EXISTS alanyBD2027
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
 
-USE talky;
+USE alanyBD2027;
 
 -- =============================================================
 --  1. PAYS (référentiel)

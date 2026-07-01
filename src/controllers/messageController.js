@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
+const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
 
@@ -94,7 +95,7 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
            lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
        WHERE conversID = ?`,
       [
-        content ? content.substring(0, 200) : (mediaName ?? 'Média'),
+        resolveLastMessagePreview({ content, mediaName, type }),
         senderID, type, conversationID,
       ]
     );

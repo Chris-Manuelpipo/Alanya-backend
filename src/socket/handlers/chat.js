@@ -1,5 +1,6 @@
 const pool = require('../../config/db');
 const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy, getDirectConversationPeer, emitPresenceUpdate } = require('../../utils/blockUtils');
+const { resolveLastMessagePreview } = require('../../utils/mediaAlbum');
 
 const joinConversation = (io, socket, userSockets) => {
   socket.on('join_conversation', async (data) => {
@@ -66,7 +67,7 @@ const messageSend = (io, socket, userSockets) => {
                lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
            WHERE conversID = ?`,
           [
-            content ? content.substring(0, 200) : (mediaName ?? 'Média'),
+            resolveLastMessagePreview({ content, mediaName, type }),
             senderID, type, conversationID,
           ]
         );
