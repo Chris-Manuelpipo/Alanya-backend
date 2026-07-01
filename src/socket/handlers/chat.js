@@ -25,7 +25,7 @@ const messageSend = (io, socket, userSockets) => {
         });
       }
 
-      const { conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, clientId } = data;
+      const { conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0, clientId } = data;
       const senderID = socket.alanyaID; // !! Utiliser l'ID du socket authentifié
 
       if (!conversationID || (!content && !mediaUrl)) {
@@ -47,13 +47,13 @@ const messageSend = (io, socket, userSockets) => {
       const [result] = await pool.execute(
         `INSERT INTO message
            (senderID, conversationID, content, type, status, sendAt,
-            mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded)
-         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?)`,
+            mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
+         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           senderID, conversationID, content ?? null, type,
           mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
           replyToID ?? null, replyToContent ?? null, isStatusReply,
-          isForwarded ? 1 : 0,
+          isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
         ]
       );
 
