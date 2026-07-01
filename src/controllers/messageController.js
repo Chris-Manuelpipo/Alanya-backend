@@ -261,9 +261,67 @@ const deleteMessage = async (req, res) => {
   }
 };
 
+const pinMessage = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const alanyaID = req.user.alanyaID;
+    const pinned =
+      req.body.isPinned === 1 ||
+      req.body.isPinned === true ||
+      req.body.isPinned === '1';
+
+    const [existing] = await pool.execute(
+      'SELECT conversationID FROM message WHERE msgID = ? AND isDeleted = 0',
+      [id]
+    );
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'Message introuvable' });
+    }
+    const conversationID = existing[0].conversationID;
+
+    // L'utilisateur doit être participant de la conversation pour (dés)épingler.
+    const [member] = await pool.execute(
+      'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+      [conversationID, alanyaID]
+    );
+    if (member.length === 0) {
+      return res.status(403).json({ error: 'Non autorisé' });
+    }
+
+    if (pinned) {
+      await pool.execute(
+        'UPDATE message SET isPinned = 1, pinnedAt = NOW(), pinnedBy = ? WHERE msgID = ?',
+        [alanyaID, id]
+      );
+    } else {
+      await pool.execute(
+        'UPDATE message SET isPinned = 0, pinnedAt = NULL, pinnedBy = NULL WHERE msgID = ?',
+        [id]
+      );
+    }
+
+    const payload = {
+      msgID: parseInt(id),
+      conversationID,
+      isPinned: pinned ? 1 : 0,
+      pinnedBy: pinned ? alanyaID : null,
+    };
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`conversation_${conversationID}`).emit('message:pinned', payload);
+    }
+
+    res.json(payload);
+  } catch (error) {
+    throw error;
+  }
+};
+
 module.exports = {
   getMessages,
   sendMessage,
   updateMessage,
   deleteMessage,
+  pinMessage,
 };
