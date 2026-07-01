@@ -1,4 +1,3 @@
-
 const pool = require('../../config/db');
 const { notifyIncomingCall, notifyGroupCall, notifyCallEnded } = require('../../services/notificationService');
 const { maxParticipants, maxInvitees } = require('../../constants/participantLimits');
@@ -482,6 +481,52 @@ const groupIceCandidate = (io, socket, userSockets) => {
   });
 };
 
+//  ÉTAT MICRO (MUTE) 
+
+// Appel 1-à-1 : relaie l'état micro vers le destinataire.
+// Le userId est estampillé côté serveur (socket.alanyaID) : source fiable,
+// impossible à usurper par le payload client.
+const callMuteState = (io, socket, userSockets) => {
+  socket.on('call:mute_state', (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const { toUserId, isMuted } = data || {};
+      const targetID = toInt(toUserId);
+      if (!targetID) return;
+
+      const targetSocketId = userSockets.get(targetID);
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('call:mute_state', {
+          userId:  String(socket.alanyaID),
+          isMuted: !!isMuted,
+        });
+      }
+    } catch (error) {
+      console.error('[Socket call:mute_state]', error.message);
+    }
+  });
+};
+
+// Appel de groupe : diffuse l'état micro à tous les autres participants de la
+// room (l'émetteur est exclu via `socket.to`).
+const groupMuteState = (io, socket, userSockets) => {
+  socket.on('group:mute_state', (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const rId = (data && data.roomId) || socket.currentGroupRoom;
+      if (!rId) return;
+
+      socket.to(`group_${rId}`).emit('group:mute_state', {
+        roomId:  rId,
+        userId:  String(socket.alanyaID),
+        isMuted: !!(data && data.isMuted),
+      });
+    } catch (error) {
+      console.error('[Socket group:mute_state]', error.message);
+    }
+  });
+};
+
 module.exports = {
   callUser,
   answerCall,
@@ -495,4 +540,6 @@ module.exports = {
   groupOffer,
   groupAnswer,
   groupIceCandidate,
+  callMuteState,
+  groupMuteState,
 };

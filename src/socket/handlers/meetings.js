@@ -245,6 +245,28 @@ const meetingIceCandidate = (io, socket, userSockets) => {
   });
 };
 
+// État micro (mute) : diffuse à tous les autres participants de la réunion.
+// L'émetteur est exclu via `socket.to`. Le userId provient de socket.alanyaID
+// (fiable), le meetingID de socket.currentMeetingID en priorité.
+const meetingMuteState = (io, socket, userSockets) => {
+  socket.on('meeting:mute_state', (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const mID = socket.currentMeetingID
+        || toInt(data && (data.meetingId ?? data.meetingID));
+      if (!mID) return;
+
+      socket.to(`meeting_${mID}`).emit('meeting:mute_state', {
+        meetingID: mID,
+        userId:    String(socket.alanyaID),
+        isMuted:   !!(data && data.isMuted),
+      });
+    } catch (error) {
+      console.error('[Socket meeting:mute_state]', error.message);
+    }
+  });
+};
+
 module.exports = {
   meetingCreate,
   meetingJoinRoom,     
@@ -258,4 +280,5 @@ module.exports = {
   meetingOffer,
   meetingAnswer,
   meetingIceCandidate,
+  meetingMuteState,
 };
