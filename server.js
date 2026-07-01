@@ -28,11 +28,14 @@ const meetingRoutes      = require('./src/routes/meetings');
 const notifyRoutes       = require('./src/routes/notify');
 const uploadRoutes       = require('./src/routes/upload');
 const contactRoutes      = require('./src/routes/contacts');
+const turnRoutes         = require('./src/routes/turn');
+const adminRoutes        = require('./src/routes/admin');
 
 // ── Socket handlers ───────────────────────────────────────────────────
 const socketAuth = require('./src/socket/handlers/auth');
 const {
   joinConversation, messageSend, typingStart, typingStop,
+  messageDelivered, messageRead,
   presenceOnline, presenceOffline, handleDisconnect,
 } = require('./src/socket/handlers/chat');
 
@@ -40,6 +43,7 @@ const {
   callUser, answerCall, rejectCall, iceCandidate, endCall,
   createGroupCall, joinGroupCall, leaveGroupCall, endGroupCall,
   groupOffer, groupAnswer, groupIceCandidate,
+  callMuteState, groupMuteState,
 } = require('./src/socket/handlers/calls');
 
 const {
@@ -47,6 +51,7 @@ const {
   meetingJoinAccept, meetingJoinDecline,
   meetingStart, meetingEnd, meetingChat,
   meetingLeave, meetingOffer, meetingAnswer, meetingIceCandidate,
+  meetingMuteState,
 } = require('./src/socket/handlers/meetings');
 
 const { startMeetingScheduler, stopMeetingScheduler } = require('./src/services/meetingScheduler');
@@ -60,6 +65,7 @@ const io     = new Server(server, {
 
 const userSockets = new Map();
 
+app.set('trust proxy', 1);
 app.set('io', io);
 app.set('userSockets', userSockets);
 
@@ -83,6 +89,8 @@ app.use('/api/calls',         callRoutes);
 app.use('/api/meetings',      meetingRoutes);
 app.use('/api/upload',        uploadRoutes);
 app.use('/api/contacts',      contactRoutes);
+app.use('/api/turn',          turnRoutes);
+app.use('/api/admin',         adminRoutes);
 app.use('/notify',            notifyRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'Serveur ok', timestamp: new Date().toISOString() }));
@@ -102,6 +110,8 @@ io.on('connection', (socket) => {
   messageSend(io, socket, userSockets);
   typingStart(io, socket, userSockets);
   typingStop(io, socket, userSockets);
+  messageDelivered(io, socket, userSockets);
+  messageRead(io, socket, userSockets);
   callUser(io, socket, userSockets);
   answerCall(io, socket, userSockets);
   rejectCall(io, socket, userSockets);
@@ -114,6 +124,8 @@ io.on('connection', (socket) => {
   groupOffer(io, socket, userSockets);
   groupAnswer(io, socket, userSockets);
   groupIceCandidate(io, socket, userSockets);
+  callMuteState(io, socket, userSockets);
+  groupMuteState(io, socket, userSockets);
   meetingCreate(io, socket, userSockets);
   meetingJoinRoom(io, socket, userSockets);
   meetingJoinRequest(io, socket, userSockets);
@@ -126,6 +138,7 @@ io.on('connection', (socket) => {
   meetingOffer(io, socket, userSockets);
   meetingAnswer(io, socket, userSockets);
   meetingIceCandidate(io, socket, userSockets);
+  meetingMuteState(io, socket, userSockets);
 
   socket.on('disconnect', async () => {
     console.log('[Socket] Client déconnecté:', socket.id);
