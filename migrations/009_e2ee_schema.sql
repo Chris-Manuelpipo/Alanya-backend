@@ -10,7 +10,7 @@
 -- MySQL 8 ne supporte pas `ADD COLUMN IF NOT EXISTS` : si la colonne existe
 -- déjà, ignorer l'erreur 1060 (Duplicate column name) à l'exécution.
 
-USE talky;
+USE alanyBD2027;
 
 -- =============================================================
 --  1. USERS — vault_salt (sel de dérivation de la clé de coffre)

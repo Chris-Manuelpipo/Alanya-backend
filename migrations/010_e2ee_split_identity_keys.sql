@@ -12,7 +12,7 @@
 -- MySQL 8 ne supporte pas `ADD COLUMN IF NOT EXISTS` / `DROP COLUMN IF EXISTS` :
 -- si la colonne existe déjà / n'existe plus, ignorer l'erreur 1060/1091.
 
-USE talky;
+USE alanyBD2027;
 
 ALTER TABLE prekey_bundles
   ADD COLUMN identity_key_dh   VARBINARY(255) NULL AFTER alanyaID,
