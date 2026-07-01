@@ -1,8 +1,27 @@
 const pool = require('../config/db');
+const fs = require('fs');
+const path = require('path');
 const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
+
+/// Supprime physiquement un fichier média à partir de son URL publique
+/// (`.../uploads/images/x.jpg` ou `.../uploads/media/<sous-dossier>/x`).
+/// Best-effort : toute erreur est ignorée (fichier déjà absent, etc.).
+const deleteMediaFile = (mediaUrl) => {
+  try {
+    if (!mediaUrl) return;
+    const marker = '/uploads/';
+    const idx = mediaUrl.indexOf(marker);
+    if (idx === -1) return;
+    const relative = mediaUrl.substring(idx + marker.length);
+    const filePath = path.join(__dirname, '../../uploads', relative);
+    fs.unlink(filePath, () => {});
+  } catch (_) {
+    /* ignore */
+  }
+};
 
 const getMessages = async (req, res) => {
   try {
@@ -14,7 +33,9 @@ const getMessages = async (req, res) => {
       SELECT m.*,
              u.nom        AS sender_nom,
              u.pseudo     AS sender_pseudo,
-             u.avatar_url AS sender_avatar
+             u.avatar_url AS sender_avatar,
+             (SELECT COUNT(*) FROM message_views mv
+               WHERE mv.msgID = m.msgID AND mv.alanyaID = ?) AS viewedByMe
       FROM message m
       JOIN users u ON m.senderID = u.alanyaID
       WHERE m.conversationID = ?
@@ -28,7 +49,7 @@ const getMessages = async (req, res) => {
             AND m.sendAt >= b.dateBlock
         )
     `;
-    const params = [id, alanyaID, alanyaID, alanyaID];
+    const params = [alanyaID, id, alanyaID, alanyaID, alanyaID];
 
     if (before) {
       query += ' AND m.msgID < ?';
@@ -39,6 +60,13 @@ const getMessages = async (req, res) => {
     params.push(parseInt(limit) || 50);
 
     const [rows] = await pool.query(query, params);
+
+    // Média vue unique déjà consulté par cet utilisateur → on n'expose plus l'URL.
+    for (const r of rows) {
+      if (r.isViewOnce && r.viewedByMe > 0 && r.senderID !== alanyaID) {
+        r.mediaUrl = null;
+      }
+    }
 
     await pool.execute(
       `UPDATE message SET status = 3, readAt = NOW()
@@ -59,7 +87,7 @@ const getMessages = async (req, res) => {
 const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) => {
   const {
     content, type = 0, mediaUrl, mediaName, mediaDuration,
-    replyToID, replyToContent, isStatusReply = 0, isForwarded = 0,
+    replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
   } = fields;
 
   const blockEval = await evaluateDirectMessageSend(conversationID, senderID);
@@ -75,13 +103,13 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
   const [result] = await pool.execute(
     `INSERT INTO message
        (senderID, conversationID, content, type, status, sendAt,
-        mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded)
-     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?)`,
+        mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
+     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       senderID, conversationID, content ?? null, type,
       mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
       replyToID ?? null, replyToContent ?? null, isStatusReply,
-      isForwarded ? 1 : 0,
+      isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
     ]
   );
 
@@ -149,7 +177,7 @@ const sendMessage = async (req, res) => {
     const { id } = req.params;
     const {
       content, type = 0, mediaUrl, mediaName, mediaDuration,
-      replyToID, replyToContent, isStatusReply = 0, isForwarded = 0,
+      replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
     } = req.body;
     const senderID = req.user.alanyaID;
 
@@ -159,7 +187,7 @@ const sendMessage = async (req, res) => {
 
     const { msg } = await _persistAndDeliverMessage(req, id, senderID, {
       content, type, mediaUrl, mediaName, mediaDuration,
-      replyToID, replyToContent, isStatusReply, isForwarded,
+      replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce,
     });
 
     res.json(msg);
@@ -317,10 +345,75 @@ const pinMessage = async (req, res) => {
   }
 };
 
+const markMessageViewed = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const alanyaID = req.user.alanyaID;
+
+    const [rows] = await pool.execute(
+      'SELECT * FROM message WHERE msgID = ? AND isViewOnce = 1 AND isDeleted = 0',
+      [id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Média à vue unique introuvable' });
+    }
+    const msg = rows[0];
+    const conversationID = msg.conversationID;
+
+    // L'expéditeur ne « consomme » pas sa propre vue unique.
+    if (msg.senderID === alanyaID) {
+      return res.json({ msgID: parseInt(id), viewed: false, self: true });
+    }
+
+    // L'utilisateur doit être participant.
+    const [member] = await pool.execute(
+      'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+      [conversationID, alanyaID]
+    );
+    if (member.length === 0) {
+      return res.status(403).json({ error: 'Non autorisé' });
+    }
+
+    // Enregistre la vue (idempotent).
+    await pool.execute(
+      'INSERT IGNORE INTO message_views (msgID, alanyaID, viewedAt) VALUES (?, ?, NOW())',
+      [id, alanyaID]
+    );
+
+    // Tous les destinataires ont-ils vu ? → suppression physique du fichier.
+    const [[{ recipients }]] = await pool.execute(
+      'SELECT COUNT(*) AS recipients FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+      [conversationID, msg.senderID]
+    );
+    const [[{ viewers }]] = await pool.execute(
+      'SELECT COUNT(*) AS viewers FROM message_views WHERE msgID = ?',
+      [id]
+    );
+    if (recipients > 0 && viewers >= recipients) {
+      deleteMediaFile(msg.mediaUrl);
+      await pool.execute('UPDATE message SET mediaUrl = NULL WHERE msgID = ?', [id]);
+    }
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`conversation_${conversationID}`).emit('message:viewed', {
+        msgID: parseInt(id),
+        conversationID,
+        viewerID: alanyaID,
+      });
+    }
+
+    res.json({ msgID: parseInt(id), viewed: true });
+  } catch (error) {
+    throw error;
+  }
+};
+
 module.exports = {
   getMessages,
   sendMessage,
   updateMessage,
   deleteMessage,
   pinMessage,
+  markMessageViewed,
 };
