@@ -34,8 +34,7 @@ const getMessages = async (req, res) => {
              u.nom        AS sender_nom,
              u.pseudo     AS sender_pseudo,
              u.avatar_url AS sender_avatar,
-             (SELECT COUNT(*) FROM message_views mv
-               WHERE mv.msgID = m.msgID AND mv.alanyaID = ?) AS viewedByMe
+             (m.viewedAt IS NOT NULL) AS viewedByMe
       FROM message m
       JOIN users u ON m.senderID = u.alanyaID
       WHERE m.conversationID = ?
@@ -49,7 +48,7 @@ const getMessages = async (req, res) => {
             AND m.sendAt >= b.dateBlock
         )
     `;
-    const params = [alanyaID, id, alanyaID, alanyaID, alanyaID];
+    const params = [id, alanyaID, alanyaID, alanyaID];
 
     if (before) {
       query += ' AND m.msgID < ?';
@@ -374,25 +373,10 @@ const markMessageViewed = async (req, res) => {
       return res.status(403).json({ error: 'Non autorisé' });
     }
 
-    // Enregistre la vue (idempotent).
-    await pool.execute(
-      'INSERT IGNORE INTO message_views (msgID, alanyaID, viewedAt) VALUES (?, ?, NOW())',
-      [id, alanyaID]
-    );
-
-    // Tous les destinataires ont-ils vu ? → suppression physique du fichier.
-    const [[{ recipients }]] = await pool.execute(
-      'SELECT COUNT(*) AS recipients FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-      [conversationID, msg.senderID]
-    );
-    const [[{ viewers }]] = await pool.execute(
-      'SELECT COUNT(*) AS viewers FROM message_views WHERE msgID = ?',
-      [id]
-    );
-    if (recipients > 0 && viewers >= recipients) {
-      deleteMediaFile(msg.mediaUrl);
-      await pool.execute('UPDATE message SET mediaUrl = NULL WHERE msgID = ?', [id]);
-    }
+    // Vue unique en 1-1 : un seul destinataire ⇒ dès qu'il a vu, on marque
+    // consommé et on supprime physiquement le fichier.
+    await pool.execute('UPDATE message SET viewedAt = NOW(), mediaUrl = NULL WHERE msgID = ?', [id]);
+    deleteMediaFile(msg.mediaUrl);
 
     const io = req.app.get('io');
     if (io) {
