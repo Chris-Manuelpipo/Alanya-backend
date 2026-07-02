@@ -351,6 +351,18 @@ const leaveGroup = async (req, res) => {
     if (remaining.length === 0) {
       await pool.execute('DELETE FROM message WHERE conversationID = ?', [id]);
       await pool.execute('DELETE FROM conversation WHERE conversID = ?', [id]);
+    } else {
+      // Départ volontaire = seul déclencheur de rotation des sender keys E2EE
+      // (l'app n'a pas de notion d'admin/retrait forcé). Les membres restants
+      // doivent régénérer + redistribuer leur sender key pour ce groupe.
+      const io = req.app.get('io');
+      const userSockets = req.app.get('userSockets');
+      if (io && userSockets) {
+        for (const p of remaining) {
+          const sid = userSockets.get(Number(p.alanyaID));
+          if (sid) io.to(sid).emit('group:member_removed', { conversationID: Number(id), removedUserId: alanyaID });
+        }
+      }
     }
 
     res.json({ message: 'Left group' });

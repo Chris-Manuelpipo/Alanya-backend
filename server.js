@@ -37,7 +37,7 @@ const socketAuth = require('./src/socket/handlers/auth');
 const {
   joinConversation, messageSend, typingStart, typingStop,
   messageDelivered, messageRead,
-  presenceOnline, presenceOffline, handleDisconnect,
+  presenceOnline, presenceOffline, groupKeyDistribution, handleDisconnect,
 } = require('./src/socket/handlers/chat');
 
 const {
@@ -112,6 +112,7 @@ io.on('connection', (socket) => {
   typingStop(io, socket, userSockets);
   messageDelivered(io, socket, userSockets);
   messageRead(io, socket, userSockets);
+  groupKeyDistribution(io, socket, userSockets);
   callUser(io, socket, userSockets);
   answerCall(io, socket, userSockets);
   rejectCall(io, socket, userSockets);

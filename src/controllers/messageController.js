@@ -42,11 +42,17 @@ const getMessages = async (req, res) => {
       [id, alanyaID]
     );
 
-    // Les colonnes binaires (ciphertext/archive_blob) reviennent en Buffer :
-    // encodage base64 pour un transport JSON homogène avec le WebSocket.
+    // Les colonnes binaires (ciphertext/archive_blob/dr_nonce) reviennent en
+    // Buffer : encodage base64 pour un transport JSON homogène avec le
+    // WebSocket. `dr_nonce`/`dr_header` → `nonce`/`header` (mêmes clés que
+    // celles envoyées à l'émission, cf. socket/handlers/chat.js).
     for (const row of rows) {
       if (row.ciphertext)   row.ciphertext   = row.ciphertext.toString('base64');
       if (row.archive_blob) row.archive_blob = row.archive_blob.toString('base64');
+      row.nonce = row.dr_nonce ? row.dr_nonce.toString('base64') : undefined;
+      row.header = row.dr_header ?? undefined;
+      delete row.dr_nonce;
+      delete row.dr_header;
     }
 
     res.json(rows.reverse());
@@ -61,7 +67,7 @@ const sendMessage = async (req, res) => {
     const {
       content, type = 0, mediaUrl, mediaName, mediaDuration,
       replyToID, replyToContent, isStatusReply = 0,
-      ciphertext, archiveBlob, signalMessageType,
+      ciphertext, archiveBlob, signalMessageType, nonce, header,
     } = req.body;
     const senderID = req.user.alanyaID;
     const isEncrypted = !!ciphertext;
@@ -70,40 +76,24 @@ const sendMessage = async (req, res) => {
       return res.status(400).json({ error: 'content, mediaUrl ou ciphertext requis' });
     }
 
-    // Le chiffrement E2EE (Double Ratchet 1-à-1) ne couvre que les
-    // conversations privées : pas de sender keys de groupe pour l'instant.
-    if (isEncrypted) {
-      const [convRows] = await pool.execute(
-        'SELECT isGroup FROM conversation WHERE conversID = ?',
-        [id]
-      );
-      if (convRows.length === 0) {
-        return res.status(404).json({ error: 'Conversation introuvable' });
-      }
-      if (convRows[0].isGroup) {
-        return res.status(400).json({
-          error: 'Le chiffrement E2EE n\'est pas encore supporté pour les groupes',
-          code: 'E2EE_GROUP_UNSUPPORTED',
-        });
-      }
-    }
-
-    // Le serveur ne lit jamais l'intérieur de ciphertext/archive_blob : ce
-    // sont des blobs opaques chiffrés côté client (voir ARCHITECTURE.md §1).
+    // Le serveur ne lit jamais l'intérieur de ciphertext/archive_blob/nonce/
+    // header : ce sont des données opaques du protocole (voir ARCHITECTURE.md §1).
     const ciphertextBuf  = isEncrypted ? Buffer.from(ciphertext, 'base64') : null;
     const archiveBlobBuf = archiveBlob ? Buffer.from(archiveBlob, 'base64') : null;
+    const nonceBuf       = nonce ? Buffer.from(nonce, 'base64') : null;
 
     const [result] = await pool.execute(
       `INSERT INTO message
          (senderID, conversationID, content, type, status, sendAt,
           mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply,
-          ciphertext, archive_blob, signal_message_type)
-       VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ciphertext, archive_blob, signal_message_type, dr_nonce, dr_header)
+       VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         senderID, id, isEncrypted ? null : (content ?? null), type,
         mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
         replyToID ?? null, replyToContent ?? null, isStatusReply,
         ciphertextBuf, archiveBlobBuf, isEncrypted ? (signalMessageType ?? 2) : null,
+        nonceBuf, header ?? null,
       ]
     );
 
@@ -146,6 +136,10 @@ const sendMessage = async (req, res) => {
     // transport JSON homogène avec le WebSocket (cf. socket/handlers/chat.js).
     if (msg.ciphertext)   msg.ciphertext   = msg.ciphertext.toString('base64');
     if (msg.archive_blob) msg.archive_blob = msg.archive_blob.toString('base64');
+    msg.nonce = msg.dr_nonce ? msg.dr_nonce.toString('base64') : undefined;
+    msg.header = msg.dr_header ?? undefined;
+    delete msg.dr_nonce;
+    delete msg.dr_header;
 
     // ── Broadcast temps réel via Socket.IO ─────────────────────────────
     const io = req.app.get('io');

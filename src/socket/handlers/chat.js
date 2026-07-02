@@ -26,7 +26,7 @@ const messageSend = (io, socket, userSockets) => {
       const {
         conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration,
         replyToID, replyToContent, isStatusReply = 0, clientId,
-        ciphertext, archiveBlob, signalMessageType,
+        ciphertext, archiveBlob, signalMessageType, nonce, header,
       } = data;
       const senderID = socket.alanyaID; // !! Utiliser l'ID du socket authentifié
       const isEncrypted = !!ciphertext;
@@ -37,41 +37,28 @@ const messageSend = (io, socket, userSockets) => {
         });
       }
 
-      // Le chiffrement E2EE (Double Ratchet 1-à-1) ne couvre que les
-      // conversations privées : pas de sender keys de groupe pour l'instant.
-      if (isEncrypted) {
-        const [convRows] = await pool.execute(
-          'SELECT isGroup FROM conversation WHERE conversID = ?',
-          [conversationID]
-        );
-        if (convRows.length === 0) {
-          return socket.emit('error', { message: 'Conversation introuvable' });
-        }
-        if (convRows[0].isGroup) {
-          return socket.emit('error', {
-            message: 'Le chiffrement E2EE n\'est pas encore supporté pour les groupes',
-            code: 'E2EE_GROUP_UNSUPPORTED',
-          });
-        }
-      }
-
-      // Le serveur ne lit jamais l'intérieur de ciphertext/archive_blob : ce
-      // sont des blobs opaques chiffrés côté client (voir ARCHITECTURE.md §1).
+      // Le serveur ne lit jamais l'intérieur de ciphertext/archive_blob/nonce/
+      // header : ce sont des données opaques du protocole, chiffrées ou
+      // publiques (voir ARCHITECTURE.md §1). `header` (DH public + compteurs
+      // n/pn du Double Ratchet 1-à-1) arrive déjà en JSON stringifié côté
+      // client — stocké tel quel, sans le ré-encoder.
       const ciphertextBuf  = isEncrypted ? Buffer.from(ciphertext, 'base64') : null;
       const archiveBlobBuf = archiveBlob ? Buffer.from(archiveBlob, 'base64') : null;
+      const nonceBuf       = nonce ? Buffer.from(nonce, 'base64') : null;
 
       // ÉTAPE 1 : PERSISTER le message en DB
       const [result] = await pool.execute(
         `INSERT INTO message
            (senderID, conversationID, content, type, status, sendAt,
             mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply,
-            ciphertext, archive_blob, signal_message_type)
-         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ciphertext, archive_blob, signal_message_type, dr_nonce, dr_header)
+         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           senderID, conversationID, isEncrypted ? null : (content ?? null), type,
           mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
           replyToID ?? null, replyToContent ?? null, isStatusReply,
           ciphertextBuf, archiveBlobBuf, isEncrypted ? (signalMessageType ?? 2) : null,
+          nonceBuf, header ?? null,
         ]
       );
 
@@ -115,6 +102,12 @@ const messageSend = (io, socket, userSockets) => {
       // pour un transport JSON homogène avec l'API REST (cf. keysController).
       if (msg.ciphertext)   msg.ciphertext   = msg.ciphertext.toString('base64');
       if (msg.archive_blob) msg.archive_blob = msg.archive_blob.toString('base64');
+      // `dr_nonce`/`dr_header` (colonnes DB) → `nonce`/`header` (clés attendues
+      // par le client, mêmes noms que ceux envoyés à l'émission).
+      msg.nonce = msg.dr_nonce ? msg.dr_nonce.toString('base64') : undefined;
+      msg.header = msg.dr_header ?? undefined;
+      delete msg.dr_nonce;
+      delete msg.dr_header;
 
       // ÉTAPE 5 : Diffuser le message UNE SEULE FOIS à chaque autre participant.
       // On vise la room personnelle `user_<id>` (rejointe à l'auth) — fiable que
@@ -292,6 +285,30 @@ const presenceOffline = (io, socket, userSockets) => {
   });
 };
  
+// Relais éphémère d'un message de distribution de sender key (E2EE groupe).
+// Le payload est chiffré côté client via le canal 1-à-1 existant (Double
+// Ratchet) : le serveur ne le lit jamais, il route juste vers le destinataire
+// s'il est connecté (aucune persistance — mirroring de `ice_candidate` dans
+// calls.js). Si le destinataire est hors-ligne, la distribution sera
+// retentée par l'émetteur à sa prochaine reconnexion (cf. `conversation:created`).
+const groupKeyDistribution = (io, socket, userSockets) => {
+  socket.on('group:key_distribution', (data) => {
+    if (!socket.authenticated) return;
+    const { targetUserId, groupId, encryptedPayload } = data || {};
+    const targetID = Number(targetUserId);
+    if (!targetID || !groupId || !encryptedPayload) return;
+
+    const targetSocketId = userSockets.get(targetID);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('group:key_distribution', {
+        fromUserId: socket.alanyaID,
+        groupId,
+        encryptedPayload,
+      });
+    }
+  });
+};
+
 const handleDisconnect = async (io, socket, userSockets) => {
   const userID = socket.alanyaID;
   if (!userID) return;
@@ -343,5 +360,6 @@ module.exports = {
   messageRead,
   presenceOnline,
   presenceOffline,
+  groupKeyDistribution,
   handleDisconnect,
 };
