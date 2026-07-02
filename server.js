@@ -43,6 +43,7 @@ const {
   callUser, answerCall, rejectCall, iceCandidate, endCall,
   createGroupCall, joinGroupCall, leaveGroupCall, endGroupCall,
   groupOffer, groupAnswer, groupIceCandidate,
+  callMuteState, groupMuteState,
 } = require('./src/socket/handlers/calls');
 
 const {
@@ -50,6 +51,7 @@ const {
   meetingJoinAccept, meetingJoinDecline,
   meetingStart, meetingEnd, meetingChat,
   meetingLeave, meetingOffer, meetingAnswer, meetingIceCandidate,
+  meetingMuteState,
 } = require('./src/socket/handlers/meetings');
 
 const { startMeetingScheduler, stopMeetingScheduler } = require('./src/services/meetingScheduler');
@@ -122,6 +124,8 @@ io.on('connection', (socket) => {
   groupOffer(io, socket, userSockets);
   groupAnswer(io, socket, userSockets);
   groupIceCandidate(io, socket, userSockets);
+  callMuteState(io, socket, userSockets);
+  groupMuteState(io, socket, userSockets);
   meetingCreate(io, socket, userSockets);
   meetingJoinRoom(io, socket, userSockets);
   meetingJoinRequest(io, socket, userSockets);
@@ -134,6 +138,7 @@ io.on('connection', (socket) => {
   meetingOffer(io, socket, userSockets);
   meetingAnswer(io, socket, userSockets);
   meetingIceCandidate(io, socket, userSockets);
+  meetingMuteState(io, socket, userSockets);
 
   socket.on('disconnect', async () => {
     console.log('[Socket] Client déconnecté:', socket.id);
