@@ -47,6 +47,19 @@ const uploadKeys = async (req, res) => {
     );
 
     if (Array.isArray(oneTimePreKeys) && oneTimePreKeys.length > 0) {
+      // Purger les anciennes one-time-prekeys non utilisées avant d'insérer
+      // le nouveau lot : le client uploade toujours son stock LOCAL complet,
+      // donc toute OTP non-utilisée déjà en base à ce stade est forcément
+      // orpheline d'une identité précédente (réinstall, reset local...) —
+      // sa clé privée n'existe plus nulle part. La laisser traîner permet au
+      // serveur de la distribuer un jour à un expéditeur, qui dérive alors
+      // une clé racine X3DH fausse : la session devient illisible pour
+      // toujours, côté texte ET média (incident du 2026-07-03).
+      await pool.execute(
+        'DELETE FROM one_time_prekeys WHERE alanyaID = ? AND used = 0',
+        [alanyaID]
+      );
+
       const values = [];
       const placeholders = oneTimePreKeys.map(({ keyId, publicKey }) => {
         values.push(alanyaID, keyId, Buffer.from(publicKey, 'base64'));
