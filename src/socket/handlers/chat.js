@@ -47,23 +47,47 @@ const messageSend = (io, socket, userSockets) => {
       const nonceBuf       = nonce ? Buffer.from(nonce, 'base64') : null;
 
       // ÉTAPE 1 : PERSISTER le message en DB
-      const [result] = await pool.execute(
-        `INSERT INTO message
-           (senderID, conversationID, content, type, status, sendAt,
-            mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply,
-            ciphertext, archive_blob, signal_message_type, dr_nonce, dr_header)
-         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          senderID, conversationID, isEncrypted ? null : (content ?? null), type,
-          mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
-          replyToID ?? null, replyToContent ?? null, isStatusReply,
-          ciphertextBuf, archiveBlobBuf, isEncrypted ? (signalMessageType ?? 2) : null,
-          nonceBuf, header ?? null,
-        ]
-      );
+      // Idempotence par clientId (migration 013) : un client qui rejoue un
+      // envoi (accusé `message:sent` perdu suite à une reconnexion socket)
+      // ne doit jamais créer une 2e ligne. Si la contrainte unique rejette
+      // l'insert, c'est qu'il existe déjà — on saute directement aux étapes
+      // de lecture/réponse sans rejouer les effets de bord (compteurs
+      // non-lus, diffusion, notifications).
+      let msgID;
+      let isDuplicateRetry = false;
+      try {
+        const [result] = await pool.execute(
+          `INSERT INTO message
+             (senderID, conversationID, clientId, content, type, status, sendAt,
+              mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply,
+              ciphertext, archive_blob, signal_message_type, dr_nonce, dr_header)
+           VALUES (?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            senderID, conversationID, clientId ?? null, isEncrypted ? null : (content ?? null), type,
+            mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
+            replyToID ?? null, replyToContent ?? null, isStatusReply,
+            ciphertextBuf, archiveBlobBuf, isEncrypted ? (signalMessageType ?? 2) : null,
+            nonceBuf, header ?? null,
+          ]
+        );
+        msgID = result.insertId;
+      } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY' && clientId) {
+          const [existing] = await pool.execute(
+            'SELECT msgID FROM message WHERE clientId = ?', [clientId]
+          );
+          if (existing.length === 0) throw error; // conflit sur autre chose, ne pas masquer
+          msgID = existing[0].msgID;
+          isDuplicateRetry = true;
+        } else {
+          throw error;
+        }
+      }
 
-      const msgID = result.insertId;
-
+      // ÉTAPES 2-3, 5-6 : effets de bord, sautés sur un retry dupliqué (déjà
+      // joués lors de l'envoi original — les rejouer doublerait le compteur
+      // de non-lus, renotifierait et rediffuserait le message en double).
+      if (!isDuplicateRetry) {
       // ÉTAPE 2 : Mettre à jour résumé conversation (statut 1 = envoyé)
       // Pour un message chiffré, on n'affiche jamais le contenu en clair dans
       // l'aperçu de conversation : seul un libellé générique est stocké.
@@ -87,6 +111,7 @@ const messageSend = (io, socket, userSockets) => {
         'UPDATE conv_participants SET unreadCount = unreadCount + 1 WHERE conversID = ? AND alanyaID != ?',
         [conversationID, senderID]
       );
+      }
 
       // ÉTAPE 4 : Récupérer message complet avec infos sender
       const [rows] = await pool.execute(
@@ -109,6 +134,7 @@ const messageSend = (io, socket, userSockets) => {
       delete msg.dr_nonce;
       delete msg.dr_header;
 
+      if (!isDuplicateRetry) {
       // ÉTAPE 5 : Diffuser le message UNE SEULE FOIS à chaque autre participant.
       // On vise la room personnelle `user_<id>` (rejointe à l'auth) — fiable que
       // le destinataire ait ou non ouvert la conversation. L'émetteur n'est PAS
@@ -128,7 +154,7 @@ const messageSend = (io, socket, userSockets) => {
         'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
       );
       const senderName = sender[0]?.nom ?? 'Talky';
-      
+
       // Import async pour éviter circular dependency
       setTimeout(() => {
         const { notifyNewMessage } = require('../../services/notificationService');
@@ -139,6 +165,7 @@ const messageSend = (io, socket, userSockets) => {
           console.warn('[FCM notification]', e.message)
         );
       }, 0);
+      } // fin du if (!isDuplicateRetry)
 
       // Renvoyer clientId pour que l'émetteur retrouve son message optimiste.
       socket.emit('message:sent', { msgID, clientId, ...msg });

@@ -34,7 +34,6 @@ Thumbs.db
 *.swp
 .opencode/
 serviceAccountKey.json
-serviceAccountKey.json
 .codex/
 
 # zip
