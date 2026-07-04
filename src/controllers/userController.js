@@ -154,6 +154,44 @@ const getBlockStatus = async (req, res) => {
   }
 };
 
+/** Liste des utilisateurs que j'ai bloqués. */
+const getBlockedUsers = async (req, res) => {
+  try {
+    const alanyaID = req.user.alanyaID;
+    const [rows] = await pool.execute(
+      `SELECT
+         u.alanyaID,
+         u.nom,
+         u.pseudo,
+         u.alanyaPhone,
+         u.avatar_url,
+         u.is_online,
+         u.last_seen,
+         b.dateBlock
+       FROM blocked b
+       JOIN users u ON b.idCallerBlock = u.alanyaID
+       WHERE b.alanyaID = ?
+       ORDER BY b.dateBlock DESC, u.nom ASC`,
+      [alanyaID]
+    );
+
+    res.json(
+      rows.map((r) => ({
+        alanyaID: r.alanyaID,
+        nom: r.nom,
+        pseudo: r.pseudo,
+        alanyaPhone: r.alanyaPhone,
+        avatar_url: sanitizeUrl(r.avatar_url),
+        is_online: 0,
+        last_seen: null,
+        dateBlock: r.dateBlock,
+      }))
+    );
+  } catch (error) {
+    throw error;
+  }
+};
+
 module.exports = {
   getUserById,
   getUserByPhone,
@@ -161,4 +199,5 @@ module.exports = {
   blockUser,
   unblockUser,
   getBlockStatus,
+  getBlockedUsers,
 };
