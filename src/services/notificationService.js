@@ -1,4 +1,5 @@
 const admin = require('../config/firebase');
+const { messagePreview } = require('../utils/messagePreview');
 
 const sendDataOnlyNotification = async (fcmToken, data = {}) => {
   if (!fcmToken || fcmToken === 'INDEFINI') return;
@@ -24,6 +25,22 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
 
     await admin.messaging().send(message);
   } catch (error) {
+    const code = error?.code || error?.errorInfo?.code || '';
+    const staleToken =
+      code === 'messaging/registration-token-not-registered' ||
+      code === 'messaging/invalid-registration-token' ||
+      error.message?.includes('Requested entity was not found');
+    if (staleToken) {
+      try {
+        const pool = require('../config/db');
+        await pool.execute(
+          'UPDATE users SET fcm_token = "INDEFINI" WHERE fcm_token = ?',
+          [fcmToken]
+        );
+      } catch (cleanupErr) {
+        console.warn('[FCM] Token cleanup failed:', cleanupErr.message);
+      }
+    }
     // Ne pas faire crasher le serveur pour une notif ratée
     console.error('[FCM] Send error:', error.message);
   }
@@ -44,8 +61,25 @@ const sendToUser = async (alanyaID, data = {}) => {
   }
 };
 
-const notifyNewMessage = async (conversationID, senderID, senderName, content, type = 0) => {
+const notifyNewMessage = async (conversationID, senderID, senderName, fields = {}) => {
   try {
+    const {
+      content,
+      mediaName,
+      type = 0,
+      isViewOnce = false,
+      isGroup = false,
+      groupName = '',
+    } = fields;
+
+    const body = messagePreview({
+      content,
+      mediaName,
+      type,
+      isViewOnce,
+      maxLen: 100,
+    });
+
     const pool = require('../config/db');
     const [participants] = await pool.execute(
       'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
@@ -55,10 +89,12 @@ const notifyNewMessage = async (conversationID, senderID, senderName, content, t
       await sendToUser(p.alanyaID, {
         type:           'message',
         title:          senderName,
-        body:           content ? content.substring(0, 100) : 'Nouveau média',
+        body,
         conversationId: String(conversationID),
         callerId:       String(senderID),
         msgType:        String(type),
+        isGroup:        isGroup ? '1' : '0',
+        groupName:      String(groupName ?? ''),
       });
     }
   } catch (error) {

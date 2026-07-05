@@ -33,20 +33,50 @@ function albumPreviewFromContent(content) {
   return total === 1 ? '📷 Photo' : `📷 ${total} photos`;
 }
 
+function mediaTypeLabel(type, { isViewOnce = false, mediaName } = {}) {
+  const t = parseInt(type, 10) || 0;
+  switch (t) {
+    case 1:
+      return isViewOnce ? '📷 Photo · Vue unique' : '📷 Photo';
+    case 2:
+      return isViewOnce ? '🎥 Vidéo · Vue unique' : '🎥 Vidéo';
+    case 3:
+      return isViewOnce ? '🎵 Audio · Vue unique' : '🎵 Audio';
+    case 4:
+      return mediaName ? `📎 ${mediaName}` : '📎 Fichier';
+    default:
+      return mediaName ?? 'Média';
+  }
+}
+
 /**
  * Aperçu stocké dans conversation.lastMessage / notifications.
  * Ne jamais exposer le marqueur brut `__talky_album__|…`.
+ * Aligné sur Talky `_previewForMedia`.
  */
-function messagePreview({ content, mediaName, isEncrypted = false, maxLen = 200 }) {
+function messagePreview({
+  content,
+  mediaName,
+  type = 0,
+  isViewOnce = false,
+  isEncrypted = false,
+  maxLen = 200,
+}) {
   if (isEncrypted) return '🔒 Message chiffré';
 
-  const album = albumPreviewFromContent(content);
-  if (album) return album;
+  const viewOnce = isViewOnce === true || isViewOnce === 1 || isViewOnce === '1';
 
-  if (content) {
-    return content.length > maxLen ? content.substring(0, maxLen) : content;
+  if (!viewOnce) {
+    const album = albumPreviewFromContent(content);
+    if (album) return album;
+
+    if (content && String(content).trim()) {
+      const text = String(content);
+      return text.length > maxLen ? text.substring(0, maxLen) : text;
+    }
   }
-  return mediaName ?? 'Média';
+
+  return mediaTypeLabel(type, { isViewOnce: viewOnce, mediaName });
 }
 
-module.exports = { albumPreviewFromContent, messagePreview };
+module.exports = { albumPreviewFromContent, mediaTypeLabel, messagePreview };

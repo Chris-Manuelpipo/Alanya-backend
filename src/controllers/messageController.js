@@ -4,6 +4,7 @@ const path = require('path');
 const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
+const { resolveReplyToID } = require('../utils/resolveReplyToID');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
 
@@ -100,6 +101,9 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
 
   const silentDrop = blockEval.isDirect && blockEval.action === 'silent';
 
+  const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
+  const resolvedReplyToContent = resolvedReplyToID != null ? (replyToContent ?? null) : null;
+
   const [result] = await pool.execute(
     `INSERT INTO message
        (senderID, conversationID, content, type, status, sendAt,
@@ -108,7 +112,7 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
     [
       senderID, conversationID, content ?? null, type,
       mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
-      replyToID ?? null, replyToContent ?? null, isStatusReply,
+      resolvedReplyToID, resolvedReplyToContent, isStatusReply,
       isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
     ]
   );
@@ -122,7 +126,7 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
            lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
        WHERE conversID = ?`,
       [
-        resolveLastMessagePreview({ content, mediaName, type }),
+        resolveLastMessagePreview({ content, mediaName, type, isViewOnce }),
         senderID, type, conversationID,
       ]
     );
@@ -166,7 +170,20 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
       'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
     );
     const senderName = sender[0]?.nom ?? 'Talky';
-    await notifyNewMessage(conversationID, senderID, senderName, content, type);
+
+    const [convRows] = await pool.execute(
+      'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
+      [conversationID]
+    );
+    const conv = convRows[0] ?? {};
+    await notifyNewMessage(conversationID, senderID, senderName, {
+      content,
+      mediaName,
+      type,
+      isViewOnce,
+      isGroup: !!conv.isGroup,
+      groupName: conv.GroupName ?? '',
+    });
   }
 
   return { msg, silentDrop };

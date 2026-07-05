@@ -1,6 +1,7 @@
 const pool = require('../../config/db');
 const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy, getDirectConversationPeer, emitPresenceUpdate } = require('../../utils/blockUtils');
 const { resolveLastMessagePreview } = require('../../utils/mediaAlbum');
+const { resolveReplyToID } = require('../../utils/resolveReplyToID');
 
 const joinConversation = (io, socket, userSockets) => {
   socket.on('join_conversation', async (data) => {
@@ -43,6 +44,9 @@ const messageSend = (io, socket, userSockets) => {
       }
       const silentDrop = blockEval.isDirect && blockEval.action === 'silent';
 
+      const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
+      const resolvedReplyToContent = resolvedReplyToID != null ? (replyToContent ?? null) : null;
+
       // ÉTAPE 1 : PERSISTER le message en DB
       const [result] = await pool.execute(
         `INSERT INTO message
@@ -52,7 +56,7 @@ const messageSend = (io, socket, userSockets) => {
         [
           senderID, conversationID, content ?? null, type,
           mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
-          replyToID ?? null, replyToContent ?? null, isStatusReply,
+          resolvedReplyToID, resolvedReplyToContent, isStatusReply,
           isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
         ]
       );
@@ -67,7 +71,7 @@ const messageSend = (io, socket, userSockets) => {
                lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
            WHERE conversID = ?`,
           [
-            resolveLastMessagePreview({ content, mediaName, type }),
+            resolveLastMessagePreview({ content, mediaName, type, isViewOnce }),
             senderID, type, conversationID,
           ]
         );
@@ -107,9 +111,23 @@ const messageSend = (io, socket, userSockets) => {
         );
         const senderName = sender[0]?.nom ?? 'Talky';
 
+        const [convRows] = await pool.execute(
+          'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
+          [conversationID]
+        );
+        const conv = convRows[0] ?? {};
+        const notifyFields = {
+          content,
+          mediaName,
+          type,
+          isViewOnce,
+          isGroup: !!conv.isGroup,
+          groupName: conv.GroupName ?? '',
+        };
+
         setTimeout(() => {
           const { notifyNewMessage } = require('../../services/notificationService');
-          notifyNewMessage(conversationID, senderID, senderName, content, type).catch(e =>
+          notifyNewMessage(conversationID, senderID, senderName, notifyFields).catch(e =>
             console.warn('[FCM notification]', e.message)
           );
         }, 0);
