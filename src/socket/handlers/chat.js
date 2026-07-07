@@ -1,6 +1,7 @@
 const pool = require('../../config/db');
 const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy, getDirectConversationPeer, emitPresenceUpdate } = require('../../utils/blockUtils');
 const { resolveLastMessagePreview } = require('../../utils/mediaAlbum');
+const { resolveReplyToID } = require('../../utils/messageReply');
 const { resolveReplyToID } = require('../../utils/resolveReplyToID');
 
 const joinConversation = (io, socket, userSockets) => {
@@ -44,7 +45,7 @@ const messageSend = (io, socket, userSockets) => {
       }
       const silentDrop = blockEval.isDirect && blockEval.action === 'silent';
 
-      const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
+      const resolvedReplyToID = await resolveReplyToID(pool, replyToID, conversationID);
       const resolvedReplyToContent = resolvedReplyToID != null ? (replyToContent ?? null) : null;
 
       // ÉTAPE 1 : PERSISTER le message en DB

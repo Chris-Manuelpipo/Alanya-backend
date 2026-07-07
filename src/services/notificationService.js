@@ -1,6 +1,32 @@
 const admin = require('../config/firebase');
 const { messagePreview } = require('../utils/messagePreview');
 
+const _buildApnsConfig = (data) => {
+  const type = data.type;
+  const showAlert =
+    type === 'message' ||
+    type === 'meeting_invite' ||
+    type === 'meeting_reminder' ||
+    type === 'status_view';
+
+  const aps = { 'content-available': 1 };
+  if (showAlert && (data.title || data.body)) {
+    aps.alert = {
+      title: data.title || 'Alanya',
+      body: data.body || '',
+    };
+    aps.sound = 'default';
+  }
+
+  return {
+    headers: {
+      'apns-priority': showAlert ? '10' : '5',
+      'apns-push-type': showAlert ? 'alert' : 'background',
+    },
+    payload: { aps },
+  };
+};
+
 const sendDataOnlyNotification = async (fcmToken, data = {}) => {
   if (!fcmToken || fcmToken === 'INDEFINI') return;
 
@@ -16,11 +42,14 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
         Object.entries(data).map(([k, v]) => [k, String(v)])
       ),
       android: {
-        priority: data.type === 'call' || data.type === 'group_call' ? 'high' : 'normal',
+        priority:
+          data.type === 'call' ||
+          data.type === 'group_call' ||
+          data.type === 'message'
+            ? 'high'
+            : 'normal',
       },
-      apns: {
-        payload: { aps: { 'content-available': 1 } },
-      },
+      apns: _buildApnsConfig(data),
     };
 
     await admin.messaging().send(message);
