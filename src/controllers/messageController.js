@@ -4,7 +4,7 @@ const path = require('path');
 const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
-const { resolveReplyToID } = require('../utils/resolveReplyToID');
+const { resolveReplyToID } = require('../utils/messageReply');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
 
@@ -101,7 +101,7 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
 
   const silentDrop = blockEval.isDirect && blockEval.action === 'silent';
 
-  const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
+  const resolvedReplyToID = await resolveReplyToID(pool, replyToID, conversationID);
   const resolvedReplyToContent = resolvedReplyToID != null ? (replyToContent ?? null) : null;
 
   const [result] = await pool.execute(
