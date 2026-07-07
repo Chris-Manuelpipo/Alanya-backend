@@ -55,6 +55,9 @@ const getAnalytics = async (req, res) => {
            SUM(status = 1)      AS answered,
            SUM(status = 0)      AS missed,
            SUM(status = 2)      AS rejected,
+           SUM(mode = 0)        AS relay,
+           SUM(mode = 1)        AS p2p,
+           SUM(mode IS NULL)    AS modeUnknown,
            COALESCE(ROUND(AVG(CASE WHEN status = 1 THEN duree END)), 0) AS avgDuration,
            COALESCE(SUM(duree), 0) AS totalDuration
          FROM callHistory WHERE created_at BETWEEN ? AND ?`,
@@ -149,6 +152,9 @@ const getAnalytics = async (req, res) => {
     // Normalise les métriques principales avec helper _num()
     const callsTotal = _num(callAgg.total);
     const callsAnswered = _num(callAgg.answered);
+    const callsRelay = _num(callAgg.relay);
+    const callsP2p = _num(callAgg.p2p);
+    const callsModeKnown = callsRelay + callsP2p;
     const storyTotal = _num(storyAgg.total);
     const storyViews = _num(storyAgg.totalViews);
     const storyLikes = _num(storyAgg.totalLikes);
@@ -175,6 +181,11 @@ const getAnalytics = async (req, res) => {
         rejected: _num(callAgg.rejected),
         avgDuration: _num(callAgg.avgDuration),
         totalDuration: _num(callAgg.totalDuration),
+        relay: callsRelay,
+        p2p: callsP2p,
+        modeUnknown: _num(callAgg.modeUnknown),
+        relayRate: callsModeKnown ? Math.round((callsRelay / callsModeKnown) * 100) : 0,
+        p2pRate: callsModeKnown ? Math.round((callsP2p / callsModeKnown) * 100) : 0,
         // Taux de réussite (appels répondus / total)
         successRate: callsTotal ? Math.round((callsAnswered / callsTotal) * 100) : 0,
       },

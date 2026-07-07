@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { isBlockedEitherWay } = require('../utils/blockUtils');
+const { getClientIp, parseCallMode } = require('../utils/clientIp');
  
 // Récupère l'historique des appels de l'utilisateur connecté
 const getCalls = async (req, res) => {
@@ -37,10 +38,11 @@ const createCall = async (req, res) => {
       return res.status(403).json({ error: 'Appel impossible', code: 'CALL_BLOCKED' });
     }
 
+    const callerIp = getClientIp(req);
     const [result] = await pool.execute(
-      `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, start_time)
-       VALUES (?, ?, ?, 0, NOW(), NOW())`,
-      [idCaller, idReceiver, type]
+      `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, start_time, ip)
+       VALUES (?, ?, ?, 0, NOW(), NOW(), ?)`,
+      [idCaller, idReceiver, type, callerIp]
     );
 
     const [rows] = await pool.execute(
@@ -61,15 +63,17 @@ const createCall = async (req, res) => {
 const endCall = async (req, res) => {
   try {
     const { id }       = req.params;
-    const { status = 1 } = req.body;
+    const { status = 1, mode: rawMode } = req.body;
     const alanyaID     = req.user.alanyaID;
+    const mode = parseCallMode(rawMode);
  
     await pool.execute(
       `UPDATE callHistory
        SET status = ?,
-           duree  = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+           duree  = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW())),
+           mode   = COALESCE(?, mode)
        WHERE IDcall = ? AND (idCaller = ? OR idReceiver = ?)`,
-      [status, id, alanyaID, alanyaID]
+      [status, mode, id, alanyaID, alanyaID]
     );
 
     res.json({ message: 'Call ended' });
