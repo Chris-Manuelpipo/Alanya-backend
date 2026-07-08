@@ -16,6 +16,74 @@ function getRoomParticipants(room) {
   return room.participants ?? room;
 }
 
+// Récupère (ou crée) la conversation 1-à-1 entre deux utilisateurs.
+async function getOrCreateDirectConversation(userA, userB) {
+  const [existing] = await pool.execute(
+    `SELECT c.conversID FROM conversation c
+     JOIN conv_participants cp1 ON c.conversID = cp1.conversID
+     JOIN conv_participants cp2 ON c.conversID = cp2.conversID
+     WHERE cp1.alanyaID = ? AND cp2.alanyaID = ? AND c.isGroup = 0
+     LIMIT 1`,
+    [userA, userB]
+  );
+  if (existing.length > 0) return existing[0].conversID;
+
+  const [result] = await pool.execute(
+    'INSERT INTO conversation (isGroup, lastMessageAt) VALUES (0, NOW())'
+  );
+  const conversID = result.insertId;
+  await pool.execute(
+    'INSERT INTO conv_participants (conversID, alanyaID) VALUES (?, ?), (?, ?)',
+    [conversID, userA, conversID, userB]
+  );
+  return conversID;
+}
+
+// Appelée dès qu'un appel atteint un état terminal (terminé / refusé).
+// Met à jour l'aperçu de la conversation (lastMessage...) et notifie
+// LES DEUX participants (contrairement aux events existants qui ne
+// notifient que le correspondant) avec les données finales de l'appel.
+async function finalizeCallAndNotify(io, userSockets, callID) {
+  if (!callID) return;
+  try {
+    const [rows] = await pool.execute(
+      `SELECT c.*,
+              u1.nom as caller_nom, u1.pseudo as caller_pseudo, u1.avatar_url as caller_avatar,
+              u2.nom as receiver_nom, u2.pseudo as receiver_pseudo, u2.avatar_url as receiver_avatar
+       FROM callHistory c
+       JOIN users u1 ON c.idCaller   = u1.alanyaID
+       JOIN users u2 ON c.idReceiver = u2.alanyaID
+       WHERE c.IDcall = ?`,
+      [callID]
+    );
+    if (!rows.length) return;
+    const call = rows[0];
+    const { idCaller, idReceiver } = call;
+
+    const conversID = await getOrCreateDirectConversation(idCaller, idReceiver);
+
+    const isVideo = call.type === 1;
+    const lastMessageType = isVideo ? 6 : 5; // 5=appel audio, 6=appel vidéo (réservés)
+    const preview = isVideo ? '📹 Appel vidéo' : '📞 Appel vocal';
+
+    await pool.execute(
+      `UPDATE conversation
+       SET lastMessage = ?, lastMessageAt = NOW(),
+           lastMessageSenderID = ?, lastMessageType = ?
+       WHERE conversID = ?`,
+      [preview, idCaller, lastMessageType, conversID]
+    );
+
+    const payload = { conversationID: conversID, call };
+    for (const uid of [idCaller, idReceiver]) {
+      const sid = userSockets.get(uid);
+      if (sid) io.to(sid).emit('call_log_updated', payload);
+    }
+  } catch (err) {
+    console.warn('[finalizeCallAndNotify]', err.message);
+  }
+}
+
 function createRoomState(isVideo, callerID, callerInfo) {
   const participants = new Map();
   if (callerID != null) {
@@ -158,23 +226,25 @@ const rejectCall = (io, socket, userSockets) => {
       // Appel refusé : ne pas le rejouer au destinataire.
       pendingCalls.clear(receiverID);
 
+      let rejectedCallID = null;
       try {
-        await pool.execute(
-          `UPDATE callHistory
-           SET status = 2
-           WHERE IDcall = (
-             SELECT IDcall FROM (
-               SELECT IDcall FROM callHistory
-               WHERE idCaller = ? AND idReceiver = ?
-               ORDER BY created_at DESC
-               LIMIT 1
-             ) AS sub
-           )`,
+        const [rows] = await pool.execute(
+          `SELECT IDcall FROM callHistory
+           WHERE idCaller = ? AND idReceiver = ?
+           ORDER BY created_at DESC LIMIT 1`,
           [callerID, receiverID]
         );
+        rejectedCallID = rows[0]?.IDcall ?? null;
+        if (rejectedCallID) {
+          await pool.execute('UPDATE callHistory SET status = 2 WHERE IDcall = ?', [rejectedCallID]);
+        }
       } catch (dbErr) {
         console.warn('[Socket reject_call] DB update failed:', dbErr.message);
       }
+
+      // Met à jour la conversation + notifie les deux côtés (discussions + logs d'appel).
+      finalizeCallAndNotify(io, userSockets, rejectedCallID)
+        .catch((err) => console.warn('[Socket reject_call] finalizeCallAndNotify error:', err.message));
 
       const callerSocketId = userSockets.get(callerID);
       if (callerSocketId) {
@@ -219,26 +289,33 @@ const endCall = (io, socket, userSockets) => {
       // Appel terminé/annulé : ne pas le rejouer au destinataire.
       if (targetID) pendingCalls.clear(targetID);
 
+      let endedCallID = null;
       if (callerID) {
         try {
-          await pool.execute(
-            `UPDATE callHistory
-             SET duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
-             WHERE IDcall = (
-               SELECT IDcall FROM (
-                 SELECT IDcall FROM callHistory
-                 WHERE (idCaller = ? OR idReceiver = ?)
-                   AND (idCaller = ? OR idReceiver = ?)
-                 ORDER BY created_at DESC
-                 LIMIT 1
-               ) AS sub
-             )`,
+          const [rows] = await pool.execute(
+            `SELECT IDcall FROM callHistory
+             WHERE (idCaller = ? OR idReceiver = ?)
+               AND (idCaller = ? OR idReceiver = ?)
+             ORDER BY created_at DESC LIMIT 1`,
             [callerID, callerID, targetID || callerID, targetID || callerID]
           );
+          endedCallID = rows[0]?.IDcall ?? null;
+          if (endedCallID) {
+            await pool.execute(
+              `UPDATE callHistory
+               SET duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+               WHERE IDcall = ?`,
+              [endedCallID]
+            );
+          }
         } catch (dbErr) {
           console.warn('[Socket end_call] DB update failed:', dbErr.message);
         }
       }
+
+      // Met à jour la conversation + notifie les deux côtés (discussions + logs d'appel).
+      finalizeCallAndNotify(io, userSockets, endedCallID)
+        .catch((err) => console.warn('[Socket end_call] finalizeCallAndNotify error:', err.message));
 
       if (targetID) {
         const targetSocketId = userSockets.get(targetID);
