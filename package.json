@@ -6,7 +6,8 @@
     "scripts": {
         "start": "node server.js",
         "dev": "nodemon server.js",
-        "seed:reserved-phones": "node scripts/seed-reserved-alanya-phones.js"
+        "seed:reserved-phones": "node scripts/cleanup-bulk-reserved-alanya-phones.js",
+        "cleanup:reserved-phones": "node scripts/cleanup-bulk-reserved-alanya-phones.js"
     },
     "dependencies": {
         "bcryptjs": "^3.0.3",

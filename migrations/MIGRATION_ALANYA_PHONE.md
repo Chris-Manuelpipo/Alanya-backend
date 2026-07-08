@@ -5,8 +5,11 @@ Exécuter **offline** (maintenance) dans l'ordre :
 ```bash
 mysql -u USER -p DATABASE < migrations/009_alanya_phone_pad_6_to_8.sql
 mysql -u USER -p DATABASE < migrations/010_reserved_alanya_phone.sql
-node scripts/seed-reserved-alanya-phones.js
+# Si un ancien seed bulk a rempli la table :
+node scripts/cleanup-bulk-reserved-alanya-phones.js
 ```
+
+Voir aussi `migrations/015_reserved_alanya_phone_patterns.md` (patterns en code + liste admin manuelle).
 
 ## Vérifications post-migration
 

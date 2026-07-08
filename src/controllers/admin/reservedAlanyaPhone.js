@@ -1,6 +1,14 @@
 const pool = require('../../config/db');
-const { normalize, validate } = require('../../utils/alanyaPhone');
-const { phoneExists } = require('../../services/alanyaPhoneService');
+const {
+  normalize,
+  validate,
+  validateReservedCandidate,
+  isPatternReserved,
+} = require('../../utils/alanyaPhone');
+const {
+  phoneExists,
+  isInReservedTable,
+} = require('../../services/alanyaPhoneService');
 
 const _mapRow = (row) => ({
   id: row.id,
@@ -42,6 +50,65 @@ const _buildFilters = (q, available) => {
   return { whereSql, params };
 };
 
+const _buildPatternSuggestion = async (searchDigits, tableRows) => {
+  if (!searchDigits) return null;
+  const v = validate(searchDigits);
+  if (!v.ok || !isPatternReserved(searchDigits)) return null;
+  if (tableRows.some((row) => row.phone_canonical === searchDigits)) return null;
+
+  const taken = await phoneExists(searchDigits);
+  return {
+    id: null,
+    phone_canonical: searchDigits,
+    label: 'Pattern réservé (attribution directe)',
+    source: 'pattern',
+    is_used: taken,
+    assignable: !taken,
+  };
+};
+
+const checkAssignablePhone = async (req, res) => {
+  try {
+    const canonical = normalize(req.query.phone || '');
+    const v = validate(canonical);
+    if (!v.ok) {
+      return res.status(400).json({ error: v.error });
+    }
+
+    const taken = await phoneExists(canonical);
+    const inTable = await isInReservedTable(canonical);
+    const pattern = isPatternReserved(canonical);
+
+    let source = 'standard';
+    if (pattern) source = 'pattern';
+    else if (inTable) source = 'table';
+
+    let hint = null;
+    if (taken) {
+      hint = null;
+    } else if (pattern) {
+      hint = 'Pattern réservé — attribution directe autorisée';
+    } else if (v.tier === 8) {
+      hint = 'Numéro standard (hors patterns réservés)';
+    }
+
+    res.json({
+      phone_canonical: canonical,
+      tier: v.tier,
+      is_pattern_reserved: pattern,
+      in_reserved_table: inTable,
+      is_taken: taken,
+      assignable: !taken,
+      reason: taken ? 'Ce numéro est déjà utilisé' : null,
+      source,
+      hint,
+    });
+  } catch (error) {
+    console.error('[Admin] checkAssignablePhone error:', error.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
 const listReservedPhones = async (req, res) => {
   try {
     const {
@@ -78,11 +145,15 @@ const listReservedPhones = async (req, res) => {
       params
     );
 
+    const searchDigits = normalize(q);
+    const patternSuggestion = await _buildPatternSuggestion(searchDigits, rows);
+
     res.json({
       items: rows.map(_mapRow),
       total: Number(countRow.total),
       page: pageN,
       limit: limitN,
+      pattern_suggestion: patternSuggestion,
     });
   } catch (error) {
     console.error('[Admin] listReservedPhones error:', error.message);
@@ -94,7 +165,7 @@ const addReservedPhone = async (req, res) => {
   try {
     const { phone, label } = req.body || {};
     const canonical = normalize(phone);
-    const v = validate(canonical);
+    const v = validateReservedCandidate(canonical);
     if (!v.ok) {
       return res.status(400).json({ error: v.error });
     }
@@ -140,6 +211,7 @@ const removeReservedPhone = async (req, res) => {
 
 module.exports = {
   listReservedPhones,
+  checkAssignablePhone,
   addReservedPhone,
   removeReservedPhone,
 };

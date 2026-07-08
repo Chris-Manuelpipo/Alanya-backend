@@ -65,6 +65,43 @@ const generateRandom = (length) => {
   return String(n).padStart(length, '0');
 };
 
+/** Forme XXYYZZTT (ex. 11223344, 00001122). */
+const isXxyyzztt = (canonical) =>
+  typeof canonical === 'string' &&
+  canonical.length === 8 &&
+  /^\d{8}$/.test(canonical) &&
+  canonical[0] === canonical[1] &&
+  canonical[2] === canonical[3] &&
+  canonical[4] === canonical[5] &&
+  canonical[6] === canonical[7];
+
+/**
+ * Règles de réservation (en code, pas toutes en BD) :
+ * - tous les numéros à 3 chiffres
+ * - tous les numéros à 4 chiffres
+ * - 8 chiffres de la forme XXYYZZTT
+ */
+const isPatternReserved = (canonical) => {
+  if (!canonical || !/^\d+$/.test(canonical)) return false;
+  const len = canonical.length;
+  if (len === 3 || len === 4) return true;
+  if (len === 8) return isXxyyzztt(canonical);
+  return false;
+};
+
+const validateReservedCandidate = (canonical) => {
+  const v = validate(canonical);
+  if (!v.ok) return v;
+  if (!isPatternReserved(canonical)) {
+    return {
+      ok: false,
+      error:
+        'Ce numéro ne peut pas être réservé : 3 ou 4 chiffres, ou 8 chiffres au format XXYYZZTT (ex. 11 22 33 44)',
+    };
+  }
+  return { ok: true, tier: v.tier };
+};
+
 const isNumericQuery = (q) => /^\d+$/.test(normalize(q));
 
 module.exports = {
@@ -75,5 +112,8 @@ module.exports = {
   formatDisplay,
   formatLiveInput,
   generateRandom,
+  isXxyyzztt,
+  isPatternReserved,
+  validateReservedCandidate,
   isNumericQuery,
 };

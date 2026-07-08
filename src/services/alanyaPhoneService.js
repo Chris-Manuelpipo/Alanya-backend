@@ -1,5 +1,9 @@
 const pool = require('../config/db');
-const { generateRandom, validate } = require('../utils/alanyaPhone');
+const {
+  generateRandom,
+  validate,
+  isPatternReserved,
+} = require('../utils/alanyaPhone');
 
 const phoneExists = async (canonical) => {
   const [rows] = await pool.execute(
@@ -9,12 +13,18 @@ const phoneExists = async (canonical) => {
   return rows.length > 0;
 };
 
-const isReserved = async (canonical) => {
+const isInReservedTable = async (canonical) => {
   const [rows] = await pool.execute(
     'SELECT id FROM reserved_alanya_phone WHERE phone_canonical = ?',
     [canonical]
   );
   return rows.length > 0;
+};
+
+/** Réservé = pattern (3 / 4 / XXYYZZTT) OU présent en table admin. */
+const isReserved = async (canonical) => {
+  if (isPatternReserved(canonical)) return true;
+  return isInReservedTable(canonical);
 };
 
 const isPhoneAvailable = async (canonical) => {
@@ -31,7 +41,10 @@ const generateUniquePhone = async (length, { allowReserved = false } = {}) => {
 
   for (let attempt = 0; attempt < 50; attempt++) {
     const candidate = generateRandom(length);
-    if (!allowReserved && (await isReserved(candidate))) continue;
+    if (!allowReserved) {
+      if (isPatternReserved(candidate)) continue;
+      if (await isInReservedTable(candidate)) continue;
+    }
     if (!(await phoneExists(candidate))) return candidate;
   }
   throw new Error(`Impossible de générer un alanyaPhone unique (${length} ch.) après 50 tentatives`);
@@ -39,6 +52,7 @@ const generateUniquePhone = async (length, { allowReserved = false } = {}) => {
 
 module.exports = {
   phoneExists,
+  isInReservedTable,
   isReserved,
   isPhoneAvailable,
   generateUniquePhone,

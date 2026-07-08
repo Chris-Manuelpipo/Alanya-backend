@@ -27,6 +27,7 @@ const {
   createUser,
   updateUserPhone,
   listReservedPhones,
+  checkAssignablePhone,
   addReservedPhone,
   removeReservedPhone,
 } = require('../controllers/adminController');
@@ -574,6 +575,7 @@ router.put('/users/:id/role',              adminAuth, superAdminAuth, setAccount
 router.put('/users/:id/phone',             adminAuth, updateUserPhone);
 router.delete('/users/:id',                adminAuth, superAdminAuth, deleteUser);
 
+router.get('/alanya-phones/check-assignable', adminAuth, checkAssignablePhone);
 router.get('/reserved-alanya-phones',      adminAuth, listReservedPhones);
 router.post('/reserved-alanya-phones',     adminAuth, superAdminAuth, addReservedPhone);
 router.delete('/reserved-alanya-phones/:phone', adminAuth, superAdminAuth, removeReservedPhone);
