@@ -3,6 +3,7 @@ const pool = require('../../config/db');
 const pendingCalls = require('../state/pendingCalls');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'talky-secret-key-change-in-production';
+const REPLAY_ENABLED = process.env.ENABLE_PENDING_CALL_REPLAY !== 'false';
 
 const socketAuth = (io, socket, userSockets) => {
 
@@ -66,11 +67,25 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
   // Rejeu d'un appel entrant en attente : si l'utilisateur vient d'être réveillé
   // par un push FCM (app fermée), l'event `incoming_call` initial a été perdu.
   // On le lui rejoue maintenant que son socket est authentifié, avec l'offre WebRTC.
-  const pending = pendingCalls.get(alanyaID);
+  if (!REPLAY_ENABLED) {
+    pendingCalls.clear(alanyaID);
+    console.log(`[PhantomCallFix] pending:replay-disabled target=${alanyaID}`);
+    return;
+  }
+
+  const pending = pendingCalls.getReplayable(alanyaID);
   if (pending) {
     console.log(`[Socket] !! Rejeu incoming_call à User ${alanyaID} (appel en attente)`);
     socket.emit('incoming_call', pending);
+    const delivery = pendingCalls.markDelivered(alanyaID, 'auth-replay');
+    if (delivery) {
+      console.log(
+        `[PhantomCallFix] pending:replay target=${alanyaID} callId=${delivery.callId ?? 'none'} attempts=${delivery.attempts}`,
+      );
+    }
     pendingCalls.clear(alanyaID);
+  } else {
+    console.log(`[PhantomCallFix] pending:skip-replay target=${alanyaID}`);
   }
 }
 

@@ -145,11 +145,18 @@ const callUser = (io, socket, userSockets) => {
       // Bufferise l'appel : si le destinataire est hors-ligne (app fermée), il sera
       // réveillé par FCM puis l'event `incoming_call` lui sera rejoué à sa reconnexion.
       pendingCalls.set(targetID, incomingPayload);
+      console.log(`[PhantomCallFix] pending:set target=${targetID} callId=${incomingPayload.callId ?? 'none'}`);
 
       const targetSocketId = userSockets.get(targetID);
       if (targetSocketId) {
         console.log(`[Socket call_user] !! Envoi incoming_call à socket ${targetSocketId}`);
         io.to(targetSocketId).emit('incoming_call', incomingPayload);
+        const delivery = pendingCalls.markDelivered(targetID, 'socket-live');
+        if (delivery) {
+          console.log(
+            `[PhantomCallFix] pending:delivered-live target=${targetID} callId=${delivery.callId ?? 'none'} attempts=${delivery.attempts}`,
+          );
+        }
       } else {
         console.warn(`[Socket call_user] ** Utilisateur ${targetID} non trouvé en socket — fallback FCM + rejeu à la reconnexion`);
       }
