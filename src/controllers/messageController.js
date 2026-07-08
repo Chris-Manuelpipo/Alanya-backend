@@ -150,19 +150,14 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
   if (!silentDrop) {
     const io = req.app.get('io');
     if (io) {
-      io.to(`conversation_${conversationID}`).emit('message:received', msg);
-
-      const userSockets = req.app.get('userSockets');
-      if (userSockets) {
-        const [participants] = await pool.execute(
-          'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-          [conversationID, senderID]
-        );
-        for (const p of participants) {
-          const sid = userSockets.get(p.alanyaID);
-          if (sid) io.to(sid).emit('message:received', msg);
-          io.to(`user_${p.alanyaID}`).emit('message:received', msg);
-        }
+      const [participants] = await pool.execute(
+        'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+        [conversationID, senderID]
+      );
+      // Émission unique par destinataire (room utilisateur) pour éviter les
+      // doublons quand un client est aussi abonné à la room conversation.
+      for (const p of participants) {
+        io.to(`user_${p.alanyaID}`).emit('message:received', msg);
       }
     }
 
