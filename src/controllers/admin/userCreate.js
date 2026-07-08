@@ -105,7 +105,7 @@ const _notifyPhoneChange = async ({ user, oldPhone, newPhone }) => {
 };
 
 const _resolvePhoneForCreate = async (req, body) => {
-  const isSuper = (req.user.typeCompte ?? 0) >= 2;
+  const isAdmin = (req.user.typeCompte ?? 0) >= 1;
   const manual = body.alanyaPhone != null && String(body.alanyaPhone).trim() !== '';
 
   if (manual) {
@@ -113,14 +113,8 @@ const _resolvePhoneForCreate = async (req, body) => {
     const v = validate(canonical);
     if (!v.ok) return { error: v.error, status: 400 };
 
-    if (!isSuper) {
-      if (v.tier !== 4) {
-        return { error: 'Seuls les numéros à 4 chiffres peuvent être saisis manuellement', status: 403 };
-      }
-    }
-
     const reserved = await isReserved(canonical);
-    if (reserved && !isSuper) {
+    if (reserved && !isAdmin) {
       return { error: 'Ce numéro est réservé', status: 403 };
     }
     if (await phoneExists(canonical)) {
@@ -130,17 +124,8 @@ const _resolvePhoneForCreate = async (req, body) => {
     return { canonical, tier: v.tier };
   }
 
-  const genLen = Number(body.generateLength);
-  if (![3, 4, 8].includes(genLen)) {
-    return { error: 'generateLength doit être 3, 4 ou 8', status: 400 };
-  }
-
-  if (!isSuper && ![4, 8].includes(genLen)) {
-    return { error: 'Génération 3 chiffres réservée au super-admin', status: 403 };
-  }
-
-  const canonical = await generateUniquePhone(genLen);
-  return { canonical, tier: genLen };
+  const canonical = await generateUniquePhone(8);
+  return { canonical, tier: 8 };
 };
 
 const createUser = async (req, res) => {

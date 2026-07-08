@@ -1,7 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { getUserById, getUserByPhone, searchUsers, blockUser, unblockUser, getBlockStatus } = require('../controllers/userController');
+const {
+  getUserById,
+  getUserByPhone,
+  searchUsers,
+  blockUser,
+  unblockUser,
+  getBlockStatus,
+  getBlockedUsers,
+} = require('../controllers/userController');
 
 /**
  * @swagger
@@ -23,6 +31,20 @@ const { getUserById, getUserByPhone, searchUsers, blockUser, unblockUser, getBlo
  *         description: Résultats de la recherche (max 20)
  */
 router.get('/search',       auth, searchUsers);
+
+/**
+ * @swagger
+ * /api/users/blocked:
+ *   get:
+ *     summary: Liste des utilisateurs bloqués par moi
+ *     tags: [Utilisateurs]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Liste des profils bloqués
+ */
+router.get('/blocked', auth, getBlockedUsers);
 
 /**
  * @swagger

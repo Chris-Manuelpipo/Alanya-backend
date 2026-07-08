@@ -1,4 +1,42 @@
 const admin = require('../config/firebase');
+const { messagePreview } = require('../utils/messagePreview');
+
+const _buildApnsConfig = (data) => {
+  const type = data.type;
+  const showAlert =
+    type === 'message' ||
+    type === 'meeting_invite' ||
+    type === 'meeting_reminder' ||
+    type === 'status_view';
+
+  const aps = { 'content-available': 1 };
+  if (showAlert && (data.title || data.body)) {
+    aps.alert = {
+      title: data.title || 'Alanya',
+      body: data.body || '',
+    };
+    aps.sound = 'default';
+  }
+
+  return {
+    headers: {
+      'apns-priority': showAlert ? '10' : '5',
+      'apns-push-type': showAlert ? 'alert' : 'background',
+    },
+    payload: { aps },
+  };
+};
+
+const _androidChannelFor = (type) =>
+  type === 'meeting_invite' || type === 'meeting_reminder'
+    ? 'talky_meetings'
+    : 'talky_messages';
+
+const _shouldShowSystemNotification = (type) =>
+  type === 'message' ||
+  type === 'meeting_invite' ||
+  type === 'meeting_reminder' ||
+  type === 'status_view';
 
 const sendDataOnlyNotification = async (fcmToken, data = {}) => {
   if (!fcmToken || fcmToken === 'INDEFINI') return;
@@ -9,21 +47,62 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
       return;
     }
 
+    const showNotif = _shouldShowSystemNotification(data.type);
+    const title = data.title || 'Alanya';
+    const body = data.body || '';
+
     const message = {
       token: fcmToken,
       data: Object.fromEntries(
         Object.entries(data).map(([k, v]) => [k, String(v)])
       ),
       android: {
-        priority: data.type === 'call' || data.type === 'group_call' ? 'high' : 'normal',
+        priority:
+          data.type === 'call' ||
+          data.type === 'group_call' ||
+          data.type === 'message'
+            ? 'high'
+            : 'normal',
+        ttl: 86400000,
+        ...(showNotif && body
+          ? {
+              notification: {
+                channelId: _androidChannelFor(data.type),
+                priority: 'high',
+                defaultSound: true,
+                defaultVibrateTimings: true,
+              },
+            }
+          : {}),
       },
-      apns: {
-        payload: { aps: { 'content-available': 1 } },
-      },
+      apns: _buildApnsConfig(data),
     };
 
-    await admin.messaging().send(message);
+    // Android/iOS affichent la notif système quand l'app est fermée.
+    // Le payload `data` reste disponible pour la navigation au tap.
+    if (showNotif && (title || body)) {
+      message.notification = { title, body };
+    }
+
+    const messageId = await admin.messaging().send(message);
+    console.log(`[FCM] Sent type=${data.type} id=${messageId}`);
   } catch (error) {
+    const code = error?.code || error?.errorInfo?.code || '';
+    const staleToken =
+      code === 'messaging/registration-token-not-registered' ||
+      code === 'messaging/invalid-registration-token' ||
+      error.message?.includes('Requested entity was not found');
+    if (staleToken) {
+      try {
+        const pool = require('../config/db');
+        await pool.execute(
+          'UPDATE users SET fcm_token = "INDEFINI" WHERE fcm_token = ?',
+          [fcmToken]
+        );
+      } catch (cleanupErr) {
+        console.warn('[FCM] Token cleanup failed:', cleanupErr.message);
+      }
+    }
     // Ne pas faire crasher le serveur pour une notif ratée
     console.error('[FCM] Send error:', error.message);
   }
@@ -38,14 +117,33 @@ const sendToUser = async (alanyaID, data = {}) => {
     );
     if (rows.length > 0) {
       await sendDataOnlyNotification(rows[0].fcm_token, data);
+    } else {
+      console.warn(`[FCM] Pas de token pour alanyaID=${alanyaID}`);
     }
   } catch (error) {
     console.error('[FCM] sendToUser error:', error.message);
   }
 };
 
-const notifyNewMessage = async (conversationID, senderID, senderName, content, type = 0) => {
+const notifyNewMessage = async (conversationID, senderID, senderName, fields = {}) => {
   try {
+    const {
+      content,
+      mediaName,
+      type = 0,
+      isViewOnce = false,
+      isGroup = false,
+      groupName = '',
+    } = fields;
+
+    const body = messagePreview({
+      content,
+      mediaName,
+      type,
+      isViewOnce,
+      maxLen: 100,
+    });
+
     const pool = require('../config/db');
     const [participants] = await pool.execute(
       'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
@@ -55,10 +153,12 @@ const notifyNewMessage = async (conversationID, senderID, senderName, content, t
       await sendToUser(p.alanyaID, {
         type:           'message',
         title:          senderName,
-        body:           content ? content.substring(0, 100) : 'Nouveau média',
+        body,
         conversationId: String(conversationID),
         callerId:       String(senderID),
         msgType:        String(type),
+        isGroup:        isGroup ? '1' : '0',
+        groupName:      String(groupName ?? ''),
       });
     }
   } catch (error) {

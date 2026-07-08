@@ -2,6 +2,7 @@ const pool = require('../../config/db');
 const { notifyIncomingCall, notifyGroupCall, notifyCallEnded } = require('../../services/notificationService');
 const { maxParticipants, maxInvitees } = require('../../constants/participantLimits');
 const { isBlockedEitherWay } = require('../../utils/blockUtils');
+const { getClientIp, parseCallMode } = require('../../utils/clientIp');
 const pendingCalls = require('../state/pendingCalls');
  
 const groupRooms = new Map();
@@ -119,10 +120,11 @@ const callUser = (io, socket, userSockets) => {
 
       let callID = null;
       try {
+        const callerIp = getClientIp(socket);
         const [result] = await pool.execute(
-          `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, start_time)
-           VALUES (?, ?, ?, 0, NOW(), NOW())`,
-          [callerID, targetID, isVideo ? 1 : 0]
+          `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, start_time, ip)
+           VALUES (?, ?, ?, 0, NOW(), NOW(), ?)`,
+          [callerID, targetID, isVideo ? 1 : 0, callerIp]
         );
         callID = result.insertId;
         socket.currentCallID = callID;
@@ -282,9 +284,10 @@ const endCall = (io, socket, userSockets) => {
   socket.on('end_call', async (data) => {
     try {
       if (!socket.authenticated) return;
-      const { targetUserId } = data;
+      const { targetUserId, mode: rawMode } = data;
       const targetID = toInt(targetUserId);
       const callerID = socket.alanyaID;
+      const mode = parseCallMode(rawMode);
 
       // Appel terminé/annulé : ne pas le rejouer au destinataire.
       if (targetID) pendingCalls.clear(targetID);
@@ -303,9 +306,10 @@ const endCall = (io, socket, userSockets) => {
           if (endedCallID) {
             await pool.execute(
               `UPDATE callHistory
-               SET duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+               SET duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW())),
+                   mode = COALESCE(?, mode)
                WHERE IDcall = ?`,
-              [endedCallID]
+              [mode, endedCallID]
             );
           }
         } catch (dbErr) {
@@ -604,6 +608,47 @@ const groupMuteState = (io, socket, userSockets) => {
   });
 };
 
+// Appel 1-à-1 : relaie l'état caméra vers le destinataire.
+const callVideoState = (io, socket, userSockets) => {
+  socket.on('call:video_state', (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const { toUserId, isVideoOn } = data || {};
+      const targetID = toInt(toUserId);
+      if (!targetID) return;
+
+      const targetSocketId = userSockets.get(targetID);
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('call:video_state', {
+          userId:    String(socket.alanyaID),
+          isVideoOn: !!isVideoOn,
+        });
+      }
+    } catch (error) {
+      console.error('[Socket call:video_state]', error.message);
+    }
+  });
+};
+
+// Appel de groupe : diffuse l'état caméra à tous les autres participants.
+const groupVideoState = (io, socket, userSockets) => {
+  socket.on('group:video_state', (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const rId = (data && data.roomId) || socket.currentGroupRoom;
+      if (!rId) return;
+
+      socket.to(`group_${rId}`).emit('group:video_state', {
+        roomId:    rId,
+        userId:    String(socket.alanyaID),
+        isVideoOn: !!(data && data.isVideoOn),
+      });
+    } catch (error) {
+      console.error('[Socket group:video_state]', error.message);
+    }
+  });
+};
+
 module.exports = {
   callUser,
   answerCall,
@@ -619,4 +664,6 @@ module.exports = {
   groupIceCandidate,
   callMuteState,
   groupMuteState,
+  callVideoState,
+  groupVideoState,
 };
