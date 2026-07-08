@@ -5,6 +5,7 @@ Exécuter **offline** (maintenance) dans l'ordre :
 ```bash
 mysql -u USER -p DATABASE < migrations/009_alanya_phone_pad_6_to_8.sql
 mysql -u USER -p DATABASE < migrations/010_reserved_alanya_phone.sql
+node scripts/seed-reserved-alanya-phones.js
 ```
 
 ## Vérifications post-migration
