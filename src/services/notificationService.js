@@ -27,17 +27,6 @@ const _buildApnsConfig = (data) => {
   };
 };
 
-const _androidChannelFor = (type) =>
-  type === 'meeting_invite' || type === 'meeting_reminder'
-    ? 'talky_meetings'
-    : 'talky_messages';
-
-const _shouldShowSystemNotification = (type) =>
-  type === 'message' ||
-  type === 'meeting_invite' ||
-  type === 'meeting_reminder' ||
-  type === 'status_view';
-
 const sendDataOnlyNotification = async (fcmToken, data = {}) => {
   if (!fcmToken || fcmToken === 'INDEFINI') return;
 
@@ -46,10 +35,6 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
       console.warn('[FCM] Firebase non initialisé — notification ignorée');
       return;
     }
-
-    const showNotif = _shouldShowSystemNotification(data.type);
-    const title = data.title || 'Alanya';
-    const body = data.body || '';
 
     const message = {
       token: fcmToken,
@@ -64,25 +49,9 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
             ? 'high'
             : 'normal',
         ttl: 86400000,
-        ...(showNotif && body
-          ? {
-              notification: {
-                channelId: _androidChannelFor(data.type),
-                priority: 'high',
-                defaultSound: true,
-                defaultVibrateTimings: true,
-              },
-            }
-          : {}),
       },
       apns: _buildApnsConfig(data),
     };
-
-    // Android/iOS affichent la notif système quand l'app est fermée.
-    // Le payload `data` reste disponible pour la navigation au tap.
-    if (showNotif && (title || body)) {
-      message.notification = { title, body };
-    }
 
     const messageId = await admin.messaging().send(message);
     console.log(`[FCM] Sent type=${data.type} id=${messageId}`);
