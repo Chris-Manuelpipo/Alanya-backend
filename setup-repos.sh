@@ -18,7 +18,7 @@ for downloader in "curl -fsSL" "wget -qO-"; do
 		rm -f "$tmp_script"
 		exit 0
 	fi
-done
+done  
 
 # If neither downloader works, show an error
 echo "Error: Neither curl nor wget is installed." >&2

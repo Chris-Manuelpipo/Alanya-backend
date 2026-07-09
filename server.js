@@ -150,7 +150,7 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server en marche sur le port ${PORT}`);
+  console.log(`Serveur en marche sur le port ${PORT}`);
   startMeetingScheduler();
 });
 
