@@ -63,4 +63,13 @@ function clear(targetID) {
   _pending.delete(targetID);
 }
 
-module.exports = { set, get, getReplayable, markDelivered, clear };
+// Réinitialise la livraison quand le socket se déconnecte (app tuée en arrière-plan
+// après réception live de l'offre) pour permettre le rejeu à la reconnexion.
+function markUndelivered(targetID) {
+  const entry = _getEntry(targetID);
+  if (!entry) return;
+  entry.deliveredAt = null;
+  entry.attempts = 0;
+}
+
+module.exports = { set, get, getReplayable, markDelivered, clear, markUndelivered };

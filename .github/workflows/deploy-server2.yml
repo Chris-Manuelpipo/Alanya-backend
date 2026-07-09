@@ -1,0 +1,19 @@
+name: Deploiement VPS2
+on:
+  push:
+    branches: [main]   # ou une autre branche si vous voulez les déclencher séparément
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS2_HOST }}
+          username: ${{ secrets.VPS2_USER }}
+          key: ${{ secrets.VPS2_SSH_KEY }}
+          port: ${{ secrets.VPS2_PORT }}
+          script: |
+            cd ~/backend
+            git pull origin main
+            npm install --omit=dev
+            pm2 restart backend --update-env

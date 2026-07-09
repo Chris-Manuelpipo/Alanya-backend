@@ -7,6 +7,12 @@ const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
+const MAX_BATCH_DELETE = 50;
+const MAX_BATCH_FORWARD_SOURCES = 20;
+const MAX_BATCH_FORWARD_TARGETS = 20;
+
+const _execute = (conn, sql, params) =>
+  conn ? conn.execute(sql, params) : pool.execute(sql, params);
 
 /// Supprime physiquement un fichier média à partir de son URL publique
 /// (`.../uploads/images/x.jpg` ou `.../uploads/media/<sous-dossier>/x`).
@@ -85,7 +91,42 @@ const getMessages = async (req, res) => {
   }
 };
 
-const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) => {
+const _deliverMessage = async (req, conversationID, senderID, msg, fields, silentDrop) => {
+  if (silentDrop) return;
+
+  const { content, mediaName, type, isViewOnce } = fields;
+  const io = req.app.get('io');
+  if (io) {
+    const [participants] = await pool.execute(
+      'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+      [conversationID, senderID]
+    );
+    for (const p of participants) {
+      io.to(`user_${p.alanyaID}`).emit('message:received', msg);
+    }
+  }
+
+  const [sender] = await pool.execute(
+    'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
+  );
+  const senderName = sender[0]?.nom ?? 'Talky';
+
+  const [convRows] = await pool.execute(
+    'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
+    [conversationID]
+  );
+  const conv = convRows[0] ?? {};
+  await notifyNewMessage(conversationID, senderID, senderName, {
+    content,
+    mediaName,
+    type,
+    isViewOnce,
+    isGroup: !!conv.isGroup,
+    groupName: conv.GroupName ?? '',
+  });
+};
+
+const _persistMessage = async (conn, conversationID, senderID, fields) => {
   const {
     content, type = 0, mediaUrl, mediaName, mediaDuration,
     replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
@@ -104,7 +145,7 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
   const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
   const resolvedReplyToContent = resolvedReplyToID != null ? (replyToContent ?? null) : null;
 
-  const [result] = await pool.execute(
+  const [result] = await _execute(conn, 
     `INSERT INTO message
        (senderID, conversationID, content, type, status, sendAt,
         mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
@@ -120,7 +161,7 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
   const msgID = result.insertId;
 
   if (!silentDrop) {
-    await pool.execute(
+    await _execute(conn,
       `UPDATE conversation
        SET lastMessage = ?, lastMessageAt = NOW(),
            lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
@@ -131,13 +172,13 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
       ]
     );
 
-    await pool.execute(
+    await _execute(conn,
       'UPDATE conv_participants SET unreadCount = unreadCount + 1 WHERE conversID = ? AND alanyaID != ?',
       [conversationID, senderID]
     );
   }
 
-  const [rows] = await pool.execute(
+  const [rows] = await _execute(conn,
     `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar
      FROM message m
      JOIN users u ON m.senderID = u.alanyaID
@@ -145,43 +186,15 @@ const _persistAndDeliverMessage = async (req, conversationID, senderID, fields) 
     [msgID]
   );
 
-  const msg = rows[0];
+  return { msg: rows[0], silentDrop, fields: { content, mediaName, type, isViewOnce } };
+};
 
-  if (!silentDrop) {
-    const io = req.app.get('io');
-    if (io) {
-      const [participants] = await pool.execute(
-        'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-        [conversationID, senderID]
-      );
-      // Émission unique par destinataire (room utilisateur) pour éviter les
-      // doublons quand un client est aussi abonné à la room conversation.
-      for (const p of participants) {
-        io.to(`user_${p.alanyaID}`).emit('message:received', msg);
-      }
-    }
-
-    const [sender] = await pool.execute(
-      'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
-    );
-    const senderName = sender[0]?.nom ?? 'Talky';
-
-    const [convRows] = await pool.execute(
-      'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
-      [conversationID]
-    );
-    const conv = convRows[0] ?? {};
-    await notifyNewMessage(conversationID, senderID, senderName, {
-      content,
-      mediaName,
-      type,
-      isViewOnce,
-      isGroup: !!conv.isGroup,
-      groupName: conv.GroupName ?? '',
-    });
+const _persistAndDeliverMessage = async (req, conversationID, senderID, fields, { conn = null, skipDelivery = false } = {}) => {
+  const { msg, silentDrop, fields: deliveryFields } = await _persistMessage(conn, conversationID, senderID, fields);
+  if (!skipDelivery) {
+    await _deliverMessage(req, conversationID, senderID, msg, deliveryFields, silentDrop);
   }
-
-  return { msg, silentDrop };
+  return { msg, silentDrop, deliveryFields };
 };
 
 const sendMessage = async (req, res) => {
@@ -406,11 +419,231 @@ const markMessageViewed = async (req, res) => {
   }
 };
 
+const batchDeleteMessages = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { msgIDs, all } = req.body;
+    const senderID = req.user.alanyaID;
+    const forAll = all === true || all === 1 || all === '1' || all === 'true';
+
+    if (!Array.isArray(msgIDs) || msgIDs.length === 0) {
+      return res.status(400).json({ error: 'msgIDs requis (tableau non vide)' });
+    }
+    if (msgIDs.length > MAX_BATCH_DELETE) {
+      return res.status(400).json({ error: `Maximum ${MAX_BATCH_DELETE} messages par requête` });
+    }
+
+    const ids = [...new Set(msgIDs.map((id) => parseInt(id, 10)).filter((id) => id > 0))];
+    if (ids.length !== msgIDs.length) {
+      return res.status(400).json({ error: 'msgIDs invalides ou dupliqués' });
+    }
+
+    await conn.beginTransaction();
+
+    const placeholders = ids.map(() => '?').join(',');
+    const [existing] = await conn.execute(
+      `SELECT msgID, conversationID, senderID FROM message WHERE msgID IN (${placeholders})`,
+      ids
+    );
+
+    if (existing.length !== ids.length) {
+      await conn.rollback();
+      return res.status(404).json({ error: 'Un ou plusieurs messages introuvables' });
+    }
+
+    const unauthorized = existing.some((row) => row.senderID !== senderID);
+    if (unauthorized) {
+      await conn.rollback();
+      return res.status(403).json({ error: 'Non autorisé pour un ou plusieurs messages' });
+    }
+
+    if (forAll) {
+      await conn.execute(
+        `UPDATE message SET isDeleted = 1, deletedForID = NULL WHERE msgID IN (${placeholders})`,
+        ids
+      );
+    } else {
+      await conn.execute(
+        `UPDATE message SET deletedForID = ? WHERE msgID IN (${placeholders})`,
+        [senderID, ...ids]
+      );
+    }
+
+    await conn.commit();
+
+    const byConversation = new Map();
+    for (const row of existing) {
+      const convId = row.conversationID;
+      if (!byConversation.has(convId)) byConversation.set(convId, []);
+      byConversation.get(convId).push(row.msgID);
+    }
+
+    const io = req.app.get('io');
+    if (io) {
+      for (const [conversationID, convMsgIDs] of byConversation) {
+        io.to(`conversation_${conversationID}`).emit('messages:deleted', {
+          conversationID,
+          msgIDs: convMsgIDs,
+          all: forAll,
+          deletedForID: forAll ? null : senderID,
+        });
+      }
+    }
+
+    res.json({ deleted: ids.length, all: forAll });
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+};
+
+const batchForwardMessages = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { sourceMsgIDs, targetConversationIDs, caption } = req.body;
+    const senderID = req.user.alanyaID;
+
+    if (!Array.isArray(sourceMsgIDs) || sourceMsgIDs.length === 0) {
+      return res.status(400).json({ error: 'sourceMsgIDs requis (tableau non vide)' });
+    }
+    if (!Array.isArray(targetConversationIDs) || targetConversationIDs.length === 0) {
+      return res.status(400).json({ error: 'targetConversationIDs requis (tableau non vide)' });
+    }
+    if (sourceMsgIDs.length > MAX_BATCH_FORWARD_SOURCES) {
+      return res.status(400).json({ error: `Maximum ${MAX_BATCH_FORWARD_SOURCES} messages source` });
+    }
+    if (targetConversationIDs.length > MAX_BATCH_FORWARD_TARGETS) {
+      return res.status(400).json({ error: `Maximum ${MAX_BATCH_FORWARD_TARGETS} conversations cibles` });
+    }
+
+    const sourceIds = [...new Set(sourceMsgIDs.map((id) => parseInt(id, 10)).filter((id) => id > 0))];
+    const targetIds = [...new Set(targetConversationIDs.map((id) => parseInt(id, 10)).filter((id) => id > 0))];
+    if (sourceIds.length !== sourceMsgIDs.length || targetIds.length !== targetConversationIDs.length) {
+      return res.status(400).json({ error: 'IDs invalides ou dupliqués' });
+    }
+
+    const sourcePlaceholders = sourceIds.map(() => '?').join(',');
+    const [sources] = await pool.execute(
+      `SELECT * FROM message WHERE msgID IN (${sourcePlaceholders}) ORDER BY FIELD(msgID, ${sourcePlaceholders})`,
+      [...sourceIds, ...sourceIds]
+    );
+
+    if (sources.length !== sourceIds.length) {
+      return res.status(404).json({ error: 'Un ou plusieurs messages source introuvables' });
+    }
+
+    const sourceConversationID = sources[0].conversationID;
+    if (!sources.every((m) => m.conversationID === sourceConversationID)) {
+      return res.status(400).json({ error: 'Tous les messages source doivent être dans la même conversation' });
+    }
+
+    const [sourceMember] = await pool.execute(
+      'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+      [sourceConversationID, senderID]
+    );
+    if (sourceMember.length === 0) {
+      return res.status(403).json({ error: 'Non autorisé à lire les messages source' });
+    }
+
+    for (const m of sources) {
+      if (m.isDeleted) {
+        return res.status(400).json({ error: 'Message supprimé non transférable' });
+      }
+      if (m.isViewOnce) {
+        return res.status(400).json({ error: 'Média à vue unique non transférable' });
+      }
+      if (m.type !== 0 && !m.mediaUrl) {
+        return res.status(400).json({ error: 'Média sans URL serveur non transférable via batch' });
+      }
+    }
+
+    for (const targetId of targetIds) {
+      const [member] = await pool.execute(
+        'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+        [targetId, senderID]
+      );
+      if (member.length === 0) {
+        return res.status(403).json({ error: `Non autorisé pour la conversation ${targetId}` });
+      }
+    }
+
+    await conn.beginTransaction();
+
+    const pendingDelivery = [];
+    const createdMessages = [];
+    const trimmedCaption = typeof caption === 'string' ? caption.trim() : '';
+
+    for (const targetId of targetIds) {
+      for (let i = 0; i < sources.length; i++) {
+        const source = sources[i];
+        let content = source.content ?? null;
+        if (i === 0 && trimmedCaption) {
+          content = trimmedCaption;
+        } else if (i === 0 && source.type !== 0 && trimmedCaption === '') {
+          content = source.content ?? null;
+        }
+
+        const { msg, silentDrop, deliveryFields } = await _persistAndDeliverMessage(
+          req,
+          targetId,
+          senderID,
+          {
+            content,
+            type: source.type,
+            mediaUrl: source.mediaUrl,
+            mediaName: source.mediaName,
+            mediaDuration: source.mediaDuration,
+            isForwarded: 1,
+          },
+          { conn, skipDelivery: true }
+        );
+
+        createdMessages.push(msg);
+        if (!silentDrop) {
+          pendingDelivery.push({
+            conversationID: targetId,
+            msg,
+            deliveryFields,
+            silentDrop,
+          });
+        }
+      }
+    }
+
+    await conn.commit();
+
+    for (const item of pendingDelivery) {
+      await _deliverMessage(
+        req,
+        item.conversationID,
+        senderID,
+        item.msg,
+        item.deliveryFields,
+        item.silentDrop
+      );
+    }
+
+    res.json({ forwarded: createdMessages.length, messages: createdMessages });
+  } catch (error) {
+    await conn.rollback();
+    if (error.status === 403) {
+      return res.status(403).json({ error: error.message, code: error.code });
+    }
+    throw error;
+  } finally {
+    conn.release();
+  }
+};
+
 module.exports = {
   getMessages,
   sendMessage,
   updateMessage,
   deleteMessage,
+  batchDeleteMessages,
+  batchForwardMessages,
   pinMessage,
   markMessageViewed,
 };

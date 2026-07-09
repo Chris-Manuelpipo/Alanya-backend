@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { updateMessage, deleteMessage, pinMessage, markMessageViewed } = require('../controllers/messageController');
+const { updateMessage, deleteMessage, batchDeleteMessages, batchForwardMessages, pinMessage, markMessageViewed } = require('../controllers/messageController');
 
 /**
  * @swagger
@@ -51,6 +51,8 @@ const { updateMessage, deleteMessage, pinMessage, markMessageViewed } = require(
  *       200:
  *         description: Message supprimé
  */
+router.post('/batch-delete', auth, batchDeleteMessages);
+router.post('/batch-forward', auth, batchForwardMessages);
 router.put('/:id', auth, updateMessage);
 router.delete('/:id', auth, deleteMessage);
 router.patch('/:id/pin', auth, pinMessage);

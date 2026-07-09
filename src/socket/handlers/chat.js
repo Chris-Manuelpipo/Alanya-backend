@@ -2,6 +2,7 @@ const pool = require('../../config/db');
 const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy, getDirectConversationPeer, emitPresenceUpdate } = require('../../utils/blockUtils');
 const { resolveLastMessagePreview } = require('../../utils/mediaAlbum');
 const { resolveReplyToID } = require('../../utils/resolveReplyToID');
+const pendingCalls = require('../state/pendingCalls');
 
 const joinConversation = (io, socket, userSockets) => {
   socket.on('join_conversation', async (data) => {
@@ -330,6 +331,7 @@ const handleDisconnect = async (io, socket, userSockets) => {
   if (!userID) return;
 
   userSockets.delete(userID);
+  pendingCalls.markUndelivered(userID);
 
   const meetingID = socket.currentMeetingID;
   if (meetingID) {
