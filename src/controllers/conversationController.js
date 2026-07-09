@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { getBlockPair, maskPresenceIfBlocked } = require('../utils/blockUtils');
+const MAX_BATCH_CONVERSATIONS = 50;
 
 // Nettoyer les URL d'avatar pour éviter les valeurs indésirables et les problèmes de sécurité
 const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
@@ -372,6 +373,139 @@ const leaveGroup = async (req, res) => {
   }
 };
 
+const _normalizeConversationIDs = (raw) => {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const ids = [...new Set(raw.map((id) => parseInt(id, 10)).filter((id) => id > 0))];
+  return ids.length === raw.length ? ids : [];
+};
+
+const batchUpdateConversations = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { conversationIDs, isPinned, isArchived } = req.body;
+    const alanyaID = req.user.alanyaID;
+    const ids = _normalizeConversationIDs(conversationIDs);
+
+    if (ids.length === 0) {
+      return res.status(400).json({ error: 'conversationIDs invalides ou dupliqués' });
+    }
+    if (ids.length > MAX_BATCH_CONVERSATIONS) {
+      return res.status(400).json({ error: `Maximum ${MAX_BATCH_CONVERSATIONS} conversations` });
+    }
+
+    const hasPinned = typeof isPinned === 'number' || typeof isPinned === 'boolean';
+    const hasArchived = typeof isArchived === 'number' || typeof isArchived === 'boolean';
+    if (!hasPinned && !hasArchived) {
+      return res.status(400).json({ error: 'Aucune mise à jour fournie (isPinned/isArchived)' });
+    }
+
+    const placeholders = ids.map(() => '?').join(',');
+    await conn.beginTransaction();
+
+    const [members] = await conn.execute(
+      `SELECT conversID FROM conv_participants
+       WHERE alanyaID = ? AND conversID IN (${placeholders})`,
+      [alanyaID, ...ids]
+    );
+    if (members.length !== ids.length) {
+      await conn.rollback();
+      return res.status(403).json({ error: 'Non autorisé pour une ou plusieurs conversations' });
+    }
+
+    if (hasPinned) {
+      const pinned = isPinned === true || isPinned === 1 ? 1 : 0;
+      await conn.execute(
+        `UPDATE conv_participants
+         SET isPinned = ?
+         WHERE alanyaID = ? AND conversID IN (${placeholders})`,
+        [pinned, alanyaID, ...ids]
+      );
+    }
+    if (hasArchived) {
+      const archived = isArchived === true || isArchived === 1 ? 1 : 0;
+      await conn.execute(
+        `UPDATE conv_participants
+         SET isArchived = ?
+         WHERE alanyaID = ? AND conversID IN (${placeholders})`,
+        [archived, alanyaID, ...ids]
+      );
+    }
+
+    await conn.commit();
+    res.json({ updated: ids.length });
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+};
+
+const batchDeleteConversations = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const { conversationIDs } = req.body;
+    const alanyaID = req.user.alanyaID;
+    const ids = _normalizeConversationIDs(conversationIDs);
+
+    if (ids.length === 0) {
+      return res.status(400).json({ error: 'conversationIDs invalides ou dupliqués' });
+    }
+    if (ids.length > MAX_BATCH_CONVERSATIONS) {
+      return res.status(400).json({ error: `Maximum ${MAX_BATCH_CONVERSATIONS} conversations` });
+    }
+
+    const placeholders = ids.map(() => '?').join(',');
+    await conn.beginTransaction();
+
+    const [members] = await conn.execute(
+      `SELECT conversID FROM conv_participants
+       WHERE alanyaID = ? AND conversID IN (${placeholders})`,
+      [alanyaID, ...ids]
+    );
+    if (members.length !== ids.length) {
+      await conn.rollback();
+      return res.status(403).json({ error: 'Non autorisé pour une ou plusieurs conversations' });
+    }
+
+    await conn.execute(
+      `DELETE FROM conv_participants
+       WHERE alanyaID = ? AND conversID IN (${placeholders})`,
+      [alanyaID, ...ids]
+    );
+
+    const [orphans] = await conn.execute(
+      `SELECT c.conversID
+       FROM conversation c
+       LEFT JOIN conv_participants cp ON cp.conversID = c.conversID
+       WHERE c.conversID IN (${placeholders})
+       GROUP BY c.conversID
+       HAVING COUNT(cp.alanyaID) = 0`,
+      ids
+    );
+    const orphanIDs = orphans.map((r) => Number(r.conversID)).filter((id) => id > 0);
+    if (orphanIDs.length > 0) {
+      const orphanPlaceholders = orphanIDs.map(() => '?').join(',');
+      await conn.execute(
+        `DELETE FROM message WHERE conversationID IN (${orphanPlaceholders})`,
+        orphanIDs
+      );
+      await conn.execute(
+        `DELETE FROM conversation WHERE conversID IN (${orphanPlaceholders})`,
+        orphanIDs
+      );
+    }
+
+    await conn.commit();
+    res.json({ deleted: ids.length });
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+};
+
 module.exports = {
   getConversations,
   getConversationById,
@@ -382,4 +516,6 @@ module.exports = {
   markAsRead,
   leaveGroup,
   addParticipants,
+  batchUpdateConversations,
+  batchDeleteConversations,
 };

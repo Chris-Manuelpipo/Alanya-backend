@@ -11,6 +11,8 @@ const {
   markAsRead,
   leaveGroup,
   addParticipants,
+  batchUpdateConversations,
+  batchDeleteConversations,
 } = require('../controllers/conversationController');
 
 /**
@@ -46,6 +48,8 @@ const {
  */
 router.get('/', auth, getConversations);
 router.post('/', auth, createConversation);
+router.patch('/batch', auth, batchUpdateConversations);
+router.post('/batch-delete', auth, batchDeleteConversations);
 
 /**
  * @swagger
