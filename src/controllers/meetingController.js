@@ -58,7 +58,15 @@ const createMeeting = async (req, res) => {
       [result.insertId]
     );
 
-    res.json(rows[0]);
+    const [participants] = await pool.execute(
+      `SELECT p.*, u.nom, u.pseudo, u.avatar_url, u.is_online
+       FROM participant p
+       JOIN users u ON p.IDparticipant = u.alanyaID
+       WHERE p.idMeeting = ?`,
+      [result.insertId]
+    );
+
+    res.json({ ...rows[0], participants });
   } catch (error) {
     throw error;
   }
