@@ -3,6 +3,7 @@ const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy,
 const { resolveLastMessagePreview } = require('../../utils/mediaAlbum');
 const { resolveReplyToID } = require('../../utils/resolveReplyToID');
 const pendingCalls = require('../state/pendingCalls');
+const meetingMuteStates = require('../state/meetingMuteStates');
 
 const joinConversation = (io, socket, userSockets) => {
   socket.on('join_conversation', async (data) => {
@@ -339,6 +340,7 @@ const handleDisconnect = async (io, socket, userSockets) => {
       meetingID,
       userID: String(userID),
     });
+    meetingMuteStates.removeUser(meetingID, userID);
     try {
       await pool.execute(
         `UPDATE participant

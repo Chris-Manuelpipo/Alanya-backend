@@ -1,4 +1,5 @@
 const pool = require('../../config/db');
+const meetingMuteStates = require('../state/meetingMuteStates');
 
 function toInt(v) {
   const n = parseInt(v, 10);
@@ -36,10 +37,10 @@ const meetingCreate = (io, socket, userSockets) => {
 };
  
 const meetingJoinRoom = (io, socket, userSockets) => {
-  socket.on('meeting:join_room', (data) => {
+  socket.on('meeting:join_room', async (data) => {
     try {
       if (!socket.authenticated) return;
-      const { meetingID, userID } = data;
+      const { meetingID, userID, userName, isMuted } = data;
       const mID = toInt(meetingID);
       const uID = toInt(userID) || socket.alanyaID;
 
@@ -50,11 +51,39 @@ const meetingJoinRoom = (io, socket, userSockets) => {
       socket.join(`meeting_${mID}`);
       socket.currentMeetingID = mID;
 
-      socket.emit('meeting:room_joined', { meetingID: mID, userID: uID });
+      if (typeof isMuted === 'boolean') {
+        meetingMuteStates.set(mID, uID, isMuted);
+      }
 
-      socket.to(`meeting_${mID}`).emit('meeting:user_joined', {
+      let nom = null;
+      let pseudo = null;
+      try {
+        const [userRows] = await pool.execute(
+          'SELECT nom, pseudo FROM users WHERE alanyaID = ?',
+          [uID]
+        );
+        if (userRows.length > 0) {
+          nom = userRows[0].nom;
+          pseudo = userRows[0].pseudo;
+        }
+      } catch (err) {
+        console.error('[Socket meeting:join_room] user lookup:', err.message);
+      }
+
+      const payload = {
         meetingID: mID,
         userID:    String(uID),
+        userName:  userName || nom || pseudo || null,
+        nom,
+        pseudo,
+        muteStates: meetingMuteStates.getSnapshot(mID, uID),
+      };
+
+      socket.emit('meeting:room_joined', payload);
+
+      socket.to(`meeting_${mID}`).emit('meeting:user_joined', {
+        ...payload,
+        isMuted: typeof isMuted === 'boolean' ? isMuted : false,
       });
     } catch (error) {
       console.error('[Socket meeting:join_room]', error.message);
@@ -80,15 +109,40 @@ const meetingJoinRequest = (io, socket, userSockets) => {
 };
 
 const meetingJoinAccept = (io, socket, userSockets) => {
-  socket.on('meeting:join_accept', (data) => {
+  socket.on('meeting:join_accept', async (data) => {
     if (!socket.authenticated) return;
     const { meetingID, userID } = data;
-    const userSocket = userSockets.get(toInt(userID));
+    const uID = toInt(userID);
+    const userSocket = userSockets.get(uID);
 
     if (userSocket) {
       io.to(userSocket).emit('meeting:accepted', { meetingID });
     }
-    socket.to(`meeting_${meetingID}`).emit('meeting:user_joined', { meetingID, userID });
+
+    let nom = null;
+    let pseudo = null;
+    if (uID) {
+      try {
+        const [userRows] = await pool.execute(
+          'SELECT nom, pseudo FROM users WHERE alanyaID = ?',
+          [uID]
+        );
+        if (userRows.length > 0) {
+          nom = userRows[0].nom;
+          pseudo = userRows[0].pseudo;
+        }
+      } catch (err) {
+        console.error('[Socket meeting:join_accept] user lookup:', err.message);
+      }
+    }
+
+    socket.to(`meeting_${meetingID}`).emit('meeting:user_joined', {
+      meetingID,
+      userID:   String(userID),
+      userName: nom || pseudo || null,
+      nom,
+      pseudo,
+    });
   });
 };
 
@@ -131,6 +185,7 @@ const meetingEnd = (io, socket, userSockets) => {
     }
 
     io.to(`meeting_${meetingID}`).emit('meeting:ended', { meetingID });
+    meetingMuteStates.clearMeeting(meetingID);
 
     const roomSockets = io.sockets.adapter.rooms.get(`meeting_${meetingID}`);
     if (roomSockets) {
@@ -171,6 +226,7 @@ const meetingLeave = (io, socket, userSockets) => {
         userID: String(socket.alanyaID),
       });
 
+      meetingMuteStates.removeUser(meetingID, socket.alanyaID);
       socket.leave(`meeting_${meetingID}`);
       socket.currentMeetingID = null;
     } catch (error) {
@@ -256,10 +312,13 @@ const meetingMuteState = (io, socket, userSockets) => {
         || toInt(data && (data.meetingId ?? data.meetingID));
       if (!mID) return;
 
+      const isMuted = !!(data && data.isMuted);
+      meetingMuteStates.set(mID, socket.alanyaID, isMuted);
+
       socket.to(`meeting_${mID}`).emit('meeting:mute_state', {
         meetingID: mID,
         userId:    String(socket.alanyaID),
-        isMuted:   !!(data && data.isMuted),
+        isMuted,
       });
     } catch (error) {
       console.error('[Socket meeting:mute_state]', error.message);
