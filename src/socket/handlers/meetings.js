@@ -1,5 +1,6 @@
 const pool = require('../../config/db');
 const meetingMuteStates = require('../state/meetingMuteStates');
+const meetingVideoStates = require('../state/meetingVideoStates');
 
 function toInt(v) {
   const n = parseInt(v, 10);
@@ -40,7 +41,7 @@ const meetingJoinRoom = (io, socket, userSockets) => {
   socket.on('meeting:join_room', async (data) => {
     try {
       if (!socket.authenticated) return;
-      const { meetingID, userID, userName, isMuted } = data;
+      const { meetingID, userID, userName, isMuted, isVideoOff } = data;
       const mID = toInt(meetingID);
       const uID = toInt(userID) || socket.alanyaID;
 
@@ -53,6 +54,10 @@ const meetingJoinRoom = (io, socket, userSockets) => {
 
       if (typeof isMuted === 'boolean') {
         meetingMuteStates.set(mID, uID, isMuted);
+      }
+
+      if (typeof isVideoOff === 'boolean') {
+        meetingVideoStates.set(mID, uID, isVideoOff);
       }
 
       let nom = null;
@@ -77,6 +82,7 @@ const meetingJoinRoom = (io, socket, userSockets) => {
         nom,
         pseudo,
         muteStates: meetingMuteStates.getSnapshot(mID, uID),
+        videoStates: meetingVideoStates.getSnapshot(mID, uID),
       };
 
       socket.emit('meeting:room_joined', payload);
@@ -84,6 +90,7 @@ const meetingJoinRoom = (io, socket, userSockets) => {
       socket.to(`meeting_${mID}`).emit('meeting:user_joined', {
         ...payload,
         isMuted: typeof isMuted === 'boolean' ? isMuted : false,
+        isVideoOff: typeof isVideoOff === 'boolean' ? isVideoOff : false,
       });
     } catch (error) {
       console.error('[Socket meeting:join_room]', error.message);
@@ -186,6 +193,7 @@ const meetingEnd = (io, socket, userSockets) => {
 
     io.to(`meeting_${meetingID}`).emit('meeting:ended', { meetingID });
     meetingMuteStates.clearMeeting(meetingID);
+    meetingVideoStates.clearMeeting(meetingID);
 
     const roomSockets = io.sockets.adapter.rooms.get(`meeting_${meetingID}`);
     if (roomSockets) {
@@ -227,6 +235,7 @@ const meetingLeave = (io, socket, userSockets) => {
       });
 
       meetingMuteStates.removeUser(meetingID, socket.alanyaID);
+      meetingVideoStates.removeUser(meetingID, socket.alanyaID);
       socket.leave(`meeting_${meetingID}`);
       socket.currentMeetingID = null;
     } catch (error) {
@@ -326,6 +335,32 @@ const meetingMuteState = (io, socket, userSockets) => {
   });
 };
 
+// État caméra : diffuse à tous les autres participants de la réunion.
+// Symétrique de meeting:mute_state. L'émetteur est exclu via `socket.to`.
+// Le userId provient de socket.alanyaID (fiable), le meetingID de
+// socket.currentMeetingID en priorité.
+const meetingVideoState = (io, socket, userSockets) => {
+  socket.on('meeting:video_state', (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const mID = socket.currentMeetingID
+        || toInt(data && (data.meetingId ?? data.meetingID));
+      if (!mID) return;
+
+      const isVideoOff = !!(data && data.isVideoOff);
+      meetingVideoStates.set(mID, socket.alanyaID, isVideoOff);
+
+      socket.to(`meeting_${mID}`).emit('meeting:video_state', {
+        meetingID:  mID,
+        userId:     String(socket.alanyaID),
+        isVideoOff,
+      });
+    } catch (error) {
+      console.error('[Socket meeting:video_state]', error.message);
+    }
+  });
+};
+
 module.exports = {
   meetingCreate,
   meetingJoinRoom,     
@@ -340,4 +375,5 @@ module.exports = {
   meetingAnswer,
   meetingIceCandidate,
   meetingMuteState,
+  meetingVideoState,
 };
