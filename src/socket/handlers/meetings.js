@@ -350,6 +350,10 @@ const meetingVideoState = (io, socket, userSockets) => {
       const isVideoOff = !!(data && data.isVideoOff);
       meetingVideoStates.set(mID, socket.alanyaID, isVideoOff);
 
+      console.log(
+        `[Socket meeting:video_state] meeting=${mID} user=${socket.alanyaID} isVideoOff=${isVideoOff}`,
+      );
+
       socket.to(`meeting_${mID}`).emit('meeting:video_state', {
         meetingID:  mID,
         userId:     String(socket.alanyaID),

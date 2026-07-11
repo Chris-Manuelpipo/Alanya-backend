@@ -34,6 +34,76 @@ const _findMessageByClientId = async (senderID, clientId) => {
   return rows[0] ?? null;
 };
 
+/** Diffuse message:received (+ FCM optionnel) aux autres participants. */
+const _deliverMessageToParticipants = async (
+  io,
+  conversationID,
+  senderID,
+  msg,
+  { skipFcm = false, notifyFields = null } = {},
+) => {
+  const [participants] = await pool.execute(
+    'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+    [conversationID, senderID],
+  );
+
+  for (const p of participants) {
+    io.to(`user_${p.alanyaID}`).emit('message:received', msg);
+  }
+
+  if (skipFcm) return;
+
+  const fields = notifyFields ?? {
+    content: msg.content,
+    mediaName: msg.mediaName,
+    type: msg.type,
+    isViewOnce: msg.isViewOnce,
+  };
+
+  const [sender] = await pool.execute(
+    'SELECT nom FROM users WHERE alanyaID = ?', [senderID],
+  );
+  const senderName = sender[0]?.nom ?? 'Talky';
+
+  const [convRows] = await pool.execute(
+    'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
+    [conversationID],
+  );
+  const conv = convRows[0] ?? {};
+
+  setTimeout(() => {
+    const { notifyNewMessage } = require('../../services/notificationService');
+    notifyNewMessage(conversationID, senderID, senderName, {
+      ...fields,
+      isGroup: !!conv.isGroup,
+      groupName: conv.GroupName ?? '',
+    }).catch((e) => console.warn('[FCM notification]', e.message));
+  }, 0);
+};
+
+/**
+ * Réponse idempotente : confirme l'émetteur ET re-diffuse aux membres.
+ * Les clients dédupliquent déjà message:received ; sans rebroadcast, un retry
+ * outbox (même clientId) persistait le message (✓) sans jamais le livrer.
+ */
+const _emitExistingMessage = async (io, socket, existing, normalizedClientId) => {
+  console.warn(
+    `[Socket message:send] idempotent hit sender=${existing.senderID} clientId=${normalizedClientId} msgID=${existing.msgID} conv=${existing.conversationID} → rebroadcast`,
+  );
+  await _deliverMessageToParticipants(
+    io,
+    existing.conversationID,
+    existing.senderID,
+    existing,
+    { skipFcm: true },
+  );
+  socket.emit('message:sent', {
+    msgID: existing.msgID,
+    clientId: normalizedClientId,
+    ...existing,
+  });
+};
+
 const joinConversation = (io, socket, userSockets) => {
   socket.on('join_conversation', async (data) => {
     try {
@@ -85,11 +155,7 @@ const messageSend = (io, socket, userSockets) => {
       if (normalizedClientId) {
         const existing = await _findMessageByClientId(senderID, normalizedClientId);
         if (existing) {
-          return socket.emit('message:sent', {
-            msgID: existing.msgID,
-            clientId: normalizedClientId,
-            ...existing,
-          });
+          return _emitExistingMessage(io, socket, existing, normalizedClientId);
         }
       }
 
@@ -115,11 +181,7 @@ const messageSend = (io, socket, userSockets) => {
         if (insertErr.code === 'ER_DUP_ENTRY' && normalizedClientId) {
           const existing = await _findMessageByClientId(senderID, normalizedClientId);
           if (existing) {
-            return socket.emit('message:sent', {
-              msgID: existing.msgID,
-              clientId: normalizedClientId,
-              ...existing,
-            });
+            return _emitExistingMessage(io, socket, existing, normalizedClientId);
           }
         }
         throw insertErr;
@@ -152,42 +214,19 @@ const messageSend = (io, socket, userSockets) => {
       }
 
       if (!silentDrop) {
-        // ÉTAPE 5 : Diffuser le message UNE SEULE FOIS à chaque autre participant.
-        const [participants] = await pool.execute(
-          'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-          [conversationID, senderID]
-        );
-
-        for (const p of participants) {
-          io.to(`user_${p.alanyaID}`).emit('message:received', msg);
-        }
-
-        // ÉTAPE 6 : Notif FCM aux autres participants
-        const [sender] = await pool.execute(
-          'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
-        );
-        const senderName = sender[0]?.nom ?? 'Talky';
-
-        const [convRows] = await pool.execute(
-          'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
-          [conversationID]
-        );
-        const conv = convRows[0] ?? {};
         const notifyFields = {
           content,
           mediaName,
           type,
           isViewOnce,
-          isGroup: !!conv.isGroup,
-          groupName: conv.GroupName ?? '',
         };
-
-        setTimeout(() => {
-          const { notifyNewMessage } = require('../../services/notificationService');
-          notifyNewMessage(conversationID, senderID, senderName, notifyFields).catch(e =>
-            console.warn('[FCM notification]', e.message)
-          );
-        }, 0);
+        await _deliverMessageToParticipants(
+          io,
+          conversationID,
+          senderID,
+          msg,
+          { notifyFields },
+        );
       }
 
       // Renvoyer clientId pour que l'émetteur retrouve son message optimiste.
