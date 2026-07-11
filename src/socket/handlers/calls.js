@@ -4,7 +4,40 @@ const { maxParticipants, maxInvitees } = require('../../constants/participantLim
 const { isBlockedEitherWay } = require('../../utils/blockUtils');
 const { getClientIp, parseCallMode } = require('../../utils/clientIp');
 const pendingCalls = require('../state/pendingCalls');
- 
+const callState = require('../state/callState');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTRAT D'EVENTS — appels 1-à-1
+//
+// Client → Serveur :
+//   call_user     { targetUserId, callerId, callerName, callerPhoto, isVideo, offer }
+//   answer_call   { callerId, answer }
+//   reject_call   { callerId }
+//   end_call      { targetUserId, mode? }
+//   ice_candidate { targetUserId, candidate }
+//
+// Serveur → Client :
+//   incoming_call { callId, callerId, callerName, callerPhoto, isVideo, offer }
+//   call_answered { answer }
+//   call_rejected {}
+//   call_ended    {}
+//   call_failed   { reason, code? }                     — erreur (hors-ligne, données invalides…)
+//   call_busy     { callId, targetId, reason:'busy' }   — cible déjà ringing / in_call
+//   call_no_answer{ callId, targetId, reason:'no_answer' } — timeout serveur sans réponse
+//   ice_candidate { candidate }
+//
+// État autoritaire par userId (callState) : idle | ringing | in_call.
+//  - call_user  : cible occupée → call_busy (pas d'incoming_call ni FCM) ; sinon les
+//                 deux participants passent « ringing » + timer no-answer (45 s).
+//  - answer_call: les deux participants passent « in_call ».
+//  - reject/end/timeout/disconnect : les deux repassent « idle ».
+//  - Tous les états terminaux émettent le FCM call_ended nécessaire pour couper la
+//    sonnerie/CallKit du destinataire réveillé en arrière-plan.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Délai serveur avant de déclarer un appel « sans réponse » (marge > sonnerie CallKit 30 s).
+const NO_ANSWER_MS = 45 * 1000;
+
 const groupRooms = new Map();
 
 function toInt(v) {
@@ -85,6 +118,47 @@ async function finalizeCallAndNotify(io, userSockets, callID) {
   }
 }
 
+// Déclenché par le timer NO_ANSWER_MS : l'appel est resté « ringing » sans réponse.
+// Nettoie l'état des deux participants, prévient l'appelant (call_no_answer) et
+// coupe la sonnerie du destinataire (FCM call_ended).
+async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
+  const entry = callState.getEntry(targetID);
+  // Le timer peut avoir été neutralisé entre-temps (réponse/refus/nouvel appel).
+  if (!entry || entry.status !== 'ringing' || String(entry.callId) !== String(callID)) {
+    return;
+  }
+
+  console.log(`[Socket call_user] ⏰ Pas de réponse: callId=${callID} caller=${callerID} target=${targetID}`);
+
+  pendingCalls.clear(targetID);
+  callState.clear(targetID);
+  callState.clear(callerID);
+
+  if (callID) {
+    try {
+      // status 3 = appel manqué / sans réponse.
+      await pool.execute('UPDATE callHistory SET status = 3 WHERE IDcall = ?', [callID]);
+    } catch (dbErr) {
+      console.warn('[Socket call_user] no-answer DB update failed:', dbErr.message);
+    }
+    finalizeCallAndNotify(io, userSockets, callID)
+      .catch((err) => console.warn('[Socket call_user] no-answer finalize error:', err.message));
+  }
+
+  const callerSocketId = userSockets.get(callerID);
+  if (callerSocketId) {
+    io.to(callerSocketId).emit('call_no_answer', {
+      callId:   callID != null ? String(callID) : null,
+      targetId: String(targetID),
+      reason:   'no_answer',
+    });
+  }
+
+  // Coupe la sonnerie/CallKit du destinataire s'il a été réveillé en arrière-plan.
+  notifyCallEnded(targetID, callerID, 'Appel manqué')
+    .catch((err) => console.warn('[Socket call_user] no-answer notifyCallEnded error:', err.message));
+}
+
 function createRoomState(isVideo, callerID, callerInfo) {
   const participants = new Map();
   if (callerID != null) {
@@ -115,6 +189,18 @@ const callUser = (io, socket, userSockets) => {
 
       if (await isBlockedEitherWay(callerID, targetID)) {
         socket.emit('call_failed', { reason: 'Appel impossible', code: 'CALL_BLOCKED' });
+        return;
+      }
+
+      // État autoritaire : cible déjà en train de sonner ou en communication.
+      // On répond « occupé » immédiatement, sans notifier la cible (ni socket ni FCM).
+      if (callState.isBusy(targetID)) {
+        console.log(`[Socket call_user] ⛔ Cible occupée: target=${targetID} (${callState.get(targetID)})`);
+        socket.emit('call_busy', {
+          callId:   null,
+          targetId: String(targetID),
+          reason:   'busy',
+        });
         return;
       }
 
@@ -161,6 +247,14 @@ const callUser = (io, socket, userSockets) => {
         console.warn(`[Socket call_user] ** Utilisateur ${targetID} non trouvé en socket — fallback FCM + rejeu à la reconnexion`);
       }
 
+      // Marque les deux participants « ringing » et arme le timeout côté cible.
+      const noAnswerTimer = setTimeout(
+        () => onNoAnswer(io, userSockets, callID, callerID, targetID),
+        NO_ANSWER_MS,
+      );
+      callState.setRinging(targetID, { callId: callID, peerId: callerID, timer: noAnswerTimer });
+      callState.setRinging(callerID, { callId: callID, peerId: targetID });
+
       notifyIncomingCall(targetID, callerID, callerName, callerPhoto, isVideo, callID)
         .catch((err) => console.warn('[Socket call_user] FCM error:', err.message));
     } catch (error) {
@@ -190,6 +284,11 @@ const answerCall = (io, socket, userSockets) => {
 
       // L'appel est traité : plus besoin de le rejouer au destinataire.
       pendingCalls.clear(receiverID);
+
+      // État autoritaire : les deux participants passent « in_call » (annule le
+      // timer « pas de réponse » armé côté destinataire).
+      callState.setInCall(receiverID, { peerId: callerID });
+      callState.setInCall(callerID, { peerId: receiverID });
 
       try {
         const [result] = await pool.execute(
@@ -234,6 +333,10 @@ const rejectCall = (io, socket, userSockets) => {
 
       // Appel refusé : ne pas le rejouer au destinataire.
       pendingCalls.clear(receiverID);
+
+      // État autoritaire : les deux participants repassent « idle ».
+      callState.clear(receiverID);
+      callState.clear(callerID);
 
       let rejectedCallID = null;
       try {
@@ -298,6 +401,10 @@ const endCall = (io, socket, userSockets) => {
 
       // Appel terminé/annulé : ne pas le rejouer au destinataire.
       if (targetID) pendingCalls.clear(targetID);
+
+      // État autoritaire : les deux participants repassent « idle ».
+      callState.clear(callerID);
+      if (targetID) callState.clear(targetID);
 
       let endedCallID = null;
       if (callerID) {
