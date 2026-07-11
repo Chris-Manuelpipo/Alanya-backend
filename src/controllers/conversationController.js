@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { markConversationReadBy } = require('../utils/readReceiptUtils');
 const { getBlockPair, maskPresenceIfBlocked } = require('../utils/blockUtils');
 const MAX_BATCH_CONVERSATIONS = 50;
 
@@ -266,15 +267,12 @@ const markAsRead = async (req, res) => {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
 
-    await pool.execute(
-      `UPDATE message SET status = 3, readAt = NOW() 
-       WHERE conversationID = ? AND senderID != ? AND status < 3`,
-      [id, alanyaID]
-    );
-    await pool.execute(
-      'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
-      [id, alanyaID]
-    );
+    await markConversationReadBy({
+      conversationID: id,
+      readerID: alanyaID,
+      io: req.app.get('io'),
+      userSockets: req.app.get('userSockets'),
+    });
 
     res.json({ message: 'Marked as read' });
   } catch (error) {

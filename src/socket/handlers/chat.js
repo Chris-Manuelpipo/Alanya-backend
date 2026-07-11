@@ -2,6 +2,7 @@ const pool = require('../../config/db');
 const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy, getDirectConversationPeer, emitPresenceUpdate } = require('../../utils/blockUtils');
 const { resolveLastMessagePreview } = require('../../utils/mediaAlbum');
 const { resolveReplyToID } = require('../../utils/resolveReplyToID');
+const { markConversationReadBy } = require('../../utils/readReceiptUtils');
 const pendingCalls = require('../state/pendingCalls');
 const callState = require('../state/callState');
 const meetingMuteStates = require('../state/meetingMuteStates');
@@ -313,22 +314,12 @@ const messageRead = (io, socket, userSockets) => {
       const peerId = await getDirectConversationPeer(conversationID, userID);
       if (peerId != null && await isBlockedBy(userID, peerId)) return;
 
-      await pool.execute(
-        `UPDATE message SET status = 3, readAt = NOW()
-         WHERE conversationID = ? AND senderID != ? AND status < 3`,
-        [conversationID, userID]
-      );
-      await pool.execute(
-        'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
-        [conversationID, userID]
-      );
-      // Reflète l'accusé "lu" (✓✓ bleu) sur l'aperçu du dernier message.
-      await pool.execute(
-        `UPDATE conversation SET lastMessageStatus = 3
-         WHERE conversID = ? AND lastMessageSenderID <> ? AND lastMessageStatus < 3`,
-        [conversationID, userID]
-      );
-      await _notifyStatus(io, conversationID, 3, userID, userSockets);
+      await markConversationReadBy({
+        conversationID,
+        readerID: userID,
+        io,
+        userSockets,
+      });
     } catch (e) {
       console.warn('[Socket message:read]', e.message);
     }

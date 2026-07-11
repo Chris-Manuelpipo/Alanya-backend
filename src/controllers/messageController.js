@@ -5,6 +5,7 @@ const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
+const { markConversationReadBy } = require('../utils/readReceiptUtils');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
 const MAX_BATCH_DELETE = 50;
@@ -75,15 +76,12 @@ const getMessages = async (req, res) => {
       }
     }
 
-    await pool.execute(
-      `UPDATE message SET status = 3, readAt = NOW()
-       WHERE conversationID = ? AND senderID != ? AND status < 3`,
-      [id, alanyaID]
-    );
-    await pool.execute(
-      'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
-      [id, alanyaID]
-    );
+    await markConversationReadBy({
+      conversationID: id,
+      readerID: alanyaID,
+      io: req.app.get('io'),
+      userSockets: req.app.get('userSockets'),
+    });
 
     res.json(rows.reverse());
   } catch (error) {
