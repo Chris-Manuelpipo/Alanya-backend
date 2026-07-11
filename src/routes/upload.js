@@ -9,7 +9,11 @@ const { uploadLimiter } = require('../middleware/rateLimiter');
  * @swagger
  * /api/upload/avatar:
  *   post:
- *     summary: Uploader un avatar
+ *     summary: Héberger une image (avatar, photo de groupe, etc.)
+ *     description: >
+ *       Stocke le fichier et retourne son URL. Ne met pas à jour automatiquement
+ *       le profil utilisateur - utiliser PUT /auth/me avec avatar_url pour un avatar
+ *       personnel, ou POST /conversations/group avec groupPhoto pour un groupe.
  *     tags: [Upload]
  *     security:
  *       - bearerAuth: []
@@ -28,7 +32,7 @@ const { uploadLimiter } = require('../middleware/rateLimiter');
  *                 description: Image (max 5MB)
  *     responses:
  *       200:
- *         description: Avatar uploadé
+ *         description: Image hébergée (url + filename)
  *         content:
  *           application/json:
  *             schema:

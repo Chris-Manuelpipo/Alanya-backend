@@ -1,9 +1,8 @@
-const path = require('path');
-const pool = require('../config/db');
-
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
-// Upload avatar (profil ou groupe) 
+// Héberge une image (avatar profil, photo de groupe, etc.) et retourne son URL.
+// Ne modifie aucune entité en base : la liaison se fait via PUT /auth/me (profil)
+// ou POST/PUT /conversations (groupe).
 const uploadAvatar = async (req, res) => {
   try {
     if (!req.file) {
@@ -12,12 +11,6 @@ const uploadAvatar = async (req, res) => {
 
     const filename = req.file.filename;
     const url      = `${BASE_URL}/uploads/images/${filename}`;
-
-    // Mettre à jour l'avatar en base
-    await pool.execute(
-      'UPDATE users SET avatar_url = ? WHERE alanyaID = ?',
-      [url, req.user.alanyaID]
-    );
 
     res.json({ url, filename });
   } catch (error) {
