@@ -5,6 +5,31 @@ const { resolveReplyToID } = require('../../utils/resolveReplyToID');
 const pendingCalls = require('../state/pendingCalls');
 const meetingMuteStates = require('../state/meetingMuteStates');
 
+const _fetchMessageWithSender = async (msgID) => {
+  const [rows] = await pool.execute(
+    `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar
+     FROM message m
+     JOIN users u ON m.senderID = u.alanyaID
+     WHERE m.msgID = ?`,
+    [msgID],
+  );
+  return rows[0] ?? null;
+};
+
+const _findMessageByClientId = async (senderID, clientId) => {
+  const normalized = typeof clientId === 'string' ? clientId.trim() : '';
+  if (!normalized) return null;
+  const [rows] = await pool.execute(
+    `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar
+     FROM message m
+     JOIN users u ON m.senderID = u.alanyaID
+     WHERE m.senderID = ? AND m.clientID = ?
+     LIMIT 1`,
+    [senderID, normalized],
+  );
+  return rows[0] ?? null;
+};
+
 const joinConversation = (io, socket, userSockets) => {
   socket.on('join_conversation', async (data) => {
     try {
@@ -49,21 +74,52 @@ const messageSend = (io, socket, userSockets) => {
       const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
       const resolvedReplyToContent = resolvedReplyToID != null ? (replyToContent ?? null) : null;
 
-      // ÉTAPE 1 : PERSISTER le message en DB
-      const [result] = await pool.execute(
-        `INSERT INTO message
-           (senderID, conversationID, content, type, status, sendAt,
-            mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
-         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          senderID, conversationID, content ?? null, type,
-          mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
-          resolvedReplyToID, resolvedReplyToContent, isStatusReply,
-          isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
-        ]
-      );
+      const normalizedClientId =
+        typeof clientId === 'string' && clientId.trim() ? clientId.trim() : null;
 
-      const msgID = result.insertId;
+      // Idempotence : un même clientId ne doit créer qu'un seul message serveur.
+      if (normalizedClientId) {
+        const existing = await _findMessageByClientId(senderID, normalizedClientId);
+        if (existing) {
+          return socket.emit('message:sent', {
+            msgID: existing.msgID,
+            clientId: normalizedClientId,
+            ...existing,
+          });
+        }
+      }
+
+      // ÉTAPE 1 : PERSISTER le message en DB
+      let msgID;
+      try {
+        const [result] = await pool.execute(
+          `INSERT INTO message
+             (senderID, conversationID, content, type, status, sendAt,
+              mediaUrl, mediaName, mediaDuration, replyToID, replyToContent,
+              isStatusReply, isForwarded, isViewOnce, clientID)
+           VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            senderID, conversationID, content ?? null, type,
+            mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
+            resolvedReplyToID, resolvedReplyToContent, isStatusReply,
+            isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
+            normalizedClientId,
+          ],
+        );
+        msgID = result.insertId;
+      } catch (insertErr) {
+        if (insertErr.code === 'ER_DUP_ENTRY' && normalizedClientId) {
+          const existing = await _findMessageByClientId(senderID, normalizedClientId);
+          if (existing) {
+            return socket.emit('message:sent', {
+              msgID: existing.msgID,
+              clientId: normalizedClientId,
+              ...existing,
+            });
+          }
+        }
+        throw insertErr;
+      }
 
       if (!silentDrop) {
         // ÉTAPE 2 : Mettre à jour résumé conversation (statut 1 = envoyé)
@@ -86,15 +142,10 @@ const messageSend = (io, socket, userSockets) => {
       }
 
       // ÉTAPE 4 : Récupérer message complet avec infos sender
-      const [rows] = await pool.execute(
-        `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar
-         FROM message m
-         JOIN users u ON m.senderID = u.alanyaID
-         WHERE m.msgID = ?`,
-        [msgID]
-      );
-
-      const msg = rows[0];
+      const msg = await _fetchMessageWithSender(msgID);
+      if (!msg) {
+        return socket.emit('error', { message: 'Message not found after insert' });
+      }
 
       if (!silentDrop) {
         // ÉTAPE 5 : Diffuser le message UNE SEULE FOIS à chaque autre participant.
@@ -136,7 +187,11 @@ const messageSend = (io, socket, userSockets) => {
       }
 
       // Renvoyer clientId pour que l'émetteur retrouve son message optimiste.
-      socket.emit('message:sent', { msgID, clientId, ...msg });
+      socket.emit('message:sent', {
+        msgID,
+        clientId: normalizedClientId ?? clientId,
+        ...msg,
+      });
     } catch (error) {
       console.error('[Socket message:send]', error.message);
       socket.emit('error', { message: error.message });
