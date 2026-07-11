@@ -3,7 +3,10 @@ const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy,
 const { resolveLastMessagePreview } = require('../../utils/mediaAlbum');
 const { resolveReplyToID } = require('../../utils/resolveReplyToID');
 const pendingCalls = require('../state/pendingCalls');
+const callState = require('../state/callState');
 const meetingMuteStates = require('../state/meetingMuteStates');
+const meetingVideoStates = require('../state/meetingVideoStates');
+const { notifyCallEnded } = require('../../services/notificationService');
 
 const _fetchMessageWithSender = async (msgID) => {
   const [rows] = await pool.execute(
@@ -389,6 +392,26 @@ const handleDisconnect = async (io, socket, userSockets) => {
   userSockets.delete(userID);
   pendingCalls.markUndelivered(userID);
 
+  // Nettoyage d'un appel 1-à-1 en cours/en sonnerie : on remet les deux
+  // participants à « idle » et on prévient le pair encore connecté (call_ended
+  // socket + FCM pour couper sa sonnerie), sauf si l'utilisateur a juste été
+  // réveillé par un push (état ringing conservé pour rejouer l'offre au retour).
+  const callEntry = callState.getEntry(userID);
+  if (callEntry && callEntry.status === 'in_call') {
+    const peerID = callEntry.peerId;
+    callState.clear(userID);
+    if (peerID != null) {
+      callState.clear(peerID);
+      pendingCalls.clear(peerID);
+      const peerSocketId = userSockets.get(peerID);
+      if (peerSocketId) {
+        io.to(peerSocketId).emit('call_ended', {});
+      }
+      notifyCallEnded(peerID, userID, 'L\'appelant')
+        .catch((err) => console.warn('[Socket disconnect] notifyCallEnded error:', err.message));
+    }
+  }
+
   const meetingID = socket.currentMeetingID;
   if (meetingID) {
     socket.to(`meeting_${meetingID}`).emit('meeting:user_left', {
@@ -396,6 +419,7 @@ const handleDisconnect = async (io, socket, userSockets) => {
       userID: String(userID),
     });
     meetingMuteStates.removeUser(meetingID, userID);
+    meetingVideoStates.removeUser(meetingID, userID);
     try {
       await pool.execute(
         `UPDATE participant
