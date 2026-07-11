@@ -15,6 +15,7 @@ const _ROLE_LABELS = { 0: 'Utilisateur', 1: 'Admin', 2: 'Super-admin' };
 // Conversion sûre des agrégats SQL (SUM peut renvoyer NULL ou une string)
 const _num = (v) => Number(v) || 0;
 
+
 // Formatage relatif FR pour le feed d'activité
 const _relativeTime = (date) => {
   const ts = new Date(date).getTime();
