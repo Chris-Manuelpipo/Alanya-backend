@@ -5,7 +5,6 @@ const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
-const { markConversationReadBy } = require('../utils/readReceiptUtils');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
 const MAX_BATCH_DELETE = 50;
@@ -43,9 +42,12 @@ const getMessages = async (req, res) => {
              u.nom        AS sender_nom,
              u.pseudo     AS sender_pseudo,
              u.avatar_url AS sender_avatar,
+             p.timeZone   AS messageTz,
+             p.decalageHoraire AS messageTzOffset,
              (m.viewedAt IS NOT NULL) AS viewedByMe
       FROM message m
       JOIN users u ON m.senderID = u.alanyaID
+      LEFT JOIN pays p ON u.idPays = p.idPays
       WHERE m.conversationID = ?
         AND m.isDeleted = 0
         AND (m.deletedForID IS NULL OR m.deletedForID != ?)
@@ -76,12 +78,15 @@ const getMessages = async (req, res) => {
       }
     }
 
-    await markConversationReadBy({
-      conversationID: id,
-      readerID: alanyaID,
-      io: req.app.get('io'),
-      userSockets: req.app.get('userSockets'),
-    });
+    await pool.execute(
+      `UPDATE message SET status = 3, readAt = NOW()
+       WHERE conversationID = ? AND senderID != ? AND status < 3`,
+      [id, alanyaID]
+    );
+    await pool.execute(
+      'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
+      [id, alanyaID]
+    );
 
     res.json(rows.reverse());
   } catch (error) {
@@ -126,8 +131,9 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
 
 const _persistMessage = async (conn, conversationID, senderID, fields) => {
   const {
-    content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
+    content, type = 0, mediaUrl, mediaName, mediaDuration,
     replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
+    clickSentAt,
   } = fields;
 
   const blockEval = await evaluateDirectMessageSend(conversationID, senderID);
@@ -146,11 +152,13 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
   const [result] = await _execute(conn, 
     `INSERT INTO message
        (senderID, conversationID, content, type, status, sendAt,
-        mediaUrl, mediaName, mediaDuration, mediaThumb, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
+        clickSentAt,
+        mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
      VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       senderID, conversationID, content ?? null, type,
-      mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
+      clickSentAt ? new Date(clickSentAt) : null,
+      mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
       resolvedReplyToID, resolvedReplyToContent, isStatusReply,
       isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
     ]
@@ -177,9 +185,11 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
   }
 
   const [rows] = await _execute(conn,
-    `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar
+    `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
+            p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
      FROM message m
      JOIN users u ON m.senderID = u.alanyaID
+     LEFT JOIN pays p ON u.idPays = p.idPays
      WHERE m.msgID = ?`,
     [msgID]
   );
@@ -199,8 +209,9 @@ const sendMessage = async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
+      content, type = 0, mediaUrl, mediaName, mediaDuration,
       replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
+      clickSentAt,
     } = req.body;
     const senderID = req.user.alanyaID;
 
@@ -209,8 +220,9 @@ const sendMessage = async (req, res) => {
     }
 
     const { msg } = await _persistAndDeliverMessage(req, id, senderID, {
-      content, type, mediaUrl, mediaName, mediaDuration, mediaThumb,
+      content, type, mediaUrl, mediaName, mediaDuration,
       replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce,
+      clickSentAt,
     });
 
     res.json(msg);

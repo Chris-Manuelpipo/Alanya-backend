@@ -2,107 +2,8 @@ const pool = require('../../config/db');
 const { evaluateDirectMessageSend, shouldSuppressDirectInteraction, isBlockedBy, getDirectConversationPeer, emitPresenceUpdate } = require('../../utils/blockUtils');
 const { resolveLastMessagePreview } = require('../../utils/mediaAlbum');
 const { resolveReplyToID } = require('../../utils/resolveReplyToID');
-const { markConversationReadBy } = require('../../utils/readReceiptUtils');
 const pendingCalls = require('../state/pendingCalls');
-const callState = require('../state/callState');
 const meetingMuteStates = require('../state/meetingMuteStates');
-const meetingVideoStates = require('../state/meetingVideoStates');
-const { notifyCallEnded } = require('../../services/notificationService');
-
-const _fetchMessageWithSender = async (msgID) => {
-  const [rows] = await pool.execute(
-    `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar
-     FROM message m
-     JOIN users u ON m.senderID = u.alanyaID
-     WHERE m.msgID = ?`,
-    [msgID],
-  );
-  return rows[0] ?? null;
-};
-
-const _findMessageByClientId = async (senderID, clientId) => {
-  const normalized = typeof clientId === 'string' ? clientId.trim() : '';
-  if (!normalized) return null;
-  const [rows] = await pool.execute(
-    `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar
-     FROM message m
-     JOIN users u ON m.senderID = u.alanyaID
-     WHERE m.senderID = ? AND m.clientID = ?
-     LIMIT 1`,
-    [senderID, normalized],
-  );
-  return rows[0] ?? null;
-};
-
-/** Diffuse message:received (+ FCM optionnel) aux autres participants. */
-const _deliverMessageToParticipants = async (
-  io,
-  conversationID,
-  senderID,
-  msg,
-  { skipFcm = false, notifyFields = null } = {},
-) => {
-  const [participants] = await pool.execute(
-    'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-    [conversationID, senderID],
-  );
-
-  for (const p of participants) {
-    io.to(`user_${p.alanyaID}`).emit('message:received', msg);
-  }
-
-  if (skipFcm) return;
-
-  const fields = notifyFields ?? {
-    content: msg.content,
-    mediaName: msg.mediaName,
-    type: msg.type,
-    isViewOnce: msg.isViewOnce,
-  };
-
-  const [sender] = await pool.execute(
-    'SELECT nom FROM users WHERE alanyaID = ?', [senderID],
-  );
-  const senderName = sender[0]?.nom ?? 'Talky';
-
-  const [convRows] = await pool.execute(
-    'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
-    [conversationID],
-  );
-  const conv = convRows[0] ?? {};
-
-  setTimeout(() => {
-    const { notifyNewMessage } = require('../../services/notificationService');
-    notifyNewMessage(conversationID, senderID, senderName, {
-      ...fields,
-      isGroup: !!conv.isGroup,
-      groupName: conv.GroupName ?? '',
-    }).catch((e) => console.warn('[FCM notification]', e.message));
-  }, 0);
-};
-
-/**
- * Réponse idempotente : confirme l'émetteur ET re-diffuse aux membres.
- * Les clients dédupliquent déjà message:received ; sans rebroadcast, un retry
- * outbox (même clientId) persistait le message (✓) sans jamais le livrer.
- */
-const _emitExistingMessage = async (io, socket, existing, normalizedClientId) => {
-  console.warn(
-    `[Socket message:send] idempotent hit sender=${existing.senderID} clientId=${normalizedClientId} msgID=${existing.msgID} conv=${existing.conversationID} → rebroadcast`,
-  );
-  await _deliverMessageToParticipants(
-    io,
-    existing.conversationID,
-    existing.senderID,
-    existing,
-    { skipFcm: true },
-  );
-  socket.emit('message:sent', {
-    msgID: existing.msgID,
-    clientId: normalizedClientId,
-    ...existing,
-  });
-};
 
 const joinConversation = (io, socket, userSockets) => {
   socket.on('join_conversation', async (data) => {
@@ -127,7 +28,15 @@ const messageSend = (io, socket, userSockets) => {
         });
       }
 
-      const { conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb, replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0, clientId } = data;
+      const {
+        conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration,
+        replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0, clientId,
+        // Horodatage capturé côté client à l'instant où l'utilisateur appuie
+        // sur "Envoyer" (avant tout aller-retour réseau). Le fuseau horaire
+        // affiché n'a pas besoin d'être transmis : il est dérivé du pays
+        // enregistré de l'expéditeur (jointure `users` → `pays.timeZone`).
+        clickSentAt,
+      } = data;
       const senderID = socket.alanyaID; // !! Utiliser l'ID du socket authentifié
 
       if (!conversationID || (!content && !mediaUrl)) {
@@ -148,44 +57,23 @@ const messageSend = (io, socket, userSockets) => {
       const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
       const resolvedReplyToContent = resolvedReplyToID != null ? (replyToContent ?? null) : null;
 
-      const normalizedClientId =
-        typeof clientId === 'string' && clientId.trim() ? clientId.trim() : null;
-
-      // Idempotence : un même clientId ne doit créer qu'un seul message serveur.
-      if (normalizedClientId) {
-        const existing = await _findMessageByClientId(senderID, normalizedClientId);
-        if (existing) {
-          return _emitExistingMessage(io, socket, existing, normalizedClientId);
-        }
-      }
-
       // ÉTAPE 1 : PERSISTER le message en DB
-      let msgID;
-      try {
-        const [result] = await pool.execute(
-          `INSERT INTO message
-             (senderID, conversationID, content, type, status, sendAt,
-              mediaUrl, mediaName, mediaDuration, mediaThumb, replyToID, replyToContent,
-              isStatusReply, isForwarded, isViewOnce, clientID)
-           VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            senderID, conversationID, content ?? null, type,
-            mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
-            resolvedReplyToID, resolvedReplyToContent, isStatusReply,
-            isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
-            normalizedClientId,
-          ],
-        );
-        msgID = result.insertId;
-      } catch (insertErr) {
-        if (insertErr.code === 'ER_DUP_ENTRY' && normalizedClientId) {
-          const existing = await _findMessageByClientId(senderID, normalizedClientId);
-          if (existing) {
-            return _emitExistingMessage(io, socket, existing, normalizedClientId);
-          }
-        }
-        throw insertErr;
-      }
+      const [result] = await pool.execute(
+        `INSERT INTO message
+           (senderID, conversationID, content, type, status, sendAt,
+            clickSentAt,
+            mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
+         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          senderID, conversationID, content ?? null, type,
+          clickSentAt ? new Date(clickSentAt) : null,
+          mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
+          resolvedReplyToID, resolvedReplyToContent, isStatusReply,
+          isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
+        ]
+      );
+
+      const msgID = result.insertId;
 
       if (!silentDrop) {
         // ÉTAPE 2 : Mettre à jour résumé conversation (statut 1 = envoyé)
@@ -207,34 +95,61 @@ const messageSend = (io, socket, userSockets) => {
         );
       }
 
-      // ÉTAPE 4 : Récupérer message complet avec infos sender
-      const msg = await _fetchMessageWithSender(msgID);
-      if (!msg) {
-        return socket.emit('error', { message: 'Message not found after insert' });
-      }
+      // ÉTAPE 4 : Récupérer message complet avec infos sender (+ son fuseau
+      // horaire, dérivé de son pays enregistré — pas de colonne dédiée).
+      const [rows] = await pool.execute(
+        `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
+                p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
+         FROM message m
+         JOIN users u ON m.senderID = u.alanyaID
+         LEFT JOIN pays p ON u.idPays = p.idPays
+         WHERE m.msgID = ?`,
+        [msgID]
+      );
+
+      const msg = rows[0];
 
       if (!silentDrop) {
+        // ÉTAPE 5 : Diffuser le message UNE SEULE FOIS à chaque autre participant.
+        const [participants] = await pool.execute(
+          'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+          [conversationID, senderID]
+        );
+
+        for (const p of participants) {
+          io.to(`user_${p.alanyaID}`).emit('message:received', msg);
+        }
+
+        // ÉTAPE 6 : Notif FCM aux autres participants
+        const [sender] = await pool.execute(
+          'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
+        );
+        const senderName = sender[0]?.nom ?? 'Talky';
+
+        const [convRows] = await pool.execute(
+          'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
+          [conversationID]
+        );
+        const conv = convRows[0] ?? {};
         const notifyFields = {
           content,
           mediaName,
           type,
           isViewOnce,
+          isGroup: !!conv.isGroup,
+          groupName: conv.GroupName ?? '',
         };
-        await _deliverMessageToParticipants(
-          io,
-          conversationID,
-          senderID,
-          msg,
-          { notifyFields },
-        );
+
+        setTimeout(() => {
+          const { notifyNewMessage } = require('../../services/notificationService');
+          notifyNewMessage(conversationID, senderID, senderName, notifyFields).catch(e =>
+            console.warn('[FCM notification]', e.message)
+          );
+        }, 0);
       }
 
       // Renvoyer clientId pour que l'émetteur retrouve son message optimiste.
-      socket.emit('message:sent', {
-        msgID,
-        clientId: normalizedClientId ?? clientId,
-        ...msg,
-      });
+      socket.emit('message:sent', { msgID, clientId, ...msg });
     } catch (error) {
       console.error('[Socket message:send]', error.message);
       socket.emit('error', { message: error.message });
@@ -298,8 +213,17 @@ const typingStop = (io, socket, userSockets) => {
 };
  
 
-const _notifyStatus = async (io, conversationID, status, byUserID, userSockets) => {
-  const payload = { conversationID: Number(conversationID), status, byUserID: Number(byUserID) };
+const _notifyStatus = async (io, conversationID, status, byUserID, userSockets, extra = {}) => {
+  const payload = {
+    conversationID: Number(conversationID),
+    status,
+    byUserID: Number(byUserID),
+    // `at` : instant exact (horloge serveur) de l'évènement livré/lu, pour
+    // affichage côté expéditeur (le fuseau horaire, lui, est déjà connu :
+    // fixé une seule fois à l'envoi via `messageTz`, dérivé du pays de
+    // l'expéditeur au moment de la lecture — pas stocké par message).
+    at: extra.at ?? new Date().toISOString(),
+  };
   io.to(`conversation_${conversationID}`).emit('message:status', payload);
   try {
     const [participants] = await pool.execute(
@@ -326,7 +250,7 @@ const messageDelivered = (io, socket, userSockets) => {
       if (peerId != null && await isBlockedBy(userID, peerId)) return;
 
       await pool.execute(
-        `UPDATE message SET status = 2
+        `UPDATE message SET status = 2, deliveredAt = NOW()
          WHERE conversationID = ? AND senderID != ? AND status = 1`,
         [conversationID, userID]
       );
@@ -353,12 +277,22 @@ const messageRead = (io, socket, userSockets) => {
       const peerId = await getDirectConversationPeer(conversationID, userID);
       if (peerId != null && await isBlockedBy(userID, peerId)) return;
 
-      await markConversationReadBy({
-        conversationID,
-        readerID: userID,
-        io,
-        userSockets,
-      });
+      await pool.execute(
+        `UPDATE message SET status = 3, readAt = NOW()
+         WHERE conversationID = ? AND senderID != ? AND status < 3`,
+        [conversationID, userID]
+      );
+      await pool.execute(
+        'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
+        [conversationID, userID]
+      );
+      // Reflète l'accusé "lu" (✓✓ bleu) sur l'aperçu du dernier message.
+      await pool.execute(
+        `UPDATE conversation SET lastMessageStatus = 3
+         WHERE conversID = ? AND lastMessageSenderID <> ? AND lastMessageStatus < 3`,
+        [conversationID, userID]
+      );
+      await _notifyStatus(io, conversationID, 3, userID, userSockets);
     } catch (e) {
       console.warn('[Socket message:read]', e.message);
     }
@@ -422,26 +356,6 @@ const handleDisconnect = async (io, socket, userSockets) => {
   userSockets.delete(userID);
   pendingCalls.markUndelivered(userID);
 
-  // Nettoyage d'un appel 1-à-1 en cours/en sonnerie : on remet les deux
-  // participants à « idle » et on prévient le pair encore connecté (call_ended
-  // socket + FCM pour couper sa sonnerie), sauf si l'utilisateur a juste été
-  // réveillé par un push (état ringing conservé pour rejouer l'offre au retour).
-  const callEntry = callState.getEntry(userID);
-  if (callEntry && callEntry.status === 'in_call') {
-    const peerID = callEntry.peerId;
-    callState.clear(userID);
-    if (peerID != null) {
-      callState.clear(peerID);
-      pendingCalls.clear(peerID);
-      const peerSocketId = userSockets.get(peerID);
-      if (peerSocketId) {
-        io.to(peerSocketId).emit('call_ended', {});
-      }
-      notifyCallEnded(peerID, userID, 'L\'appelant')
-        .catch((err) => console.warn('[Socket disconnect] notifyCallEnded error:', err.message));
-    }
-  }
-
   const meetingID = socket.currentMeetingID;
   if (meetingID) {
     socket.to(`meeting_${meetingID}`).emit('meeting:user_left', {
@@ -449,7 +363,6 @@ const handleDisconnect = async (io, socket, userSockets) => {
       userID: String(userID),
     });
     meetingMuteStates.removeUser(meetingID, userID);
-    meetingVideoStates.removeUser(meetingID, userID);
     try {
       await pool.execute(
         `UPDATE participant
