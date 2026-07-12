@@ -126,7 +126,7 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
 
 const _persistMessage = async (conn, conversationID, senderID, fields) => {
   const {
-    content, type = 0, mediaUrl, mediaName, mediaDuration,
+    content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
     replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
   } = fields;
 
@@ -146,11 +146,11 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
   const [result] = await _execute(conn, 
     `INSERT INTO message
        (senderID, conversationID, content, type, status, sendAt,
-        mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
-     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?)`,
+        mediaUrl, mediaName, mediaDuration, mediaThumb, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
+     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       senderID, conversationID, content ?? null, type,
-      mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
+      mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
       resolvedReplyToID, resolvedReplyToContent, isStatusReply,
       isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
     ]
@@ -199,7 +199,7 @@ const sendMessage = async (req, res) => {
   try {
     const { id } = req.params;
     const {
-      content, type = 0, mediaUrl, mediaName, mediaDuration,
+      content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
       replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
     } = req.body;
     const senderID = req.user.alanyaID;
@@ -209,7 +209,7 @@ const sendMessage = async (req, res) => {
     }
 
     const { msg } = await _persistAndDeliverMessage(req, id, senderID, {
-      content, type, mediaUrl, mediaName, mediaDuration,
+      content, type, mediaUrl, mediaName, mediaDuration, mediaThumb,
       replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce,
     });
 
