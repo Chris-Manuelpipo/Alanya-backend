@@ -17,7 +17,9 @@ jobs:
           port: ${{ secrets.VPS_PORT }} 
           script: |
             cd /var/www/backend
-            git stash
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
+            git clean -fd
             npm install --omit=dev
             pm2 restart backend --update-env
+            
