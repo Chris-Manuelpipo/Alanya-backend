@@ -131,7 +131,7 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
 
 const _persistMessage = async (conn, conversationID, senderID, fields) => {
   const {
-    content, type = 0, mediaUrl, mediaName, mediaDuration,
+    content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
     replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
     clickSentAt,
   } = fields;
@@ -153,12 +153,12 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     `INSERT INTO message
        (senderID, conversationID, content, type, status, sendAt,
         clickSentAt,
-        mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
-     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        mediaUrl, mediaName, mediaDuration, mediaThumb, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
+     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?,?)`,
     [
       senderID, conversationID, content ?? null, type,
       clickSentAt ? new Date(clickSentAt) : null,
-      mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
+      mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
       resolvedReplyToID, resolvedReplyToContent, isStatusReply,
       isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
     ]
