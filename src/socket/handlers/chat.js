@@ -29,7 +29,7 @@ const messageSend = (io, socket, userSockets) => {
       }
 
       const {
-        conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration,
+        conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
         replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0, clientId,
         // Horodatage capturé côté client à l'instant où l'utilisateur appuie
         // sur "Envoyer" (avant tout aller-retour réseau). Le fuseau horaire
@@ -62,12 +62,12 @@ const messageSend = (io, socket, userSockets) => {
         `INSERT INTO message
            (senderID, conversationID, content, type, status, sendAt,
             clickSentAt,
-            mediaUrl, mediaName, mediaDuration, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
-         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            mediaUrl, mediaName, mediaDuration, mediaThumb, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
+         VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           senderID, conversationID, content ?? null, type,
           clickSentAt ? new Date(clickSentAt) : null,
-          mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null,
+          mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
           resolvedReplyToID, resolvedReplyToContent, isStatusReply,
           isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
         ]
