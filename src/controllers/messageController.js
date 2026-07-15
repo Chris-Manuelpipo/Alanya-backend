@@ -79,7 +79,8 @@ const getMessages = async (req, res) => {
     }
 
     await pool.execute(
-      `UPDATE message SET status = 3, readAt = NOW()
+      `UPDATE message SET status = 3, readAt = NOW(),
+              deliveredAt = COALESCE(deliveredAt, NOW())
        WHERE conversationID = ? AND senderID != ? AND status < 3`,
       [id, alanyaID]
     );

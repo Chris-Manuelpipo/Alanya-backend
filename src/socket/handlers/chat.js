@@ -278,7 +278,8 @@ const messageRead = (io, socket, userSockets) => {
       if (peerId != null && await isBlockedBy(userID, peerId)) return;
 
       await pool.execute(
-        `UPDATE message SET status = 3, readAt = NOW()
+        `UPDATE message SET status = 3, readAt = NOW(),
+                deliveredAt = COALESCE(deliveredAt, NOW())
          WHERE conversationID = ? AND senderID != ? AND status < 3`,
         [conversationID, userID]
       );
