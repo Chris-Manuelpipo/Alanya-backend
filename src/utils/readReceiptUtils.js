@@ -11,7 +11,8 @@ const markConversationReadBy = async ({
   userSockets = null,
 }) => {
   await pool.execute(
-    `UPDATE message SET status = 3, readAt = NOW()
+    `UPDATE message SET status = 3, readAt = NOW(),
+            deliveredAt = COALESCE(deliveredAt, NOW())
      WHERE conversationID = ? AND senderID != ? AND status < 3`,
     [conversationID, readerID],
   );
@@ -31,6 +32,7 @@ const markConversationReadBy = async ({
     conversationID: Number(conversationID),
     status: 3,
     byUserID: Number(readerID),
+    at: new Date().toISOString(),
   };
   io.to(`conversation_${conversationID}`).emit('message:status', payload);
   if (!userSockets) return;
