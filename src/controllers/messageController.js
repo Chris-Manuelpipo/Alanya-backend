@@ -35,7 +35,7 @@ const getMessages = async (req, res) => {
   try {
     const { id } = req.params; // conversationID
     const alanyaID = req.user.alanyaID;
-    const { limit = 50, before } = req.query;
+    const { limit = 50, before, after } = req.query;
 
     let query = `
       SELECT m.*,
@@ -65,6 +65,10 @@ const getMessages = async (req, res) => {
       query += ' AND m.msgID < ?';
       params.push(parseInt(before));
     }
+    if (after) {
+      query += ' AND m.msgID > ?';
+      params.push(parseInt(after));
+    }
 
     query += ' ORDER BY m.sendAt DESC LIMIT ?';
     params.push(parseInt(limit) || 50);
@@ -78,16 +82,8 @@ const getMessages = async (req, res) => {
       }
     }
 
-    await pool.execute(
-      `UPDATE message SET status = 3, readAt = NOW(),
-              deliveredAt = COALESCE(deliveredAt, NOW())
-       WHERE conversationID = ? AND senderID != ? AND status < 3`,
-      [id, alanyaID]
-    );
-    await pool.execute(
-      'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
-      [id, alanyaID]
-    );
+    // Lecture / accusés : uniquement via message:read ou POST /:id/read
+    // (markConversationReadBy), pour notifier lastMessageStatus correctement.
 
     res.json(rows.reverse());
   } catch (error) {

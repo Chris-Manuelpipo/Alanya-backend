@@ -271,7 +271,6 @@ const markAsRead = async (req, res) => {
       conversationID: id,
       readerID: alanyaID,
       io: req.app.get('io'),
-      userSockets: req.app.get('userSockets'),
     });
 
     res.json({ message: 'Marked as read' });

@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { notifyMessageStatus } = require('./notifyMessageStatus');
 
 /**
  * Marque les messages entrants comme lus, remet unreadCount à 0 pour le lecteur,
@@ -8,7 +9,6 @@ const markConversationReadBy = async ({
   conversationID,
   readerID,
   io = null,
-  userSockets = null,
 }) => {
   await pool.execute(
     `UPDATE message SET status = 3, readAt = NOW(),
@@ -26,25 +26,7 @@ const markConversationReadBy = async ({
     [conversationID, readerID],
   );
 
-  if (!io) return;
-
-  const payload = {
-    conversationID: Number(conversationID),
-    status: 3,
-    byUserID: Number(readerID),
-    at: new Date().toISOString(),
-  };
-  io.to(`conversation_${conversationID}`).emit('message:status', payload);
-  if (!userSockets) return;
-
-  const [participants] = await pool.execute(
-    'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-    [conversationID, readerID],
-  );
-  for (const p of participants) {
-    const sid = userSockets.get(p.alanyaID);
-    if (sid) io.to(sid).emit('message:status', payload);
-  }
+  await notifyMessageStatus(io, conversationID, 3, readerID);
 };
 
 module.exports = { markConversationReadBy };
