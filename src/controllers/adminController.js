@@ -10,4 +10,5 @@ module.exports = {
   ...require('./admin/groups'),
   ...require('./admin/meetings'),
   ...require('./admin/settings'),
+  ...require('./admin/profile'),
 };

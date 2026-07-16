@@ -30,6 +30,9 @@ const {
   checkAssignablePhone,
   addReservedPhone,
   removeReservedPhone,
+  getMe,
+  updateMe,
+  updatePassword,
 } = require('../controllers/adminController');
 
 /**
@@ -68,6 +71,11 @@ const {
  *                   type: object
  */
 router.post('/auth/login', adminLogin);
+
+// ── Profil admin ──
+router.get('/me',                            adminAuth, getMe);
+router.put('/me',                            adminAuth, updateMe);
+router.put('/me/password',                   adminAuth, updatePassword);
 
 /**
  * @swagger
