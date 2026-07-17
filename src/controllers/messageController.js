@@ -76,9 +76,13 @@ const getMessages = async (req, res) => {
     const [rows] = await pool.query(query, params);
 
     // Média vue unique déjà consulté par cet utilisateur → on n'expose plus l'URL.
+    // Expose aussi clientId (camelCase) pour le match optimiste côté app.
     for (const r of rows) {
       if (r.isViewOnce && r.viewedByMe > 0 && r.senderID !== alanyaID) {
         r.mediaUrl = null;
+      }
+      if (r.clientID != null && r.clientId == null) {
+        r.clientId = r.clientID;
       }
     }
 
