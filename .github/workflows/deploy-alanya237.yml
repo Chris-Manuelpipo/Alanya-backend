@@ -1,0 +1,26 @@
+name: Déploiement Alanya237 (nouveau VPS)
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Déploiement via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.ALANYA_HOST }}
+          username: ${{ secrets.ALANYA_USER }}
+          key: ${{ secrets.ALANYA_SSH_KEY }}
+          port: ${{ secrets.ALANYA_PORT }}
+          script: |
+            # Charge nvm s'il est utilisé (sinon node global via apt)
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            cd ~/Alanya-backend
+            git fetch origin main
+            git reset --hard origin/main
+            npm install --omit=dev
+            pm2 restart alanya-backend --update-env

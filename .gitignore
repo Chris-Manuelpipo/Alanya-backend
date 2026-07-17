@@ -35,6 +35,7 @@ Thumbs.db
 serviceAccountKey.json
 serviceAccountKey.json
 .codex/
+.cursor/
 
 # zip
 src.zip
