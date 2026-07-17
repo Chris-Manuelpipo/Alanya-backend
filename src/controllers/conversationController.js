@@ -144,12 +144,12 @@ const createConversation = async (req, res) => {
     );
     const enriched = await attachParticipants(rows[0], alanyaID);
 
-    // Notifier l'autre participant en temps réel
+    // Notifier l'autre participant en temps réel. Émission vers la room
+    // `user_<id>` (rejointe à l'auth) plutôt qu'un socket-id précis : robuste
+    // aux reconnexions / multi-onglets où le socket-id mémorisé est périmé.
     const io = req.app.get('io');
-    const userSockets = req.app.get('userSockets');
-    if (io && userSockets) {
-      const sid = userSockets.get(parseInt(participantID));
-      if (sid) io.to(sid).emit('conversation:created', enriched);
+    if (io) {
+      io.to(`user_${parseInt(participantID)}`).emit('conversation:created', enriched);
     }
 
     res.json(enriched);
@@ -191,13 +191,12 @@ const createGroup = async (req, res) => {
     );
     const enriched = await attachParticipants(rows[0], alanyaID);
 
-    // Notifier tous les membres du groupe en temps réel
+    // Notifier tous les membres du groupe en temps réel (room `user_<id>`,
+    // robuste aux reconnexions vs socket-id mémorisé périmé).
     const io = req.app.get('io');
-    const userSockets = req.app.get('userSockets');
-    if (io && userSockets) {
+    if (io) {
       for (const pid of participantIDs) {
-        const sid = userSockets.get(parseInt(pid));
-        if (sid) io.to(sid).emit('conversation:created', enriched);
+        io.to(`user_${parseInt(pid)}`).emit('conversation:created', enriched);
       }
     }
 
@@ -335,12 +334,10 @@ const addParticipants = async (req, res) => {
     const enriched = await attachParticipants(rows[0], alanyaID);
 
     const io = req.app.get('io');
-    const userSockets = req.app.get('userSockets');
-    if (io && userSockets) {
+    if (io) {
       const allMemberIds = [...existingIds, ...toAdd];
       for (const pid of allMemberIds) {
-        const sid = userSockets.get(parseInt(pid));
-        if (sid) io.to(sid).emit('conversation:created', enriched);
+        io.to(`user_${parseInt(pid)}`).emit('conversation:created', enriched);
       }
     }
 
