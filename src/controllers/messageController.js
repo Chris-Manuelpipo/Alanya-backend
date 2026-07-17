@@ -648,8 +648,99 @@ const batchForwardMessages = async (req, res) => {
   }
 };
 
+/**
+ * Sync delta globale multi-conversations basée sur un curseur PAR conversation.
+ *
+ * Le client envoie `cursors: [{c: conversID, m: dernierMsgIDLocal}, ...]` pour
+ * les conversations qu'il connaît déjà (m > 0). Le serveur renvoie tous les
+ * messages `msgID > curseur` de CES conversations, triés par msgID ASC et
+ * plafonnés (`limit`). Le client réitère (en reconstruisant les curseurs depuis
+ * son local) tant que `hasMore` est vrai → rattrapage garanti et sans trou,
+ * indépendamment de la fiabilité du WebSocket.
+ *
+ * Curseur PAR conversation (et non global) : sinon, être à jour dans une conv
+ * (msgID élevé) masquerait d'anciens messages manquants d'une autre conv.
+ */
+const getMessagesSince = async (req, res) => {
+  try {
+    const alanyaID = req.user.alanyaID;
+    const rawCursors = Array.isArray(req.body?.cursors) ? req.body.cursors : [];
+    const limit = Math.min(parseInt(req.body?.limit, 10) || 300, 500);
+
+    // Normalise + déduplique (garde le plus petit curseur si doublon, pour ne
+    // rien rater), en ne conservant que des entrées valides.
+    const cursorByConv = new Map();
+    for (const entry of rawCursors) {
+      const c = parseInt(entry?.c, 10);
+      const m = parseInt(entry?.m, 10);
+      if (!Number.isInteger(c) || c <= 0) continue;
+      const cur = Number.isInteger(m) && m > 0 ? m : 0;
+      if (!cursorByConv.has(c) || cur < cursorByConv.get(c)) {
+        cursorByConv.set(c, cur);
+      }
+    }
+
+    if (cursorByConv.size === 0) {
+      return res.json({ messages: [], hasMore: false });
+    }
+
+    // Clauses OR (conversationID = ? AND msgID > ?) — bornées par participation.
+    const orClauses = [];
+    const orParams = [];
+    for (const [c, m] of cursorByConv.entries()) {
+      orClauses.push('(m.conversationID = ? AND m.msgID > ?)');
+      orParams.push(c, m);
+    }
+
+    const query = `
+      SELECT m.*,
+             u.nom        AS sender_nom,
+             u.pseudo     AS sender_pseudo,
+             u.avatar_url AS sender_avatar,
+             p.timeZone   AS messageTz,
+             p.decalageHoraire AS messageTzOffset,
+             (m.viewedAt IS NOT NULL) AS viewedByMe
+      FROM message m
+      JOIN conv_participants cp ON cp.conversID = m.conversationID AND cp.alanyaID = ?
+      JOIN users u ON m.senderID = u.alanyaID
+      LEFT JOIN pays p ON u.idPays = p.idPays
+      WHERE m.isDeleted = 0
+        AND (m.deletedForID IS NULL OR m.deletedForID != ?)
+        AND NOT EXISTS (
+          SELECT 1 FROM blocked b
+          WHERE b.alanyaID = ?
+            AND b.idCallerBlock = m.senderID
+            AND m.senderID != ?
+            AND m.sendAt >= b.dateBlock
+        )
+        AND (${orClauses.join(' OR ')})
+      ORDER BY m.msgID ASC
+      LIMIT ?
+    `;
+    const params = [alanyaID, alanyaID, alanyaID, alanyaID, ...orParams, limit + 1];
+    const [rows] = await pool.query(query, params);
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+
+    for (const r of page) {
+      if (r.isViewOnce && r.viewedByMe > 0 && r.senderID !== alanyaID) {
+        r.mediaUrl = null;
+      }
+      if (r.clientID != null && r.clientId == null) {
+        r.clientId = r.clientID;
+      }
+    }
+
+    res.json({ messages: page, hasMore });
+  } catch (error) {
+    throw error;
+  }
+};
+
 module.exports = {
   getMessages,
+  getMessagesSince,
   sendMessage,
   updateMessage,
   deleteMessage,
