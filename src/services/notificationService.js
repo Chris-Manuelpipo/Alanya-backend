@@ -42,9 +42,12 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
     }
 
     const isVisible = VISIBLE_TYPES.includes(data.type);
-    const isMeeting =
-      data.type === 'meeting_invite' || data.type === 'meeting_reminder';
 
+    // Data-only volontaire : c'est l'app (handler Dart) qui construit les
+    // notifications riches (regroupement MessagingStyle façon WhatsApp). Un bloc
+    // `notification` ferait afficher Android « bêtement » (écrasement, pas de
+    // regroupement). La fiabilité app tuée est couverte côté app par l'exemption
+    // d'optimisation batterie + priority high.
     const message = {
       token: fcmToken,
       data: Object.fromEntries(
@@ -59,27 +62,8 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
             : 'normal',
         ttl: 86400000,
       },
-      // iOS reste géré exclusivement par ce bloc apns explicite (il prime sur le
-      // `notification` commun côté FCM → comportement iOS strictement inchangé).
       apns: _buildApnsConfig(data),
     };
-
-    // Bloc notification Android : affiché par le système sans réveiller l'app.
-    if (isVisible && (data.title || data.body)) {
-      message.notification = {
-        title: data.title || 'Alanya',
-        body: data.body || '',
-      };
-      message.android.notification = {
-        channelId: isMeeting ? 'talky_meetings' : 'talky_messages',
-        icon: 'ic_stat_notification',
-        color: '#114B86',
-        sound: 'default',
-        ...(data.conversationId
-          ? { tag: `conv_${data.conversationId}` }
-          : {}),
-      };
-    }
 
     const messageId = await admin.messaging().send(message);
     console.log(`[FCM] Sent type=${data.type} id=${messageId}`);
