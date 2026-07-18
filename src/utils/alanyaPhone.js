@@ -39,13 +39,18 @@ const _groupDigits = (digits, groups) => {
 };
 
 const formatDisplay = (canonical) => {
-  const digits = normalize(canonical);
+  let digits = normalize(canonical);
   if (!digits) return '';
-  const tier = getTier(digits);
-  if (tier === 3) return digits;
-  if (tier === 4) return _groupDigits(digits, [2, 2]);
-  if (tier === 8) return _groupDigits(digits, [2, 2, 2, 2]);
-  return digits;
+
+  // Legacy 5–7 chiffres (ex. anciens 6 ch.) : aligner sur le schéma 8 chiffres
+  if (digits.length >= 5 && digits.length <= 7) {
+    digits = digits.padStart(8, '0');
+  }
+
+  if (digits.length <= 3) return digits;
+  // 4+ : groupes de 2 (8 ch. Alanya, et numéros plus longs type indicatif)
+  const groups = Array(Math.ceil(digits.length / 2)).fill(2);
+  return _groupDigits(digits, groups);
 };
 
 const formatLiveInput = (input) => {
