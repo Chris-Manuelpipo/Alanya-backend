@@ -27,6 +27,11 @@ const _buildApnsConfig = (data) => {
   };
 };
 
+// Types affichés à l'utilisateur : ils reçoivent un bloc `notification` pour que
+// le système Android les affiche même app tuée (data-only n'est pas fiable dans ce
+// cas). Les appels restent data-only pour déclencher CallKit via le handler Dart.
+const VISIBLE_TYPES = ['message', 'meeting_invite', 'meeting_reminder', 'status_view'];
+
 const sendDataOnlyNotification = async (fcmToken, data = {}) => {
   if (!fcmToken || fcmToken === 'INDEFINI') return;
 
@@ -35,6 +40,10 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
       console.warn('[FCM] Firebase non initialisé — notification ignorée');
       return;
     }
+
+    const isVisible = VISIBLE_TYPES.includes(data.type);
+    const isMeeting =
+      data.type === 'meeting_invite' || data.type === 'meeting_reminder';
 
     const message = {
       token: fcmToken,
@@ -45,13 +54,32 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
         priority:
           data.type === 'call' ||
           data.type === 'group_call' ||
-          data.type === 'message'
+          isVisible
             ? 'high'
             : 'normal',
         ttl: 86400000,
       },
+      // iOS reste géré exclusivement par ce bloc apns explicite (il prime sur le
+      // `notification` commun côté FCM → comportement iOS strictement inchangé).
       apns: _buildApnsConfig(data),
     };
+
+    // Bloc notification Android : affiché par le système sans réveiller l'app.
+    if (isVisible && (data.title || data.body)) {
+      message.notification = {
+        title: data.title || 'Alanya',
+        body: data.body || '',
+      };
+      message.android.notification = {
+        channelId: isMeeting ? 'talky_meetings' : 'talky_messages',
+        icon: 'ic_stat_notification',
+        color: '#114B86',
+        sound: 'default',
+        ...(data.conversationId
+          ? { tag: `conv_${data.conversationId}` }
+          : {}),
+      };
+    }
 
     const messageId = await admin.messaging().send(message);
     console.log(`[FCM] Sent type=${data.type} id=${messageId}`);
