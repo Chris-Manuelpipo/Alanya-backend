@@ -8,7 +8,16 @@ const _daysAgoIso = (days) => {
 };
 
 // Libellés métier (cf. commentaires SQL des colonnes `type`)
-const _MESSAGE_TYPE_LABELS = ['Texte', 'Image', 'Vidéo', 'Audio', 'Fichier', 'Localisation'];
+const _MESSAGE_TYPE_LABELS = [
+  'Texte',
+  'Image',
+  'Vidéo',
+  'Audio',
+  'Fichier',
+  'Localisation',
+  'Type 6',
+  'Contact',
+];
 const _STATUS_TYPE_LABELS  = ['Texte', 'Image', 'Vidéo'];
 const _ROLE_LABELS = { 0: 'Utilisateur', 1: 'Admin', 2: 'Super-admin' };
 

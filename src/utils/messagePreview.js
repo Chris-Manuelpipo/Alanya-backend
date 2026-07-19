@@ -50,6 +50,22 @@ function locationPreviewFromContent(content) {
   }
 }
 
+function contactPreviewFromContent(content) {
+  if (!content || typeof content !== 'string') return null;
+  try {
+    const data = JSON.parse(content);
+    if (data == null || typeof data !== 'object') return null;
+    const id = Number(data.alanyaID);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    const nom = typeof data.nom === 'string' ? data.nom.trim() : '';
+    const pseudo = typeof data.pseudo === 'string' ? data.pseudo.trim() : '';
+    const label = nom || pseudo || 'Contact';
+    return `👤 ${label}`;
+  } catch (_) {
+    return null;
+  }
+}
+
 function mediaTypeLabel(type, { isViewOnce = false, mediaName } = {}) {
   const t = parseInt(type, 10) || 0;
   switch (t) {
@@ -63,6 +79,8 @@ function mediaTypeLabel(type, { isViewOnce = false, mediaName } = {}) {
       return mediaName ? `📎 ${mediaName}` : '📎 Fichier';
     case 5:
       return '📍 Position';
+    case 7:
+      return '👤 Contact';
     default:
       return mediaName ?? 'Média';
   }
@@ -90,6 +108,12 @@ function messagePreview({
   if (t === 5) {
     const loc = locationPreviewFromContent(content);
     return loc || mediaTypeLabel(5);
+  }
+
+  // type=7 : JSON contact — ne jamais exposer le content brut.
+  if (t === 7) {
+    const contact = contactPreviewFromContent(content);
+    return contact || mediaTypeLabel(7);
   }
 
   if (!viewOnce) {
