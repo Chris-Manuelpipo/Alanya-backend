@@ -120,7 +120,12 @@ const messageSend = (io, socket) => {
       }
 
       const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
-      const resolvedReplyToContent = resolvedReplyToID != null ? (replyToContent ?? null) : null;
+      // Garder le texte de citation même si l'ID n'a pas pu être résolu
+      // (média encore en ack côté client, ID temporaire, etc.).
+      const resolvedReplyToContent =
+        (replyToContent != null && String(replyToContent).trim() !== '')
+          ? replyToContent
+          : null;
 
       let msgID;
       try {
