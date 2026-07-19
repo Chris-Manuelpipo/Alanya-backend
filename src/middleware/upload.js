@@ -72,6 +72,7 @@ const mediaFilter = (req, file, cb) => {
     'application/x-7z-compressed',
     'application/vnd.rar',
     'application/x-rar-compressed',
+    'application/vnd.android.package-archive',
     'text/plain',
   ];
   if (allowed.includes(file.mimetype)) return cb(null, true);
