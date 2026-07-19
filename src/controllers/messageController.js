@@ -565,7 +565,7 @@ const batchForwardMessages = async (req, res) => {
       if (m.isViewOnce) {
         return res.status(400).json({ error: 'Média à vue unique non transférable' });
       }
-      if (m.type !== 0 && !m.mediaUrl) {
+      if (m.type !== 0 && m.type !== 5 && !m.mediaUrl) {
         return res.status(400).json({ error: 'Média sans URL serveur non transférable via batch' });
       }
     }

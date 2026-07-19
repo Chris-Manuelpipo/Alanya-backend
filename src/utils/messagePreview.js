@@ -33,6 +33,23 @@ function albumPreviewFromContent(content) {
   return total === 1 ? '📷 Photo' : `📷 ${total} photos`;
 }
 
+function locationPreviewFromContent(content) {
+  if (!content || typeof content !== 'string') return null;
+  try {
+    const data = JSON.parse(content);
+    if (data == null || typeof data !== 'object') return null;
+    const lat = Number(data.lat);
+    const lng = Number(data.lng);
+    if (Number.isNaN(lat) || Number.isNaN(lng)) return null;
+    const name = typeof data.name === 'string' ? data.name.trim() : '';
+    const address = typeof data.address === 'string' ? data.address.trim() : '';
+    const label = name || address || 'Position';
+    return `📍 ${label}`;
+  } catch (_) {
+    return null;
+  }
+}
+
 function mediaTypeLabel(type, { isViewOnce = false, mediaName } = {}) {
   const t = parseInt(type, 10) || 0;
   switch (t) {
@@ -44,6 +61,8 @@ function mediaTypeLabel(type, { isViewOnce = false, mediaName } = {}) {
       return isViewOnce ? '🎵 Audio · Vue unique' : '🎵 Audio';
     case 4:
       return mediaName ? `📎 ${mediaName}` : '📎 Fichier';
+    case 5:
+      return '📍 Position';
     default:
       return mediaName ?? 'Média';
   }
@@ -65,6 +84,13 @@ function messagePreview({
   if (isEncrypted) return '🔒 Message chiffré';
 
   const viewOnce = isViewOnce === true || isViewOnce === 1 || isViewOnce === '1';
+  const t = parseInt(type, 10) || 0;
+
+  // type=5 : JSON lat/lng — ne jamais exposer le content brut.
+  if (t === 5) {
+    const loc = locationPreviewFromContent(content);
+    return loc || mediaTypeLabel(5);
+  }
 
   if (!viewOnce) {
     const album = albumPreviewFromContent(content);
