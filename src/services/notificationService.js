@@ -27,10 +27,12 @@ const _buildApnsConfig = (data) => {
   };
 };
 
-// Types affichés à l'utilisateur : ils reçoivent un bloc `notification` pour que
-// le système Android les affiche même app tuée (data-only n'est pas fiable dans ce
-// cas). Les appels restent data-only pour déclencher CallKit via le handler Dart.
+// Types affichés à l'utilisateur : bloc `notification` Android pour que le
+// système les affiche même app tuée. Les appels restent data-only pour
+// déclencher CallKit via le handler Dart.
 const VISIBLE_TYPES = ['message', 'meeting_invite', 'meeting_reminder', 'status_view'];
+const CALL_TYPES = ['call', 'group_call'];
+const CALL_TTL_MS = 60_000;
 
 const sendDataOnlyNotification = async (fcmToken, data = {}) => {
   if (!fcmToken || fcmToken === 'INDEFINI') return;
@@ -42,28 +44,39 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
     }
 
     const isVisible = VISIBLE_TYPES.includes(data.type);
+    const isCall = CALL_TYPES.includes(data.type);
+    const isMeeting =
+      data.type === 'meeting_invite' || data.type === 'meeting_reminder';
 
-    // Data-only volontaire : c'est l'app (handler Dart) qui construit les
-    // notifications riches (regroupement MessagingStyle façon WhatsApp). Un bloc
-    // `notification` ferait afficher Android « bêtement » (écrasement, pas de
-    // regroupement). La fiabilité app tuée est couverte côté app par l'exemption
-    // d'optimisation batterie + priority high.
+    // Messages / meetings / statut : data + notification système (filet app tuée).
+    // Appels : data-only (CallKit via handler Dart).
     const message = {
       token: fcmToken,
       data: Object.fromEntries(
         Object.entries(data).map(([k, v]) => [k, String(v)])
       ),
       android: {
-        priority:
-          data.type === 'call' ||
-          data.type === 'group_call' ||
-          isVisible
-            ? 'high'
-            : 'normal',
-        ttl: 86400000,
+        priority: isCall || isVisible ? 'high' : 'normal',
+        ttl: isCall ? CALL_TTL_MS : 86400000,
       },
       apns: _buildApnsConfig(data),
     };
+
+    if (isVisible && (data.title || data.body)) {
+      message.notification = {
+        title: data.title || 'Alanya',
+        body: data.body || '',
+      };
+      message.android.notification = {
+        channelId: isMeeting ? 'talky_meetings' : 'talky_messages',
+        icon: 'ic_stat_notification',
+        color: '#114B86',
+        sound: 'default',
+        ...(data.conversationId
+          ? { tag: `conv_${data.conversationId}` }
+          : {}),
+      };
+    }
 
     const messageId = await admin.messaging().send(message);
     console.log(`[FCM] Sent type=${data.type} id=${messageId}`);
