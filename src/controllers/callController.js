@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { isBlockedEitherWay } = require('../utils/blockUtils');
 const { getClientIp, parseCallMode } = require('../utils/clientIp');
+const { processRejectCall } = require('../socket/handlers/calls');
  
 // Récupère l'historique des appels de l'utilisateur connecté
 const getCalls = async (req, res) => {
@@ -82,4 +83,36 @@ const endCall = async (req, res) => {
   }
 };
 
-module.exports = { getCalls, createCall, endCall };
+/**
+ * Refus d'appel via HTTP — utilisé quand Flutter/CallKit refuse sans socket prêt
+ * (app tuée + bouton Refuser de la notification).
+ * Body: { callerId, callId? }
+ */
+const rejectCallHttp = async (req, res) => {
+  try {
+    const callerID = parseInt(req.body?.callerId, 10);
+    const callIdHint = req.body?.callId ?? null;
+    const receiverID = req.user.alanyaID;
+
+    if (!callerID || Number.isNaN(callerID)) {
+      return res.status(400).json({ error: 'callerId required' });
+    }
+
+    const io = req.app.get('io');
+    const userSockets = req.app.get('userSockets');
+
+    const result = await processRejectCall({
+      io,
+      userSockets,
+      callerID,
+      receiverID,
+      callIdHint,
+    });
+
+    res.json({ ok: true, callId: result.callId ?? null });
+  } catch (error) {
+    throw error;
+  }
+};
+
+module.exports = { getCalls, createCall, endCall, rejectCallHttp };

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { getCalls, createCall, endCall } = require('../controllers/callController');
+const { getCalls, createCall, endCall, rejectCallHttp } = require('../controllers/callController');
 
 /**
  * @swagger
@@ -41,6 +41,33 @@ const { getCalls, createCall, endCall } = require('../controllers/callController
  */
 router.get('/', auth, getCalls);
 router.post('/', auth, createCall);
+
+/**
+ * @swagger
+ * /api/calls/reject:
+ *   post:
+ *     summary: Refus d'appel entrant (HTTP — cold-start CallKit)
+ *     tags: [Appels]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - callerId
+ *             properties:
+ *               callerId:
+ *                 type: integer
+ *               callId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Appel refusé
+ */
+router.post('/reject', auth, rejectCallHttp);
 
 /**
  * @swagger

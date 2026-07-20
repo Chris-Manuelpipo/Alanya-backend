@@ -380,52 +380,75 @@ const rejectCall = (io, socket, userSockets) => {
   socket.on('reject_call', async (data) => {
     try {
       if (!socket.authenticated) return;
-      const { callerId } = data;
+      const { callerId, callId } = data || {};
       const callerID   = toInt(callerId);
       const receiverID = socket.alanyaID;
       if (!callerID) return;
 
-      // Appel refusé : ne pas le rejouer au destinataire.
-      pendingCalls.clear(receiverID);
-
-      // État autoritaire : les deux participants repassent « idle ».
-      callState.clear(receiverID);
-      callState.clear(callerID);
-
-      let rejectedCallID = null;
-      try {
-        const [rows] = await pool.execute(
-          `SELECT IDcall FROM callHistory
-           WHERE idCaller = ? AND idReceiver = ?
-           ORDER BY created_at DESC LIMIT 1`,
-          [callerID, receiverID]
-        );
-        rejectedCallID = rows[0]?.IDcall ?? null;
-        if (rejectedCallID) {
-          await pool.execute('UPDATE callHistory SET status = 2 WHERE IDcall = ?', [rejectedCallID]);
-        }
-      } catch (dbErr) {
-        console.warn('[Socket reject_call] DB update failed:', dbErr.message);
-      }
-
-      // Met à jour la conversation + notifie les deux côtés (discussions + logs d'appel).
-      finalizeCallAndNotify(io, userSockets, rejectedCallID)
-        .catch((err) => console.warn('[Socket reject_call] finalizeCallAndNotify error:', err.message));
-
-      const rejectedCallIdStr = rejectedCallID != null ? String(rejectedCallID) : null;
-      const callerSocketId = userSockets.get(callerID);
-      if (callerSocketId) {
-        io.to(callerSocketId).emit('call_rejected', { callId: rejectedCallIdStr });
-      }
-
-      // Envoyer FCM au caller pour arrêter la sonnerie (cas où receiver est en background)
-      notifyCallEnded(callerID, receiverID, 'Destinataire', rejectedCallID)
-        .catch((err) => console.warn('[Socket reject_call] FCM notifyCallEnded error:', err.message));
+      await processRejectCall({
+        io,
+        userSockets,
+        callerID,
+        receiverID,
+        callIdHint: callId,
+      });
     } catch (error) {
       console.error('[Socket reject_call]', error.message);
     }
   });
 };
+
+/**
+ * Logique partagée socket + HTTP : refuse un appel entrant pour [receiverID].
+ * Idempotent (double refus / course HTTP+socket → no-op sûr).
+ */
+async function processRejectCall({ io, userSockets, callerID, receiverID, callIdHint = null }) {
+  if (!callerID || !receiverID) {
+    return { ok: false, reason: 'invalid_ids' };
+  }
+
+  // Appel refusé : ne pas le rejouer au destinataire.
+  pendingCalls.clear(receiverID);
+
+  // État autoritaire : les deux participants repassent « idle ».
+  callState.clear(receiverID);
+  callState.clear(callerID);
+
+  let rejectedCallID = toInt(callIdHint);
+  try {
+    if (!rejectedCallID) {
+      const [rows] = await pool.execute(
+        `SELECT IDcall FROM callHistory
+         WHERE idCaller = ? AND idReceiver = ?
+         ORDER BY created_at DESC LIMIT 1`,
+        [callerID, receiverID]
+      );
+      rejectedCallID = rows[0]?.IDcall ?? null;
+    }
+    if (rejectedCallID) {
+      await pool.execute('UPDATE callHistory SET status = 2 WHERE IDcall = ?', [rejectedCallID]);
+    }
+  } catch (dbErr) {
+    console.warn('[processRejectCall] DB update failed:', dbErr.message);
+  }
+
+  // Met à jour la conversation + notifie les deux côtés (discussions + logs d'appel).
+  finalizeCallAndNotify(io, userSockets, rejectedCallID)
+    .catch((err) => console.warn('[processRejectCall] finalizeCallAndNotify error:', err.message));
+
+  const rejectedCallIdStr = rejectedCallID != null ? String(rejectedCallID) : null;
+  const callerSocketId = userSockets.get(callerID);
+  if (callerSocketId) {
+    io.to(callerSocketId).emit('call_rejected', { callId: rejectedCallIdStr });
+  }
+
+  // FCM au caller pour arrêter la sonnerie (cas où receiver est en background)
+  notifyCallEnded(callerID, receiverID, 'Destinataire', rejectedCallID)
+    .catch((err) => console.warn('[processRejectCall] FCM notifyCallEnded error:', err.message));
+
+  console.log(`[processRejectCall] !! Refus receiver=${receiverID} → caller=${callerID} callId=${rejectedCallIdStr}`);
+  return { ok: true, callId: rejectedCallID };
+}
 
 const iceCandidate = (io, socket, userSockets) => {
   socket.on('ice_candidate', (data) => {
@@ -838,6 +861,7 @@ module.exports = {
   callUser,
   answerCall,
   rejectCall,
+  processRejectCall,
   iceCandidate,
   endCall,
   endActiveCallForUser,
