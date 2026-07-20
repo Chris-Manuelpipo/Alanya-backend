@@ -127,7 +127,7 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
     isViewOnce,
     isGroup: !!conv.isGroup,
     groupName: conv.GroupName ?? '',
-  });
+  }, io);
 };
 
 const _persistMessage = async (conn, conversationID, senderID, fields) => {

@@ -216,7 +216,8 @@ const messageSend = (io, socket) => {
 
         setTimeout(() => {
           const { notifyNewMessage } = require('../../../services/notificationService');
-          notifyNewMessage(conversationID, senderID, senderName, notifyFields).catch((e) =>
+          // Passer `io` : skip FCM si le destinataire est déjà dans user_*.
+          notifyNewMessage(conversationID, senderID, senderName, notifyFields, io).catch((e) =>
             console.warn('[FCM notification]', e.message),
           );
         }, 0);

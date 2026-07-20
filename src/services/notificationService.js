@@ -127,7 +127,18 @@ const sendToUser = async (alanyaID, data = {}) => {
   }
 };
 
-const notifyNewMessage = async (conversationID, senderID, senderName, fields = {}) => {
+/** True si le destinataire a au moins un socket dans la room user_{id}. */
+const isUserSocketConnected = (io, alanyaID) => {
+  if (!io?.sockets?.adapter?.rooms) return false;
+  const room = io.sockets.adapter.rooms.get(`user_${alanyaID}`);
+  return !!(room && room.size > 0);
+};
+
+/**
+ * Push message aux participants hors-ligne (pas de socket dans user_*).
+ * @param {import('socket.io').Server|null} [io] — si fourni, skip FCM pour les users déjà joignables en temps réel.
+ */
+const notifyNewMessage = async (conversationID, senderID, senderName, fields = {}, io = null) => {
   try {
     const {
       content,
@@ -152,6 +163,10 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       [conversationID, senderID]
     );
     for (const p of participants) {
+      if (isUserSocketConnected(io, p.alanyaID)) {
+        console.log(`[FCM] skip message push alanyaID=${p.alanyaID} (socket online)`);
+        continue;
+      }
       await sendToUser(p.alanyaID, {
         type:           'message',
         title:          senderName,
