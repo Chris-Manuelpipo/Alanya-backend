@@ -2,6 +2,7 @@ const pool = require('../../../config/db');
 const { emitPresenceUpdate } = require('../../../utils/blockUtils');
 const pendingCalls = require('../../state/pendingCalls');
 const meetingMuteStates = require('../../state/meetingMuteStates');
+const { endActiveCallForUser } = require('../calls');
 
 const presenceOnline = (io, socket, userSockets) => {
   socket.on('presence:online', async (data) => {
@@ -57,6 +58,15 @@ const handleDisconnect = async (io, socket, userSockets) => {
   if (!userID) return;
 
   userSockets.delete(userID);
+
+  // Terminer l'appel actif AVANT markUndelivered : sinon un pending
+  // pourrait être rejoué alors que l'appel vient d'être coupé.
+  try {
+    await endActiveCallForUser(io, userSockets, userID, 'disconnect');
+  } catch (e) {
+    console.warn('[Socket disconnect] endActiveCallForUser failed:', e.message);
+  }
+
   pendingCalls.markUndelivered(userID);
 
   const meetingID = socket.currentMeetingID;

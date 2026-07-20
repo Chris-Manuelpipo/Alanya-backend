@@ -19,8 +19,8 @@ const callState = require('../state/callState');
 // Serveur → Client :
 //   incoming_call { callId, callerId, callerName, callerPhoto, isVideo, offer }
 //   call_answered { answer }
-//   call_rejected {}
-//   call_ended    {}
+//   call_rejected { callId? }
+//   call_ended    { callId? }
 //   call_failed   { reason, code? }                     — erreur (hors-ligne, données invalides…)
 //   call_busy     { callId, targetId, reason:'busy' }   — cible déjà ringing / in_call
 //   call_no_answer{ callId, targetId, reason:'no_answer' } — timeout serveur sans réponse
@@ -31,8 +31,8 @@ const callState = require('../state/callState');
 //                 deux participants passent « ringing » + timer no-answer (45 s).
 //  - answer_call: les deux participants passent « in_call ».
 //  - reject/end/timeout/disconnect : les deux repassent « idle ».
-//  - Tous les états terminaux émettent le FCM call_ended nécessaire pour couper la
-//    sonnerie/CallKit du destinataire réveillé en arrière-plan.
+//  - Tous les états terminaux émettent le FCM call_ended (avec callId) nécessaire pour
+//    couper la sonnerie/CallKit du destinataire réveillé en arrière-plan.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Délai serveur avant de déclarer un appel « sans réponse » (marge > sonnerie CallKit 30 s).
@@ -155,7 +155,7 @@ async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
   }
 
   // Coupe la sonnerie/CallKit du destinataire s'il a été réveillé en arrière-plan.
-  notifyCallEnded(targetID, callerID, 'Appel manqué')
+  notifyCallEnded(targetID, callerID, 'Appel manqué', callID)
     .catch((err) => console.warn('[Socket call_user] no-answer notifyCallEnded error:', err.message));
 }
 
@@ -166,7 +166,61 @@ function createRoomState(isVideo, callerID, callerInfo) {
   }
   return { isVideo: !!isVideo, participants };
 }
- 
+
+/**
+ * Termine l'appel 1-à-1 actif d'un utilisateur (disconnect / kill app).
+ * Nettoie callState + pendingCalls, prévient le pair (socket + FCM call_ended).
+ * @returns {Promise<boolean>} true si un appel a été terminé.
+ */
+async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnect') {
+  const entry = callState.getEntry(userID);
+  if (!entry || (entry.status !== 'ringing' && entry.status !== 'in_call')) {
+    return false;
+  }
+
+  const peerID = entry.peerId != null ? toInt(entry.peerId) : null;
+  const callID = entry.callId != null ? entry.callId : null;
+  const callIdStr = callID != null ? String(callID) : null;
+
+  console.log(
+    `[Socket] endActiveCallForUser user=${userID} peer=${peerID} callId=${callIdStr ?? 'none'} reason=${reason}`,
+  );
+
+  pendingCalls.clear(userID);
+  if (peerID) pendingCalls.clear(peerID);
+  callState.clear(userID);
+  if (peerID) callState.clear(peerID);
+
+  if (callID) {
+    try {
+      // status 3 = manqué / coupé sans réponse propre (disconnect pendant sonnerie
+      // ou communication). La durée est recalculée si start_time existe.
+      await pool.execute(
+        `UPDATE callHistory
+         SET status = CASE WHEN status = 0 THEN 3 ELSE status END,
+             duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+         WHERE IDcall = ?`,
+        [callID],
+      );
+    } catch (dbErr) {
+      console.warn('[Socket endActiveCallForUser] DB update failed:', dbErr.message);
+    }
+    finalizeCallAndNotify(io, userSockets, callID)
+      .catch((err) => console.warn('[Socket endActiveCallForUser] finalize error:', err.message));
+  }
+
+  if (peerID) {
+    const peerSocketId = userSockets.get(peerID);
+    if (peerSocketId) {
+      io.to(peerSocketId).emit('call_ended', { callId: callIdStr });
+    }
+    notifyCallEnded(peerID, userID, 'Correspondant', callID)
+      .catch((err) => console.warn('[Socket endActiveCallForUser] FCM error:', err.message));
+  }
+
+  return true;
+}
+
 const callUser = (io, socket, userSockets) => {
   socket.on('call_user', async (data) => {
     try {
@@ -358,13 +412,14 @@ const rejectCall = (io, socket, userSockets) => {
       finalizeCallAndNotify(io, userSockets, rejectedCallID)
         .catch((err) => console.warn('[Socket reject_call] finalizeCallAndNotify error:', err.message));
 
+      const rejectedCallIdStr = rejectedCallID != null ? String(rejectedCallID) : null;
       const callerSocketId = userSockets.get(callerID);
       if (callerSocketId) {
-        io.to(callerSocketId).emit('call_rejected', {});
+        io.to(callerSocketId).emit('call_rejected', { callId: rejectedCallIdStr });
       }
 
       // Envoyer FCM au caller pour arrêter la sonnerie (cas où receiver est en background)
-      notifyCallEnded(callerID, receiverID, 'Destinataire')
+      notifyCallEnded(callerID, receiverID, 'Destinataire', rejectedCallID)
         .catch((err) => console.warn('[Socket reject_call] FCM notifyCallEnded error:', err.message));
     } catch (error) {
       console.error('[Socket reject_call]', error.message);
@@ -399,15 +454,25 @@ const endCall = (io, socket, userSockets) => {
       const callerID = socket.alanyaID;
       const mode = parseCallMode(rawMode);
 
+      // Préférer le callId d'état (fiable) avant clear — évite un FCM call_ended
+      // sans callId qui ne pourrait pas bloquer un FCM `call` tardif.
+      const selfEntry = callState.getEntry(callerID);
+      const peerEntry = targetID ? callState.getEntry(targetID) : null;
+      let endedCallID =
+        (selfEntry?.callId != null ? selfEntry.callId : null) ??
+        (peerEntry?.callId != null ? peerEntry.callId : null) ??
+        socket.currentCallID ??
+        null;
+
       // Appel terminé/annulé : ne pas le rejouer au destinataire.
       if (targetID) pendingCalls.clear(targetID);
+      pendingCalls.clear(callerID);
 
       // État autoritaire : les deux participants repassent « idle ».
       callState.clear(callerID);
       if (targetID) callState.clear(targetID);
 
-      let endedCallID = null;
-      if (callerID) {
+      if (callerID && endedCallID == null) {
         try {
           const [rows] = await pool.execute(
             `SELECT IDcall FROM callHistory
@@ -417,15 +482,20 @@ const endCall = (io, socket, userSockets) => {
             [callerID, callerID, targetID || callerID, targetID || callerID]
           );
           endedCallID = rows[0]?.IDcall ?? null;
-          if (endedCallID) {
-            await pool.execute(
-              `UPDATE callHistory
-               SET duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW())),
-                   mode = COALESCE(?, mode)
-               WHERE IDcall = ?`,
-              [mode, endedCallID]
-            );
-          }
+        } catch (dbErr) {
+          console.warn('[Socket end_call] DB lookup failed:', dbErr.message);
+        }
+      }
+
+      if (endedCallID) {
+        try {
+          await pool.execute(
+            `UPDATE callHistory
+             SET duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW())),
+                 mode = COALESCE(?, mode)
+             WHERE IDcall = ?`,
+            [mode, endedCallID]
+          );
         } catch (dbErr) {
           console.warn('[Socket end_call] DB update failed:', dbErr.message);
         }
@@ -436,13 +506,14 @@ const endCall = (io, socket, userSockets) => {
         .catch((err) => console.warn('[Socket end_call] finalizeCallAndNotify error:', err.message));
 
       if (targetID) {
+        const endedCallIdStr = endedCallID != null ? String(endedCallID) : null;
         const targetSocketId = userSockets.get(targetID);
         if (targetSocketId) {
-          io.to(targetSocketId).emit('call_ended', {});
+          io.to(targetSocketId).emit('call_ended', { callId: endedCallIdStr });
         }
 
         // Envoyer FCM au receiver pour arrêter la sonnerie (cas où receiver est en background)
-        notifyCallEnded(targetID, callerID, 'L\'appelant')
+        notifyCallEnded(targetID, callerID, 'L\'appelant', endedCallID)
           .catch((err) => console.warn('[Socket end_call] FCM notifyCallEnded error:', err.message));
       }
 
@@ -769,6 +840,7 @@ module.exports = {
   rejectCall,
   iceCandidate,
   endCall,
+  endActiveCallForUser,
   createGroupCall,
   joinGroupCall,
   leaveGroupCall,

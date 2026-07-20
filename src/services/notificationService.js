@@ -227,13 +227,14 @@ const notifyMeetingReminder = async (participantId, meetingTitle, organiserName,
   });
 };
 
-const notifyCallEnded = async (receiverId, callerId, callerName) => {
+const notifyCallEnded = async (receiverId, callerId, callerName, callId = null) => {
   await sendToUser(receiverId, {
     type:       'call_ended',
     title:      'Appel terminé',
     body:       `${callerName || 'L\'appel'} a raccroché`,
     callerId:   String(callerId),
     callerName: String(callerName ?? ''),
+    callId:     String(callId ?? ''),
   });
 };
 
