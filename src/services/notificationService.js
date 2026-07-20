@@ -67,14 +67,22 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
         title: data.title || 'Alanya',
         body: data.body || '',
       };
+      // Tag distinct obligatoire : sans tag, FCM réutilise l'id 0 et chaque
+      // notif écrase la précédente dans le tiroir Android.
+      let tag;
+      if (data.conversationId) {
+        tag = `conv_${data.conversationId}`;
+      } else if (data.meetingId) {
+        tag = `meeting_${data.type}_${data.meetingId}`;
+      } else {
+        tag = `${data.type || 'notif'}_${Date.now()}`;
+      }
       message.android.notification = {
         channelId: isMeeting ? 'talky_meetings' : 'talky_messages',
         icon: 'ic_stat_notification',
         color: '#114B86',
         sound: 'default',
-        ...(data.conversationId
-          ? { tag: `conv_${data.conversationId}` }
-          : {}),
+        tag,
       };
     }
 
