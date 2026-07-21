@@ -133,6 +133,7 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
 const _persistMessage = async (conn, conversationID, senderID, fields) => {
   const {
     content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
+    mediaSize, mediaPageCount,
     replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
     clickSentAt,
   } = fields;
@@ -154,12 +155,14 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     `INSERT INTO message
        (senderID, conversationID, content, type, status, sendAt,
         clickSentAt,
-        mediaUrl, mediaName, mediaDuration, mediaThumb, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
-     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?,?)`,
+        mediaUrl, mediaName, mediaDuration, mediaThumb, mediaSize, mediaPageCount,
+        replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
+     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       senderID, conversationID, content ?? null, type,
       clickSentAt ? new Date(clickSentAt) : null,
       mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
+      mediaSize ?? null, mediaPageCount ?? null,
       resolvedReplyToID, resolvedReplyToContent, isStatusReply,
       isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
     ]
@@ -211,6 +214,7 @@ const sendMessage = async (req, res) => {
     const { id } = req.params;
     const {
       content, type = 0, mediaUrl, mediaName, mediaDuration,
+      mediaSize, mediaPageCount,
       replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
       clickSentAt,
     } = req.body;
@@ -222,6 +226,7 @@ const sendMessage = async (req, res) => {
 
     const { msg } = await _persistAndDeliverMessage(req, id, senderID, {
       content, type, mediaUrl, mediaName, mediaDuration,
+      mediaSize, mediaPageCount,
       replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce,
       clickSentAt,
     });
@@ -606,6 +611,8 @@ const batchForwardMessages = async (req, res) => {
             mediaUrl: source.mediaUrl,
             mediaName: source.mediaName,
             mediaDuration: source.mediaDuration,
+            mediaSize: source.mediaSize,
+            mediaPageCount: source.mediaPageCount,
             isForwarded: 1,
           },
           { conn, skipDelivery: true }

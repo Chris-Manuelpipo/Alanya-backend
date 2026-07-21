@@ -74,6 +74,7 @@ const messageSend = (io, socket) => {
 
       const {
         conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
+        mediaSize, mediaPageCount,
         replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
         clickSentAt,
       } = data;
@@ -133,12 +134,14 @@ const messageSend = (io, socket) => {
           `INSERT INTO message
              (senderID, conversationID, clientID, content, type, status, sendAt,
               clickSentAt,
-              mediaUrl, mediaName, mediaDuration, mediaThumb, replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
-           VALUES (?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              mediaUrl, mediaName, mediaDuration, mediaThumb, mediaSize, mediaPageCount,
+              replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
+           VALUES (?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             senderID, conversationID, clientId, content ?? null, type,
             clickSentAt ? new Date(clickSentAt) : null,
             mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
+            mediaSize ?? null, mediaPageCount ?? null,
             resolvedReplyToID, resolvedReplyToContent, isStatusReply,
             isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
           ],
