@@ -1,6 +1,7 @@
 const jwt  = require('jsonwebtoken');
 const pool = require('../../config/db');
 const pendingCalls = require('../state/pendingCalls');
+const { registerUserSocket } = require('../../utils/userSocketRegistry');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'talky-secret-key-change-in-production';
 const REPLAY_ENABLED = process.env.ENABLE_PENDING_CALL_REPLAY !== 'false';
@@ -9,7 +10,7 @@ const socketAuth = (io, socket, userSockets) => {
 
   socket.on('auth:login', async (data) => {
     try {
-      const { token } = data || {};
+      const { token, deviceId, device_ID: deviceIdSnake } = data || {};
       if (!token) {
         return socket.emit('auth:error', { message: 'Token requis' });
       }
@@ -38,6 +39,10 @@ const socketAuth = (io, socket, userSockets) => {
       }
 
       const alanyaID = rows[0].alanyaID;
+      const rawDevice = deviceId ?? deviceIdSnake;
+      if (rawDevice && String(rawDevice).trim()) {
+        socket.deviceId = String(rawDevice).trim().slice(0, 128);
+      }
       _registerSocket(socket, alanyaID, userSockets, io);
       console.log(`[Socket] Authentifié: User ${alanyaID} (socket ${socket.id})`);
 
@@ -52,15 +57,7 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
   socket.alanyaID      = alanyaID;
   socket.authenticated = true;
 
-  const existingSocketId = userSockets.get(alanyaID);
-  if (existingSocketId && existingSocketId !== socket.id) {
-    const existingSocket = io.sockets.sockets.get(existingSocketId);
-    if (existingSocket) {
-      existingSocket.emit('auth:conflict', { message: 'Connexion depuis un autre appareil' });
-    }
-  }
-
-  userSockets.set(alanyaID, socket.id);
+  registerUserSocket(userSockets, alanyaID, socket.id);
   socket.join(`user_${alanyaID}`);
   socket.emit('auth:verified', { success: true, alanyaID });
 

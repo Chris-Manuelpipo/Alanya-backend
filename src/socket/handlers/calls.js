@@ -5,6 +5,7 @@ const { isBlockedEitherWay } = require('../../utils/blockUtils');
 const { getClientIp, parseCallMode } = require('../../utils/clientIp');
 const pendingCalls = require('../state/pendingCalls');
 const callState = require('../state/callState');
+const { emitToUser, isUserOnline } = require('../../utils/userSocketRegistry');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTRAT D'EVENTS — appels 1-à-1
@@ -110,8 +111,7 @@ async function finalizeCallAndNotify(io, userSockets, callID) {
 
     const payload = { conversationID: conversID, call };
     for (const uid of [idCaller, idReceiver]) {
-      const sid = userSockets.get(uid);
-      if (sid) io.to(sid).emit('call_log_updated', payload);
+      emitToUser(io, uid, 'call_log_updated', payload);
     }
   } catch (err) {
     console.warn('[finalizeCallAndNotify]', err.message);
@@ -145,14 +145,11 @@ async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
       .catch((err) => console.warn('[Socket call_user] no-answer finalize error:', err.message));
   }
 
-  const callerSocketId = userSockets.get(callerID);
-  if (callerSocketId) {
-    io.to(callerSocketId).emit('call_no_answer', {
-      callId:   callID != null ? String(callID) : null,
-      targetId: String(targetID),
-      reason:   'no_answer',
-    });
-  }
+  emitToUser(io, callerID, 'call_no_answer', {
+    callId:   callID != null ? String(callID) : null,
+    targetId: String(targetID),
+    reason:   'no_answer',
+  });
 
   // Coupe la sonnerie/CallKit du destinataire s'il a été réveillé en arrière-plan.
   notifyCallEnded(targetID, callerID, 'Appel manqué', callID)
@@ -210,10 +207,7 @@ async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnec
   }
 
   if (peerID) {
-    const peerSocketId = userSockets.get(peerID);
-    if (peerSocketId) {
-      io.to(peerSocketId).emit('call_ended', { callId: callIdStr });
-    }
+    emitToUser(io, peerID, 'call_ended', { callId: callIdStr });
     notifyCallEnded(peerID, userID, 'Correspondant', callID)
       .catch((err) => console.warn('[Socket endActiveCallForUser] FCM error:', err.message));
   }
@@ -287,10 +281,9 @@ const callUser = (io, socket, userSockets) => {
       pendingCalls.set(targetID, incomingPayload);
       console.log(`[PhantomCallFix] pending:set target=${targetID} callId=${incomingPayload.callId ?? 'none'}`);
 
-      const targetSocketId = userSockets.get(targetID);
-      if (targetSocketId) {
-        console.log(`[Socket call_user] !! Envoi incoming_call à socket ${targetSocketId}`);
-        io.to(targetSocketId).emit('incoming_call', incomingPayload);
+      if (isUserOnline(io, targetID)) {
+        console.log(`[Socket call_user] !! Envoi incoming_call à user_${targetID}`);
+        emitToUser(io, targetID, 'incoming_call', incomingPayload);
         const delivery = pendingCalls.markDelivered(targetID, 'socket-live');
         if (delivery) {
           console.log(
@@ -363,12 +356,11 @@ const answerCall = (io, socket, userSockets) => {
         console.warn('[Socket answer_call] DB update failed:', dbErr.message);
       }
 
-      const callerSocketId = userSockets.get(callerID);
-      if (callerSocketId) {
-        console.log(`[Socket answer_call] !! Envoi call_answered à socket ${callerSocketId}`);
-        io.to(callerSocketId).emit('call_answered', { answer });
+      if (isUserOnline(io, callerID)) {
+        console.log(`[Socket answer_call] !! Envoi call_answered à user_${callerID}`);
+        emitToUser(io, callerID, 'call_answered', { answer });
       } else {
-        console.warn(`[Socket answer_call] ** Caller ${callerID} non trouvé. UserSockets: [${Array.from(userSockets.keys()).join(', ')}]`);
+        console.warn(`[Socket answer_call] ** Caller ${callerID} non trouvé en ligne.`);
       }
     } catch (error) {
       console.error('[Socket answer_call]', error.message);
@@ -437,10 +429,7 @@ async function processRejectCall({ io, userSockets, callerID, receiverID, callId
     .catch((err) => console.warn('[processRejectCall] finalizeCallAndNotify error:', err.message));
 
   const rejectedCallIdStr = rejectedCallID != null ? String(rejectedCallID) : null;
-  const callerSocketId = userSockets.get(callerID);
-  if (callerSocketId) {
-    io.to(callerSocketId).emit('call_rejected', { callId: rejectedCallIdStr });
-  }
+  emitToUser(io, callerID, 'call_rejected', { callId: rejectedCallIdStr });
 
   // FCM au caller pour arrêter la sonnerie (cas où receiver est en background)
   notifyCallEnded(callerID, receiverID, 'Destinataire', rejectedCallID)
@@ -458,10 +447,7 @@ const iceCandidate = (io, socket, userSockets) => {
       const targetID = toInt(targetUserId);
       if (!targetID || !candidate) return;
 
-      const targetSocketId = userSockets.get(targetID);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('ice_candidate', { candidate });
-      }
+      emitToUser(io, targetID, 'ice_candidate', { candidate });
     } catch (error) {
       console.error('[Socket ice_candidate]', error.message);
     }
@@ -530,10 +516,7 @@ const endCall = (io, socket, userSockets) => {
 
       if (targetID) {
         const endedCallIdStr = endedCallID != null ? String(endedCallID) : null;
-        const targetSocketId = userSockets.get(targetID);
-        if (targetSocketId) {
-          io.to(targetSocketId).emit('call_ended', { callId: endedCallIdStr });
-        }
+        emitToUser(io, targetID, 'call_ended', { callId: endedCallIdStr });
 
         // Envoyer FCM au receiver pour arrêter la sonnerie (cas où receiver est en background)
         notifyCallEnded(targetID, callerID, 'L\'appelant', endedCallID)
@@ -585,9 +568,8 @@ const createGroupCall = (io, socket, userSockets) => {
       const fcmTargets = [];
       for (const targetID of uniqueTargets) {
         fcmTargets.push(targetID);
-        const targetSocketId = userSockets.get(targetID);
-        if (targetSocketId) {
-          io.to(targetSocketId).emit('group_call_invite', {
+        if (isUserOnline(io, targetID)) {
+          emitToUser(io, targetID, 'group_call_invite', {
             callerId:    String(callerID),
             callerName:  callerName  || '',
             callerPhoto: callerPhoto || null,
@@ -712,14 +694,11 @@ const groupOffer = (io, socket, userSockets) => {
       const targetID = toInt(toUserId);
       if (!targetID || !offer) return;
 
-      const targetSocketId = userSockets.get(targetID);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('group_offer', {
-          fromUserId: String(fromUserId || socket.alanyaID),
-          offer,
-          roomId,
-        });
-      }
+      emitToUser(io, targetID, 'group_offer', {
+        fromUserId: String(fromUserId || socket.alanyaID),
+        offer,
+        roomId,
+      });
     } catch (error) {
       console.error('[Socket group_offer]', error.message);
     }
@@ -734,14 +713,11 @@ const groupAnswer = (io, socket, userSockets) => {
       const targetID = toInt(toUserId);
       if (!targetID || !answer) return;
 
-      const targetSocketId = userSockets.get(targetID);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('group_answer', {
-          fromUserId: String(fromUserId || socket.alanyaID),
-          answer,
-          roomId,
-        });
-      }
+      emitToUser(io, targetID, 'group_answer', {
+        fromUserId: String(fromUserId || socket.alanyaID),
+        answer,
+        roomId,
+      });
     } catch (error) {
       console.error('[Socket group_answer]', error.message);
     }
@@ -756,14 +732,11 @@ const groupIceCandidate = (io, socket, userSockets) => {
       const targetID = toInt(toUserId);
       if (!targetID || !candidate) return;
 
-      const targetSocketId = userSockets.get(targetID);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('group_ice_candidate', {
-          fromUserId: String(fromUserId || socket.alanyaID),
-          candidate,
-          roomId,
-        });
-      }
+      emitToUser(io, targetID, 'group_ice_candidate', {
+        fromUserId: String(fromUserId || socket.alanyaID),
+        candidate,
+        roomId,
+      });
     } catch (error) {
       console.error('[Socket group_ice_candidate]', error.message);
     }
@@ -783,13 +756,10 @@ const callMuteState = (io, socket, userSockets) => {
       const targetID = toInt(toUserId);
       if (!targetID) return;
 
-      const targetSocketId = userSockets.get(targetID);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('call:mute_state', {
-          userId:  String(socket.alanyaID),
-          isMuted: !!isMuted,
-        });
-      }
+      emitToUser(io, targetID, 'call:mute_state', {
+        userId:  String(socket.alanyaID),
+        isMuted: !!isMuted,
+      });
     } catch (error) {
       console.error('[Socket call:mute_state]', error.message);
     }
@@ -825,13 +795,10 @@ const callVideoState = (io, socket, userSockets) => {
       const targetID = toInt(toUserId);
       if (!targetID) return;
 
-      const targetSocketId = userSockets.get(targetID);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('call:video_state', {
-          userId:    String(socket.alanyaID),
-          isVideoOn: !!isVideoOn,
-        });
-      }
+      emitToUser(io, targetID, 'call:video_state', {
+        userId:    String(socket.alanyaID),
+        isVideoOn: !!isVideoOn,
+      });
     } catch (error) {
       console.error('[Socket call:video_state]', error.message);
     }

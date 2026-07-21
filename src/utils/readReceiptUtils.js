@@ -27,6 +27,14 @@ const markConversationReadBy = async ({
   );
 
   await notifyMessageStatus(io, conversationID, 3, readerID);
+
+  if (io) {
+    io.to(`user_${readerID}`).emit('inbox:sync', {
+      conversationID: Number(conversationID),
+      unreadCount: 0,
+      reason: 'read',
+    });
+  }
 };
 
 module.exports = { markConversationReadBy };

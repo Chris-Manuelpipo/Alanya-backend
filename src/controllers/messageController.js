@@ -108,6 +108,15 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
     for (const p of participants) {
       io.to(`user_${p.alanyaID}`).emit('message:received', msg);
     }
+    if (senderID) {
+      const clientId = msg.clientID ?? msg.clientId ?? null;
+      io.to(`user_${senderID}`).emit('message:sent', {
+        ...msg,
+        clientId,
+        clientID: clientId,
+        msgID: msg.msgID,
+      });
+    }
   }
 
   const [sender] = await pool.execute(

@@ -117,7 +117,10 @@ const messageSend = (io, socket) => {
       // Idempotence : même (senderID, clientID) → toujours le même message.
       const existing = await loadMessageByClientId(senderID, clientId);
       if (existing) {
-        return socket.emit('message:sent', toClientMsg(existing, clientId));
+        const payload = toClientMsg(existing, clientId);
+        socket.emit('message:sent', payload);
+        socket.to(`user_${senderID}`).emit('message:sent', payload);
+        return;
       }
 
       const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
@@ -152,7 +155,10 @@ const messageSend = (io, socket) => {
         if (insertErr && (insertErr.code === 'ER_DUP_ENTRY' || insertErr.errno === 1062)) {
           const raced = await loadMessageByClientId(senderID, clientId);
           if (raced) {
-            return socket.emit('message:sent', toClientMsg(raced, clientId));
+            const payload = toClientMsg(raced, clientId);
+            socket.emit('message:sent', payload);
+            socket.to(`user_${senderID}`).emit('message:sent', payload);
+            return;
           }
         }
         throw insertErr;
@@ -227,6 +233,7 @@ const messageSend = (io, socket) => {
       }
 
       socket.emit('message:sent', payload);
+      socket.to(`user_${senderID}`).emit('message:sent', payload);
     } catch (error) {
       console.error('[Socket message:send]', error.message);
       emitSendFailed(socket, {

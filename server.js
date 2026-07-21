@@ -63,7 +63,8 @@ const io     = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
 });
 
-const userSockets = new Map();
+const { createUserSocketRegistry } = require('./src/utils/userSocketRegistry');
+const userSockets = createUserSocketRegistry();
 
 app.set('trust proxy', 1);
 app.set('io', io);

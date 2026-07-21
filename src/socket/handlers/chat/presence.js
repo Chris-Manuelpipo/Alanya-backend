@@ -3,13 +3,17 @@ const { emitPresenceUpdate } = require('../../../utils/blockUtils');
 const pendingCalls = require('../../state/pendingCalls');
 const meetingMuteStates = require('../../state/meetingMuteStates');
 const { endActiveCallForUser } = require('../calls');
+const {
+  registerUserSocket,
+  unregisterUserSocket,
+} = require('../../../utils/userSocketRegistry');
 
 const presenceOnline = (io, socket, userSockets) => {
   socket.on('presence:online', async (data) => {
     const userID = typeof data === 'object' ? data.userID : data;
     if (!userID) return;
 
-    userSockets.set(Number(userID), socket.id);
+    registerUserSocket(userSockets, Number(userID), socket.id);
     socket.alanyaID = Number(userID);
 
     try {
@@ -34,7 +38,10 @@ const presenceOffline = (io, socket, userSockets) => {
     const userID = typeof data === 'object' ? data.userID : data;
     if (!userID) return;
 
-    userSockets.delete(Number(userID));
+    const uid = Number(userID);
+    const lastSocket = unregisterUserSocket(userSockets, uid, socket.id);
+
+    if (!lastSocket) return;
 
     try {
       await pool.execute(
@@ -46,7 +53,7 @@ const presenceOffline = (io, socket, userSockets) => {
     }
 
     await emitPresenceUpdate(io, userID, {
-      userID: Number(userID),
+      userID: uid,
       online: false,
       lastSeen: new Date().toISOString(),
     });
@@ -57,17 +64,18 @@ const handleDisconnect = async (io, socket, userSockets) => {
   const userID = socket.alanyaID;
   if (!userID) return;
 
-  userSockets.delete(userID);
+  const lastSocket = unregisterUserSocket(userSockets, userID, socket.id);
 
-  // Terminer l'appel actif AVANT markUndelivered : sinon un pending
-  // pourrait être rejoué alors que l'appel vient d'être coupé.
-  try {
-    await endActiveCallForUser(io, userSockets, userID, 'disconnect');
-  } catch (e) {
-    console.warn('[Socket disconnect] endActiveCallForUser failed:', e.message);
+  // Appel / pending : uniquement quand le dernier socket du compte part
+  // (sinon un 2e appareil déconnecté couperait un appel actif sur le 1er).
+  if (lastSocket) {
+    try {
+      await endActiveCallForUser(io, userSockets, userID, 'disconnect');
+    } catch (e) {
+      console.warn('[Socket disconnect] endActiveCallForUser failed:', e.message);
+    }
+    pendingCalls.markUndelivered(userID);
   }
-
-  pendingCalls.markUndelivered(userID);
 
   const meetingID = socket.currentMeetingID;
   if (meetingID) {
@@ -89,6 +97,8 @@ const handleDisconnect = async (io, socket, userSockets) => {
     }
     socket.currentMeetingID = null;
   }
+
+  if (!lastSocket) return;
 
   try {
     await pool.execute(

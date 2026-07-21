@@ -55,6 +55,11 @@ const messageRead = (io, socket) => {
         [conversationID, userID],
       );
       await notifyMessageStatus(io, conversationID, 3, userID);
+      io.to(`user_${userID}`).emit('inbox:sync', {
+        conversationID: Number(conversationID),
+        unreadCount: 0,
+        reason: 'read',
+      });
     } catch (e) {
       console.warn('[Socket message:read]', e.message);
     }

@@ -165,7 +165,7 @@ const login = async (req, res) => {
       return res.status(401).json({ error: 'Identifiants invalides' });
     }
 
-    // Mettre à jour fcm_token et device_ID si fournis
+    // Mettre à jour fcm_token et device_ID si fournis (dernier appareil connu)
     if (fcm_token || device_ID) {
       const updates = [];
       const values  = [];
@@ -478,14 +478,22 @@ const getMe = async (req, res) => {
 const updateFcmToken = async (req, res) => {
   try {
     const token = req.body.fcmToken || req.body.fcm_token;
+    const deviceId = req.body.deviceId || req.body.device_ID || req.body.device_id;
     if (!token || typeof token !== 'string' || token.length > 4096) {
       return res.status(400).json({ error: 'fcmToken requis' });
     }
 
-    await pool.execute(
-      'UPDATE users SET fcm_token = ? WHERE alanyaID = ?',
-      [token, req.user.alanyaID]
-    );
+    if (deviceId) {
+      await pool.execute(
+        'UPDATE users SET fcm_token = ?, device_ID = ? WHERE alanyaID = ?',
+        [token, deviceId, req.user.alanyaID],
+      );
+    } else {
+      await pool.execute(
+        'UPDATE users SET fcm_token = ? WHERE alanyaID = ?',
+        [token, req.user.alanyaID],
+      );
+    }
 
     res.json({ ok: true });
   } catch (error) {

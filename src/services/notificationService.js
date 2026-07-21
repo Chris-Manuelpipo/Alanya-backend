@@ -1,5 +1,6 @@
 const admin = require('../config/firebase');
 const { messagePreview } = require('../utils/messagePreview');
+const { getConnectedDeviceIds } = require('../utils/userSocketRegistry');
 
 const _buildApnsConfig = (data) => {
   const type = data.type;
@@ -99,7 +100,7 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
         const pool = require('../config/db');
         await pool.execute(
           'UPDATE users SET fcm_token = "INDEFINI" WHERE fcm_token = ?',
-          [fcmToken]
+          [fcmToken],
         );
       } catch (cleanupErr) {
         console.warn('[FCM] Token cleanup failed:', cleanupErr.message);
@@ -110,18 +111,41 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
   }
 };
 
-const sendToUser = async (alanyaID, data = {}) => {
+const sendToUser = async (alanyaID, data = {}, options = {}) => {
   try {
+    const { io = null, skipIfDeviceOnline = false } = options;
+    const connectedDevices =
+      skipIfDeviceOnline && io ? getConnectedDeviceIds(io, alanyaID) : new Set();
+
     const pool = require('../config/db');
     const [rows] = await pool.execute(
-      'SELECT fcm_token FROM users WHERE alanyaID = ? AND fcm_token != "INDEFINI"',
-      [alanyaID]
+      'SELECT fcm_token, device_ID FROM users WHERE alanyaID = ? AND fcm_token != "INDEFINI"',
+      [alanyaID],
     );
-    if (rows.length > 0) {
-      await sendDataOnlyNotification(rows[0].fcm_token, data);
-    } else {
+    if (rows.length === 0) {
       console.warn(`[FCM] Pas de token pour alanyaID=${alanyaID}`);
+      return;
     }
+
+    const { fcm_token: fcmToken, device_ID: deviceId } = rows[0];
+
+    if (skipIfDeviceOnline) {
+      if (
+        deviceId &&
+        deviceId !== 'INDEFINI' &&
+        connectedDevices.has(String(deviceId))
+      ) {
+        return;
+      }
+      if (
+        (!deviceId || deviceId === 'INDEFINI') &&
+        connectedDevices.size > 0
+      ) {
+        return;
+      }
+    }
+
+    await sendDataOnlyNotification(fcmToken, data);
   } catch (error) {
     console.error('[FCM] sendToUser error:', error.message);
   }
@@ -163,20 +187,20 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       [conversationID, senderID]
     );
     for (const p of participants) {
-      if (isUserSocketConnected(io, p.alanyaID)) {
-        console.log(`[FCM] skip message push alanyaID=${p.alanyaID} (socket online)`);
-        continue;
-      }
-      await sendToUser(p.alanyaID, {
-        type:           'message',
-        title:          senderName,
-        body,
-        conversationId: String(conversationID),
-        callerId:       String(senderID),
-        msgType:        String(type),
-        isGroup:        isGroup ? '1' : '0',
-        groupName:      String(groupName ?? ''),
-      });
+      await sendToUser(
+        p.alanyaID,
+        {
+          type:           'message',
+          title:          senderName,
+          body,
+          conversationId: String(conversationID),
+          callerId:       String(senderID),
+          msgType:        String(type),
+          isGroup:        isGroup ? '1' : '0',
+          groupName:      String(groupName ?? ''),
+        },
+        { io, skipIfDeviceOnline: true },
+      );
     }
   } catch (error) {
     console.error('[FCM] notifyNewMessage error:', error.message);

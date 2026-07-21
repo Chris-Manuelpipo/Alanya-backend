@@ -1,4 +1,5 @@
 const pool = require('../../config/db');
+const { emitToUser } = require('../../utils/userSocketRegistry');
 const meetingMuteStates = require('../state/meetingMuteStates');
 const meetingVideoStates = require('../state/meetingVideoStates');
 
@@ -120,10 +121,8 @@ const meetingJoinAccept = (io, socket, userSockets) => {
     if (!socket.authenticated) return;
     const { meetingID, userID } = data;
     const uID = toInt(userID);
-    const userSocket = userSockets.get(uID);
-
-    if (userSocket) {
-      io.to(userSocket).emit('meeting:accepted', { meetingID });
+    if (uID) {
+      emitToUser(io, uID, 'meeting:accepted', { meetingID });
     }
 
     let nom = null;
@@ -157,10 +156,9 @@ const meetingJoinDecline = (io, socket, userSockets) => {
   socket.on('meeting:join_decline', (data) => {
     if (!socket.authenticated) return;
     const { meetingID, userID } = data;
-    const userSocket = userSockets.get(toInt(userID));
-
-    if (userSocket) {
-      io.to(userSocket).emit('meeting:declined', { meetingID });
+    const uid = toInt(userID);
+    if (uid) {
+      emitToUser(io, uid, 'meeting:declined', { meetingID });
     }
   });
 };
@@ -252,14 +250,11 @@ const meetingOffer = (io, socket, userSockets) => {
       const targetID = toInt(toUserID);
       if (!targetID || !offer) return;
 
-      const targetSocketId = userSockets.get(targetID);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('meeting:offer', {
-          fromUserID: String(socket.alanyaID),
-          offer,
-          meetingID,
-        });
-      }
+      emitToUser(io, targetID, 'meeting:offer', {
+        fromUserID: String(socket.alanyaID),
+        offer,
+        meetingID,
+      });
     } catch (error) {
       console.error('[Socket meeting:offer]', error.message);
     }
@@ -274,14 +269,11 @@ const meetingAnswer = (io, socket, userSockets) => {
       const targetID = toInt(toUserID);
       if (!targetID || !answer) return;
 
-      const targetSocketId = userSockets.get(targetID);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('meeting:answer', {
-          fromUserID: String(socket.alanyaID),
-          answer,
-          meetingID,
-        });
-      }
+      emitToUser(io, targetID, 'meeting:answer', {
+        fromUserID: String(socket.alanyaID),
+        answer,
+        meetingID,
+      });
     } catch (error) {
       console.error('[Socket meeting:answer]', error.message);
     }
@@ -296,14 +288,11 @@ const meetingIceCandidate = (io, socket, userSockets) => {
       const targetID = toInt(toUserID);
       if (!targetID || !candidate) return;
 
-      const targetSocketId = userSockets.get(targetID);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('meeting:ice_candidate', {
-          fromUserID: String(socket.alanyaID),
-          candidate,
-          meetingID,
-        });
-      }
+      emitToUser(io, targetID, 'meeting:ice_candidate', {
+        fromUserID: String(socket.alanyaID),
+        candidate,
+        meetingID,
+      });
     } catch (error) {
       console.error('[Socket meeting:ice_candidate]', error.message);
     }
