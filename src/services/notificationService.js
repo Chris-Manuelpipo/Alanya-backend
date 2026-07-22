@@ -1,6 +1,13 @@
 const admin = require('../config/firebase');
 const { messagePreview } = require('../utils/messagePreview');
 const { getConnectedDeviceIds } = require('../utils/userSocketRegistry');
+const {
+  logQueued,
+  logSkipped,
+  logSent,
+  logFailed,
+  logTokenStale,
+} = require('../notifications/notificationLogger');
 
 const _buildApnsConfig = (data) => {
   const type = data.type;
@@ -88,7 +95,13 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
     }
 
     const messageId = await admin.messaging().send(message);
-    console.log(`[FCM] Sent type=${data.type} id=${messageId}`);
+    logSent({
+      type: data.type,
+      eventId: data.eventId,
+      msgID: data.msgID,
+      conversationId: data.conversationId,
+      providerMessageId: messageId,
+    });
   } catch (error) {
     const code = error?.code || error?.errorInfo?.code || '';
     const staleToken =
@@ -96,6 +109,13 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
       code === 'messaging/invalid-registration-token' ||
       error.message?.includes('Requested entity was not found');
     if (staleToken) {
+      logTokenStale({
+        type: data.type,
+        eventId: data.eventId,
+        msgID: data.msgID,
+        conversationId: data.conversationId,
+        reason: code || 'stale_token',
+      });
       try {
         const pool = require('../config/db');
         await pool.execute(
@@ -107,7 +127,13 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
       }
     }
     // Ne pas faire crasher le serveur pour une notif ratée
-    console.error('[FCM] Send error:', error.message);
+    logFailed({
+      type: data.type,
+      eventId: data.eventId,
+      msgID: data.msgID,
+      conversationId: data.conversationId,
+      reason: error.message,
+    });
   }
 };
 
@@ -135,15 +161,40 @@ const sendToUser = async (alanyaID, data = {}, options = {}) => {
         deviceId !== 'INDEFINI' &&
         connectedDevices.has(String(deviceId))
       ) {
+        logSkipped({
+          type: data.type,
+          eventId: data.eventId,
+          msgID: data.msgID,
+          conversationId: data.conversationId,
+          userId: alanyaID,
+          reason: 'device_socket_online',
+        });
         return;
       }
       if (
         (!deviceId || deviceId === 'INDEFINI') &&
         connectedDevices.size > 0
       ) {
+        logSkipped({
+          type: data.type,
+          eventId: data.eventId,
+          msgID: data.msgID,
+          conversationId: data.conversationId,
+          userId: alanyaID,
+          reason: 'any_socket_online',
+        });
         return;
       }
     }
+
+    logQueued({
+      type: data.type,
+      eventId: data.eventId,
+      msgID: data.msgID,
+      conversationId: data.conversationId,
+      userId: alanyaID,
+      deviceId,
+    });
 
     await sendDataOnlyNotification(fcmToken, data);
   } catch (error) {
