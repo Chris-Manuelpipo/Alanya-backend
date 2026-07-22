@@ -76,6 +76,12 @@ const messageRead = (io, socket) => {
         unreadCount: 0,
         reason: 'read',
       });
+      const { notifyMessageReadSync } = require('../../../services/notificationService');
+      setImmediate(() => {
+        notifyMessageReadSync(userID, conversationID).catch((e) =>
+          console.warn('[FCM message_read_sync]', e.message),
+        );
+      });
     } catch (e) {
       console.warn('[Socket message:read]', e.message);
     }

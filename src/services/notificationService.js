@@ -340,6 +340,19 @@ const notifyCallEnded = async (receiverId, callerId, callerName, callId = null) 
   });
 };
 
+/**
+ * Sync silencieuse lecture → autres appareils du même utilisateur.
+ * Data-only, sans bloc notification visible.
+ */
+const notifyMessageReadSync = async (alanyaID, conversationID, msgID = null) => {
+  const { buildMessageReadSyncPayload } = require('../notifications/notificationContract');
+  const payload = buildMessageReadSyncPayload({
+    conversationId: conversationID,
+    msgID,
+  });
+  await sendToUser(alanyaID, payload, getMessagePushOptions());
+};
+
 module.exports = {
   sendDataOnlyNotification,
   sendToUser,
@@ -350,4 +363,5 @@ module.exports = {
   notifyMeetingInvite,
   notifyMeetingReminder,
   notifyCallEnded,
+  notifyMessageReadSync,
 };
