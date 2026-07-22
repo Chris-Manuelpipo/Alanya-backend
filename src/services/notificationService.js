@@ -10,6 +10,9 @@ const {
 } = require('../notifications/notificationLogger');
 const { buildMessagePayload } = require('../notifications/notificationContract');
 const { getMessagePushOptions } = require('../notifications/notificationPolicy');
+const { DEVICE_REGISTRY_V2 } = require('../notifications/notificationFlags');
+const { resolvePushTargets } = require('../notifications/pushDeviceRegistry');
+const { hashForLog } = require('../notifications/notificationLogger');
 
 const _buildApnsConfig = (data) => {
   const type = data.type;
@@ -140,6 +143,13 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
 };
 
 const sendToUser = async (alanyaID, data = {}, options = {}) => {
+  if (DEVICE_REGISTRY_V2 && data.type === 'message' && data.conversationId) {
+    return sendToUserDevices(alanyaID, data, options);
+  }
+  return sendToUserLegacy(alanyaID, data, options);
+};
+
+const sendToUserLegacy = async (alanyaID, data = {}, options = {}) => {
   try {
     const { io = null, skipIfDeviceOnline = false } = options;
     const connectedDevices =
@@ -201,6 +211,41 @@ const sendToUser = async (alanyaID, data = {}, options = {}) => {
     await sendDataOnlyNotification(fcmToken, data);
   } catch (error) {
     console.error('[FCM] sendToUser error:', error.message);
+  }
+};
+
+const MAX_PUSH_CONCURRENCY = 5;
+
+/**
+ * Envoie à tous les appareils enregistrés (skip foreground+conv active récent).
+ */
+const sendToUserDevices = async (alanyaID, data = {}, options = {}) => {
+  try {
+    const targets = await resolvePushTargets(alanyaID, data.conversationId);
+    if (targets.length === 0) {
+      console.warn(`[FCM] Pas de cible push pour alanyaID=${alanyaID}`);
+      return;
+    }
+
+    for (let i = 0; i < targets.length; i += MAX_PUSH_CONCURRENCY) {
+      const batch = targets.slice(i, i + MAX_PUSH_CONCURRENCY);
+      await Promise.all(
+        batch.map(async (target) => {
+          logQueued({
+            type: data.type,
+            eventId: data.eventId,
+            msgID: data.msgID,
+            conversationId: data.conversationId,
+            userId: alanyaID,
+            deviceId: hashForLog(target.deviceId),
+          });
+          await sendDataOnlyNotification(target.fcmToken, data);
+        }),
+      );
+    }
+  } catch (error) {
+    console.error('[FCM] sendToUserDevices error:', error.message);
+    await sendToUserLegacy(alanyaID, data, options);
   }
 };
 
@@ -356,6 +401,8 @@ const notifyMessageReadSync = async (alanyaID, conversationID, msgID = null) => 
 module.exports = {
   sendDataOnlyNotification,
   sendToUser,
+  sendToUserDevices,
+  sendToUserLegacy,
   notifyNewMessage,
   notifyIncomingCall,
   notifyGroupCall,
