@@ -346,6 +346,219 @@ const deleteMessage = async (req, res) => {
   }
 };
 
+/// Parse la colonne JSON `message.reactions` (tableau [{ userID, emoji, reactedAt }]).
+const _parseReactionsColumn = (raw) => {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'object') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const _upsertUserReaction = (reactions, userID, emoji) => {
+  const uid = Number(userID);
+  const now = new Date().toISOString();
+  const next = reactions.filter((r) => Number(r.userID) !== uid);
+  next.push({ userID: uid, emoji, reactedAt: now });
+  return next;
+};
+
+const _removeUserReaction = (reactions, userID) => {
+  const uid = Number(userID);
+  return reactions.filter((r) => Number(r.userID) !== uid);
+};
+
+const _serializeReactionsColumn = (reactions) =>
+  reactions.length > 0 ? JSON.stringify(reactions) : null;
+
+/// Vérifie que [msgID] existe (non supprimé) et que [alanyaID] participe à la
+/// conversation. Retourne conversationID ou null + code HTTP d'erreur.
+const _messageReactionContext = async (msgID, alanyaID) => {
+  const [existing] = await pool.execute(
+    'SELECT conversationID FROM message WHERE msgID = ? AND isDeleted = 0',
+    [msgID],
+  );
+  if (existing.length === 0) {
+    return { error: { status: 404, body: { error: 'Message introuvable' } } };
+  }
+  const conversationID = existing[0].conversationID;
+
+  const [member] = await pool.execute(
+    'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+    [conversationID, alanyaID],
+  );
+  if (member.length === 0) {
+    return { error: { status: 403, body: { error: 'Non autorisé' } } };
+  }
+
+  return { conversationID };
+};
+
+const _emitMessageReaction = (req, payload) => {
+  const io = req.app.get('io');
+  if (io) {
+    io.to(`conversation_${payload.conversationID}`).emit('message:reaction', payload);
+  }
+};
+
+/// Pose/remplace ma réaction sur un message. Diffuse `message:reaction`.
+const setReaction = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const alanyaID = req.user.alanyaID;
+    const emoji = (req.body.emoji ?? '').toString().trim();
+    if (!emoji) {
+      return res.status(400).json({ error: 'emoji requis' });
+    }
+
+    const ctx = await _messageReactionContext(id, alanyaID);
+    if (ctx.error) {
+      return res.status(ctx.error.status).json(ctx.error.body);
+    }
+    const { conversationID } = ctx;
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.execute(
+        'SELECT reactions FROM message WHERE msgID = ? AND isDeleted = 0 FOR UPDATE',
+        [id],
+      );
+      if (rows.length === 0) {
+        await conn.rollback();
+        return res.status(404).json({ error: 'Message introuvable' });
+      }
+      const reactions = _upsertUserReaction(_parseReactionsColumn(rows[0].reactions), alanyaID, emoji);
+      await conn.execute(
+        'UPDATE message SET reactions = ? WHERE msgID = ?',
+        [_serializeReactionsColumn(reactions), id],
+      );
+      await conn.commit();
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      conn.release();
+    }
+
+    const payload = {
+      msgID: parseInt(id, 10),
+      conversationID,
+      userID: alanyaID,
+      emoji,
+    };
+
+    _emitMessageReaction(req, payload);
+    res.json(payload);
+  } catch (error) {
+    throw error;
+  }
+};
+
+/// Retire ma réaction sur un message. Diffuse `message:reaction` sans emoji.
+const removeReaction = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const alanyaID = req.user.alanyaID;
+
+    const ctx = await _messageReactionContext(id, alanyaID);
+    if (ctx.error) {
+      return res.status(ctx.error.status).json(ctx.error.body);
+    }
+    const { conversationID } = ctx;
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.execute(
+        'SELECT reactions FROM message WHERE msgID = ? AND isDeleted = 0 FOR UPDATE',
+        [id],
+      );
+      if (rows.length === 0) {
+        await conn.rollback();
+        return res.status(404).json({ error: 'Message introuvable' });
+      }
+      const reactions = _removeUserReaction(_parseReactionsColumn(rows[0].reactions), alanyaID);
+      await conn.execute(
+        'UPDATE message SET reactions = ? WHERE msgID = ?',
+        [_serializeReactionsColumn(reactions), id],
+      );
+      await conn.commit();
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      conn.release();
+    }
+
+    const payload = {
+      msgID: parseInt(id, 10),
+      conversationID,
+      userID: alanyaID,
+    };
+
+    _emitMessageReaction(req, payload);
+    res.json(payload);
+  } catch (error) {
+    throw error;
+  }
+};
+
+/// Hydratation initiale : toutes les réactions d'une conversation.
+const getConversationReactions = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const alanyaID = req.user.alanyaID;
+
+    const [member] = await pool.execute(
+      'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+      [id, alanyaID],
+    );
+    if (member.length === 0) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT msgID, reactions
+       FROM message
+       WHERE conversationID = ?
+         AND isDeleted = 0
+         AND reactions IS NOT NULL
+         AND JSON_LENGTH(reactions) > 0`,
+      [id],
+    );
+
+    const out = [];
+    for (const row of rows) {
+      for (const reaction of _parseReactionsColumn(row.reactions)) {
+        const userID = Number(reaction.userID);
+        const emoji = (reaction.emoji ?? '').toString();
+        if (!userID || !emoji) continue;
+        out.push({
+          msgID: row.msgID,
+          userID,
+          emoji,
+          reactedAt: reaction.reactedAt ?? null,
+        });
+      }
+    }
+
+    out.sort((a, b) => {
+      const ta = a.reactedAt ? new Date(a.reactedAt).getTime() : 0;
+      const tb = b.reactedAt ? new Date(b.reactedAt).getTime() : 0;
+      return ta - tb;
+    });
+
+    res.json(out);
+  } catch (error) {
+    throw error;
+  }
+};
+
 const pinMessage = async (req, res) => {
   try {
     const { id } = req.params;
@@ -831,6 +1044,9 @@ module.exports = {
   batchForwardMessages,
   pinMessage,
   markMessageViewed,
+  setReaction,
+  removeReaction,
+  getConversationReactions,
   getMessageStatusByClientId,
   getPendingOutgoingMessages,
 };

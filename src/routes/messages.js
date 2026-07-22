@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { getMessages, sendMessage } = require('../controllers/messageController');
+const { getMessages, sendMessage, getConversationReactions } = require('../controllers/messageController');
 
 /**
  * @swagger
@@ -74,6 +74,7 @@ const { getMessages, sendMessage } = require('../controllers/messageController')
  *       201:
  *         description: Message envoyé
  */
+router.get('/:id/reactions', auth, getConversationReactions);
 router.get('/:id/messages', auth, getMessages);
 router.post('/:id/messages', auth, sendMessage);
 
