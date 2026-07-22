@@ -8,7 +8,8 @@
         "dev": "nodemon server.js",
         "seed:reserved-phones": "node scripts/cleanup-bulk-reserved-alanya-phones.js",
         "cleanup:reserved-phones": "node scripts/cleanup-bulk-reserved-alanya-phones.js",
-        "bench:messages": "node scripts/load/socket-message-bench.js"
+        "bench:messages": "node scripts/load/socket-message-bench.js",
+        "test:notifications": "node src/notifications/notificationContract.test.js"
     },
     "dependencies": {
         "bcryptjs": "^3.0.3",
