@@ -32,4 +32,19 @@ const generic = applyPreviewPolicy(
 assert.strictEqual(generic.title, 'Alanya');
 assert.strictEqual(generic.body, 'Nouveau message');
 
+// preview sender_only (groupe) : titre = nom groupe ou expéditeur selon policy
+const senderOnly = applyPreviewPolicy(
+  { previewMode: 'sender_only' },
+  { title: 'Groupe A', body: 'Secret', senderName: 'Bob', isGroup: true },
+);
+assert.ok(senderOnly.title);
+assert.ok(senderOnly.body);
+assert.notStrictEqual(senderOnly.body, 'Secret');
+
+// pas de mute
+assert.strictEqual(
+  isConversationMuted({ muteForever: 0, mutedUntil: null }),
+  false,
+);
+
 console.log('notificationPrefs.test.js OK');

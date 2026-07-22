@@ -9,7 +9,10 @@
         "seed:reserved-phones": "node scripts/cleanup-bulk-reserved-alanya-phones.js",
         "cleanup:reserved-phones": "node scripts/cleanup-bulk-reserved-alanya-phones.js",
         "bench:messages": "node scripts/load/socket-message-bench.js",
-        "test:notifications": "node src/notifications/notificationContract.test.js && node src/notifications/notificationLogger.test.js && node src/notifications/notificationPolicy.test.js && node src/notifications/pushDeviceRegistry.test.js && node src/notifications/notificationPrefs.test.js && node src/notifications/notificationAndroidNative.test.js && node src/notifications/notificationApns.test.js && node src/notifications/apnsVoipProvider.test.js"
+        "test:notifications": "node src/notifications/notificationContract.test.js && node src/notifications/notificationLogger.test.js && node src/notifications/notificationPolicy.test.js && node src/notifications/pushDeviceRegistry.test.js && node src/notifications/notificationPrefs.test.js && node src/notifications/notificationAndroidNative.test.js && node src/notifications/notificationApns.test.js && node src/notifications/apnsVoipProvider.test.js && node src/notifications/notificationCallRouting.test.js && node src/notifications/notificationIdempotence.test.js && node src/notifications/notificationTokenStale.test.js",
+        "test:calls": "node src/socket/state/callState.test.js",
+        "test:notifications:full": "npm run test:notifications && npm run test:calls && node scripts/bench/push-queue-bench.js",
+        "bench:push": "node scripts/bench/push-queue-bench.js"
     },
     "dependencies": {
         "bcryptjs": "^3.0.3",

@@ -8,9 +8,11 @@
 // Statuts possibles : 'idle' (implicite, absent de la map) | 'ringing' | 'in_call'
 //
 // Chaque entrée : { status, callId, peerId, noAnswerTimer, disconnectTimer,
-//                   lastAnswer, isVideo }
+//                   lastAnswer, isVideo, ringingSince }
 
 const DISCONNECT_GRACE_MS = 45 * 1000;
+// Marge au-delà du timer no-answer (45 s) pour purger un état « ringing » fantôme.
+const STALE_RINGING_MS = 50 * 1000;
 
 const _states = new Map(); // userId(Number) -> entry
 
@@ -19,6 +21,55 @@ function get(userId) {
   return _states.get(userId)?.status ?? 'idle';
 }
 
+function _samePeer(a, b) {
+  if (a == null || b == null) return false;
+  return String(a) === String(b);
+}
+
+function isStaleRinging(entry) {
+  if (!entry || entry.status !== 'ringing') return false;
+  const since = entry.ringingSince ?? 0;
+  if (!since) return false;
+  return Date.now() - since > STALE_RINGING_MS;
+}
+
+function clearStaleRinging(userId, pendingCalls = null) {
+  const entry = getEntry(userId);
+  if (!entry || !isStaleRinging(entry)) return false;
+  const peerId = entry.peerId;
+  clear(userId);
+  if (peerId != null) {
+    const peerEntry = getEntry(peerId);
+    if (peerEntry?.status === 'ringing' && _samePeer(peerEntry.peerId, userId)) {
+      clear(peerId);
+    }
+    if (pendingCalls?.clear) {
+      pendingCalls.clear(peerId);
+    }
+  }
+  if (pendingCalls?.clear) {
+    pendingCalls.clear(userId);
+  }
+  return true;
+}
+
+/**
+ * true si [userId] ne peut pas recevoir/lancer un appel avec [remoteId].
+ * - « Glare » : déjà en sonnerie avec CE correspondant → pas occupé.
+ * - Sonnerie périmée → purge puis libre.
+ */
+function isBusyForNewCall(userId, remoteId, pendingCalls = null) {
+  clearStaleRinging(userId, pendingCalls);
+  const entry = getEntry(userId);
+  if (!entry) return false;
+  if (entry.status !== 'ringing' && entry.status !== 'in_call') return false;
+  if (entry.status === 'ringing' && _samePeer(entry.peerId, remoteId)) {
+    return false;
+  }
+  return true;
+}
+
+/** @deprecated Préférer isBusyForNewCall avec remoteId. */
 function isBusy(userId) {
   const status = get(userId);
   return status === 'ringing' || status === 'in_call';
@@ -27,6 +78,24 @@ function isBusy(userId) {
 function getEntry(userId) {
   if (userId == null) return null;
   return _states.get(userId) ?? null;
+}
+
+function findExistingRingingPair(callerID, targetID) {
+  const targetEntry = getEntry(targetID);
+  if (
+    targetEntry?.status === 'ringing' &&
+    _samePeer(targetEntry.peerId, callerID)
+  ) {
+    return { callId: targetEntry.callId, calleeId: targetID, callerId: callerID };
+  }
+  const callerEntry = getEntry(callerID);
+  if (
+    callerEntry?.status === 'ringing' &&
+    _samePeer(callerEntry.peerId, targetID)
+  ) {
+    return { callId: callerEntry.callId, calleeId: targetID, callerId: callerID };
+  }
+  return null;
 }
 
 function _clearTimers(entry) {
@@ -60,6 +129,7 @@ function setRinging(userId, { callId = null, peerId = null, timer = null, isVide
     disconnectTimer: null,
     lastAnswer: prev?.lastAnswer ?? null,
     isVideo: isVideo != null ? !!isVideo : !!prev?.isVideo,
+    ringingSince: Date.now(),
   });
 }
 
@@ -75,6 +145,7 @@ function setInCall(userId, { callId = null, peerId = null, lastAnswer = undefine
     disconnectTimer: null,
     lastAnswer: lastAnswer !== undefined ? lastAnswer : (prev?.lastAnswer ?? null),
     isVideo: isVideo !== undefined ? !!isVideo : !!prev?.isVideo,
+    ringingSince: null,
   });
 }
 
@@ -106,6 +177,9 @@ function scheduleDisconnectGrace(userId, onExpire) {
 module.exports = {
   get,
   isBusy,
+  isBusyForNewCall,
+  findExistingRingingPair,
+  clearStaleRinging,
   getEntry,
   setRinging,
   setInCall,
@@ -113,4 +187,5 @@ module.exports = {
   cancelDisconnectGrace,
   scheduleDisconnectGrace,
   DISCONNECT_GRACE_MS,
+  STALE_RINGING_MS,
 };

@@ -332,6 +332,53 @@ const sendCallToUser = async (alanyaID, data = {}) => {
   }
 };
 
+/**
+ * Fin d'appel : FCM data-only sur tous les appareils + VoIP dismiss iOS si actif.
+ */
+const sendCallEndedToUser = async (alanyaID, data = {}) => {
+  if (!DEVICE_REGISTRY_V2) {
+    return sendToUserLegacy(alanyaID, data, {});
+  }
+
+  try {
+    const targets = await resolveCallPushTargets(alanyaID);
+    if (targets.length === 0) {
+      return sendToUserLegacy(alanyaID, data, {});
+    }
+
+    for (const target of targets) {
+      logQueued({
+        type: data.type,
+        userId: alanyaID,
+        deviceId: hashForLog(target.deviceId),
+      });
+
+      const platform = String(target.platform || 'unknown').toLowerCase();
+      const voipToken = String(target.voipToken || '').trim();
+
+      if (
+        IOS_VOIP_V2 &&
+        platform === 'ios' &&
+        voipToken &&
+        isVoipConfigured()
+      ) {
+        await sendVoipPush(
+          voipToken,
+          { ...data, type: 'call_ended' },
+          { deviceId: target.deviceId },
+        );
+      }
+
+      if (target.fcmToken && target.fcmToken !== 'INDEFINI') {
+        await sendDataOnlyNotification(target.fcmToken, data, { platform });
+      }
+    }
+  } catch (error) {
+    console.error('[PushCall] sendCallEndedToUser error:', error.message);
+    await sendToUserLegacy(alanyaID, data, {});
+  }
+};
+
 /** True si le destinataire a au moins un socket dans la room user_{id}. */
 const isUserSocketConnected = (io, alanyaID) => {
   if (!io?.sockets?.adapter?.rooms) return false;
@@ -490,7 +537,7 @@ const notifyMeetingReminder = async (participantId, meetingTitle, organiserName,
 };
 
 const notifyCallEnded = async (receiverId, callerId, callerName, callId = null) => {
-  await sendToUser(receiverId, {
+  await sendCallEndedToUser(receiverId, {
     type:       'call_ended',
     title:      'Appel terminé',
     body:       `${callerName || 'L\'appel'} a raccroché`,
@@ -518,6 +565,7 @@ module.exports = {
   sendToUser,
   sendToUserDevices,
   sendCallToUser,
+  sendCallEndedToUser,
   sendToUserLegacy,
   notifyNewMessage,
   notifyIncomingCall,

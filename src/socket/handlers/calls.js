@@ -246,9 +246,34 @@ const callUser = (io, socket, userSockets) => {
         return;
       }
 
-      // État autoritaire : cible déjà en train de sonner ou en communication.
-      // On répond « occupé » immédiatement, sans notifier la cible (ni socket ni FCM).
-      if (callState.isBusy(targetID)) {
+      // État autoritaire : cible déjà en sonnerie avec quelqu'un d'autre ou en communication.
+      const existingPair = callState.findExistingRingingPair(callerID, targetID);
+      if (existingPair) {
+        console.log(
+          `[Socket call_user] 🔁 Paire déjà en sonnerie callId=${existingPair.callId ?? 'none'} caller=${callerID} target=${targetID}`,
+        );
+        const pending = pendingCalls.get(targetID);
+        if (pending && isUserOnline(io, targetID)) {
+          emitToUser(io, targetID, 'incoming_call', pending);
+        }
+        // Glare : l'appelant est aussi la cible de l'autre sonnerie → lui renvoyer l'entrant.
+        const pendingForCaller = pendingCalls.get(callerID);
+        if (pendingForCaller && isUserOnline(io, callerID)) {
+          emitToUser(io, callerID, 'incoming_call', pendingForCaller);
+        }
+        return;
+      }
+
+      if (callState.isBusyForNewCall(callerID, targetID, pendingCalls)) {
+        console.log(`[Socket call_user] ⛔ Appelant occupé: caller=${callerID} (${callState.get(callerID)})`);
+        socket.emit('call_failed', {
+          reason: 'Un appel est déjà en cours de votre côté',
+          code: 'CALLER_BUSY',
+        });
+        return;
+      }
+
+      if (callState.isBusyForNewCall(targetID, callerID, pendingCalls)) {
         console.log(`[Socket call_user] ⛔ Cible occupée: target=${targetID} (${callState.get(targetID)})`);
         socket.emit('call_busy', {
           callId:   null,

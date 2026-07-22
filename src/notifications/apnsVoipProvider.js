@@ -57,8 +57,19 @@ const apnsHost = () =>
  * Payload VoIP compatible flutter_callkit_incoming (AppDelegate Phase 6).
  */
 const buildVoipCallPayload = (data = {}) => {
+  const type = String(data.type || 'call');
   const callId = String(data.callId || data.roomId || '');
   const roomId = String(data.roomId || '');
+
+  if (type === 'call_ended') {
+    return {
+      type,
+      id: callId,
+      callId,
+      roomId,
+    };
+  }
+
   const callerId = String(data.callerId || '');
   const callerName = String(data.callerName || data.title || 'Appel entrant');
   const photo = String(data.photo || '');
@@ -73,7 +84,7 @@ const buildVoipCallPayload = (data = {}) => {
     photo,
     isVideo,
     roomId,
-    type: String(data.type || 'call'),
+    type,
   };
 };
 

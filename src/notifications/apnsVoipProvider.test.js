@@ -25,6 +25,14 @@ const groupPayload = buildVoipCallPayload({
 assert.strictEqual(groupPayload.id, 'room-1');
 assert.strictEqual(groupPayload.roomId, 'room-1');
 
+const endedPayload = buildVoipCallPayload({
+  type: 'call_ended',
+  callId: '99',
+});
+assert.strictEqual(endedPayload.type, 'call_ended');
+assert.strictEqual(endedPayload.callId, '99');
+assert.strictEqual(endedPayload.id, '99');
+
 assert.strictEqual(typeof isConfigured(), 'boolean');
 
 console.log('apnsVoipProvider.test.js OK');
