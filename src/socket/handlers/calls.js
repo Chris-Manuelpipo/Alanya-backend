@@ -173,6 +173,7 @@ function createRoomState(isVideo, callerID, callerInfo) {
  * @returns {Promise<boolean>} true si un appel a été terminé.
  */
 async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnect') {
+  callState.cancelDisconnectGrace(userID);
   const entry = callState.getEntry(userID);
   if (!entry || (entry.status !== 'ringing' && entry.status !== 'in_call')) {
     return false;
@@ -188,6 +189,8 @@ async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnec
 
   pendingCalls.clear(userID);
   if (peerID) pendingCalls.clear(peerID);
+  callState.cancelDisconnectGrace(userID);
+  if (peerID) callState.cancelDisconnectGrace(peerID);
   callState.clear(userID);
   if (peerID) callState.clear(peerID);
 
@@ -302,8 +305,8 @@ const callUser = (io, socket, userSockets) => {
         () => onNoAnswer(io, userSockets, callID, callerID, targetID),
         NO_ANSWER_MS,
       );
-      callState.setRinging(targetID, { callId: callID, peerId: callerID, timer: noAnswerTimer });
-      callState.setRinging(callerID, { callId: callID, peerId: targetID });
+      callState.setRinging(targetID, { callId: callID, peerId: callerID, timer: noAnswerTimer, isVideo: !!isVideo });
+      callState.setRinging(callerID, { callId: callID, peerId: targetID, isVideo: !!isVideo });
 
       notifyIncomingCall(targetID, callerID, callerName, callerPhoto, isVideo, callID)
         .catch((err) => console.warn('[Socket call_user] FCM error:', err.message));
@@ -337,8 +340,11 @@ const answerCall = (io, socket, userSockets) => {
 
       // État autoritaire : les deux participants passent « in_call » (annule le
       // timer « pas de réponse » armé côté destinataire).
-      callState.setInCall(receiverID, { peerId: callerID });
-      callState.setInCall(callerID, { peerId: receiverID });
+      const callerEntry = callState.getEntry(callerID);
+      const callId = callerEntry?.callId ?? null;
+      const isVideo = !!callerEntry?.isVideo;
+      callState.setInCall(receiverID, { callId, peerId: callerID, isVideo });
+      callState.setInCall(callerID, { callId, peerId: receiverID, lastAnswer: answer, isVideo });
 
       try {
         const [result] = await pool.execute(
@@ -361,7 +367,10 @@ const answerCall = (io, socket, userSockets) => {
 
       if (isUserOnline(io, callerID)) {
         console.log(`[Socket answer_call] !! Envoi call_answered à user_${callerID}`);
-        emitToUser(io, callerID, 'call_answered', { answer });
+        emitToUser(io, callerID, 'call_answered', {
+          answer,
+          callId: callId != null ? String(callId) : null,
+        });
       } else {
         console.warn(`[Socket answer_call] ** Caller ${callerID} non trouvé en ligne.`);
       }
@@ -827,6 +836,56 @@ const groupVideoState = (io, socket, userSockets) => {
   });
 };
 
+// Renégociation WebRTC après reconnexion (kill app en appel connecté).
+const callRejoin = (io, socket, userSockets) => {
+  socket.on('call_rejoin', async (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const { targetUserId, offer } = data || {};
+      const targetID = toInt(targetUserId);
+      const userID = socket.alanyaID;
+      if (!targetID || !offer) return;
+
+      const entry = callState.getEntry(userID);
+      if (!entry || entry.status !== 'in_call' || entry.peerId !== targetID) {
+        socket.emit('call_failed', { reason: 'Aucun appel actif à reprendre', code: 'CALL_REJOIN_INVALID' });
+        return;
+      }
+
+      emitToUser(io, targetID, 'call_rejoin_offer', {
+        callId: entry.callId,
+        peerId: String(userID),
+        offer,
+      });
+    } catch (error) {
+      console.error('[Socket call_rejoin]', error.message);
+    }
+  });
+
+  socket.on('call_rejoin_answer', async (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const { targetUserId, answer } = data || {};
+      const targetID = toInt(targetUserId);
+      const userID = socket.alanyaID;
+      if (!targetID || !answer) return;
+
+      const entry = callState.getEntry(userID);
+      if (!entry || entry.status !== 'in_call' || entry.peerId !== targetID) {
+        return;
+      }
+
+      emitToUser(io, targetID, 'call_rejoin_answer', {
+        callId: entry.callId,
+        peerId: String(userID),
+        answer,
+      });
+    } catch (error) {
+      console.error('[Socket call_rejoin_answer]', error.message);
+    }
+  });
+};
+
 module.exports = {
   callUser,
   answerCall,
@@ -846,4 +905,5 @@ module.exports = {
   groupMuteState,
   callVideoState,
   groupVideoState,
+  callRejoin,
 };

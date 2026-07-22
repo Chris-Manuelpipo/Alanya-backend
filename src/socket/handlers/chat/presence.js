@@ -2,6 +2,7 @@ const pool = require('../../../config/db');
 const { emitPresenceUpdate } = require('../../../utils/blockUtils');
 const pendingCalls = require('../../state/pendingCalls');
 const meetingMuteStates = require('../../state/meetingMuteStates');
+const callState = require('../../state/callState');
 const { endActiveCallForUser } = require('../calls');
 const {
   registerUserSocket,
@@ -70,7 +71,20 @@ const handleDisconnect = async (io, socket, userSockets) => {
   // (sinon un 2e appareil déconnecté couperait un appel actif sur le 1er).
   if (lastSocket) {
     try {
-      await endActiveCallForUser(io, userSockets, userID, 'disconnect');
+      const entry = callState.getEntry(userID);
+      if (entry?.status === 'in_call') {
+        // Grace period : laisser le temps au client de se reconnecter après kill.
+        callState.scheduleDisconnectGrace(userID, async () => {
+          try {
+            await endActiveCallForUser(io, userSockets, userID, 'disconnect_grace_expired');
+          } catch (e) {
+            console.warn('[Socket disconnect] grace endActiveCallForUser failed:', e.message);
+          }
+        });
+        console.log(`[Socket disconnect] Grace period armée user=${userID} callId=${entry.callId ?? 'none'}`);
+      } else {
+        await endActiveCallForUser(io, userSockets, userID, 'disconnect');
+      }
     } catch (e) {
       console.warn('[Socket disconnect] endActiveCallForUser failed:', e.message);
     }

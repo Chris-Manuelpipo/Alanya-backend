@@ -1,6 +1,7 @@
 const jwt  = require('jsonwebtoken');
 const pool = require('../../config/db');
 const pendingCalls = require('../state/pendingCalls');
+const callState = require('../state/callState');
 const { registerUserSocket } = require('../../utils/userSocketRegistry');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'talky-secret-key-change-in-production';
@@ -60,6 +61,23 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
   registerUserSocket(userSockets, alanyaID, socket.id);
   socket.join(`user_${alanyaID}`);
   socket.emit('auth:verified', { success: true, alanyaID });
+
+  // Reconnexion pendant un appel en cours (grace period après kill app).
+  callState.cancelDisconnectGrace(alanyaID);
+  const activeCall = callState.getEntry(alanyaID);
+  if (activeCall?.status === 'in_call') {
+    const peerId = activeCall.peerId;
+    const payload = {
+      callId: activeCall.callId,
+      peerId: peerId != null ? String(peerId) : null,
+      status: 'in_call',
+      isVideo: !!activeCall.isVideo,
+      role: activeCall.lastAnswer != null ? 'caller' : 'callee',
+      answer: activeCall.lastAnswer ?? null,
+    };
+    console.log(`[Socket] call_resume user=${alanyaID} callId=${payload.callId ?? 'none'}`);
+    socket.emit('call_resume', payload);
+  }
 
   // Rejeu d'un appel entrant en attente : si l'utilisateur vient d'être réveillé
   // par un push FCM (app fermée), l'event `incoming_call` initial a été perdu.
