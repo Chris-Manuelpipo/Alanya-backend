@@ -8,6 +8,8 @@ const {
   logFailed,
   logTokenStale,
 } = require('../notifications/notificationLogger');
+const { buildMessagePayload } = require('../notifications/notificationContract');
+const { getMessagePushOptions } = require('../notifications/notificationPolicy');
 
 const _buildApnsConfig = (data) => {
   const type = data.type;
@@ -210,10 +212,12 @@ const isUserSocketConnected = (io, alanyaID) => {
 };
 
 /**
- * Push message aux participants hors-ligne (pas de socket dans user_*).
- * @param {import('socket.io').Server|null} [io] — si fourni, skip FCM pour les users déjà joignables en temps réel.
+ * Push message à tous les participants (FCM toujours envoyé — Phase 1.1).
+ * Le client supprime localement si la conversation est visible au premier plan.
+ * @param {import('socket.io').Server|null} [io] — conservé pour compatibilité API, non utilisé pour skip.
  */
 const notifyNewMessage = async (conversationID, senderID, senderName, fields = {}, io = null) => {
+  void io;
   try {
     const {
       content,
@@ -222,6 +226,11 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       isViewOnce = false,
       isGroup = false,
       groupName = '',
+      msgID,
+      clientId,
+      senderAvatar,
+      groupAvatar,
+      unreadTotal,
     } = fields;
 
     const body = messagePreview({
@@ -237,21 +246,24 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
       [conversationID, senderID]
     );
+    const pushOptions = getMessagePushOptions();
+
     for (const p of participants) {
-      await sendToUser(
-        p.alanyaID,
-        {
-          type:           'message',
-          title:          senderName,
-          body,
-          conversationId: String(conversationID),
-          callerId:       String(senderID),
-          msgType:        String(type),
-          isGroup:        isGroup ? '1' : '0',
-          groupName:      String(groupName ?? ''),
-        },
-        { io, skipIfDeviceOnline: true },
-      );
+      const payload = buildMessagePayload({
+        msgID,
+        clientId,
+        conversationId: conversationID,
+        senderId: senderID,
+        senderName,
+        senderAvatar,
+        body,
+        msgType: type,
+        isGroup,
+        groupName,
+        groupAvatar,
+        unreadTotal,
+      });
+      await sendToUser(p.alanyaID, payload, pushOptions);
     }
   } catch (error) {
     console.error('[FCM] notifyNewMessage error:', error.message);

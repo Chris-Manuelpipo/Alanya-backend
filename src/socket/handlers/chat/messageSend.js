@@ -255,6 +255,8 @@ const messageSend = (io, socket) => {
                 isViewOnce,
                 isGroup: ctx.isGroup,
                 groupName: ctx.groupName,
+                msgID,
+                clientId,
               };
               const { notifyNewMessage } = require('../../../services/notificationService');
               return notifyNewMessage(
