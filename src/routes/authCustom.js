@@ -18,6 +18,10 @@ const {
   updatePushDeviceState,
   deletePushDevice,
 } = require('../controllers/pushDevicesController');
+const {
+  getNotificationPrefs,
+  patchNotificationPrefs,
+} = require('../controllers/notificationPrefsController');
 
 /**
  * @swagger
@@ -302,5 +306,8 @@ router.put('/fcm-token',  authCustom, updateFcmToken);
 router.post('/push-devices/register', authCustom, registerPushDevice);
 router.post('/push-devices/state', authCustom, updatePushDeviceState);
 router.delete('/push-devices/:deviceId', authCustom, deletePushDevice);
+
+router.get('/notification-prefs', authCustom, getNotificationPrefs);
+router.patch('/notification-prefs', authCustom, patchNotificationPrefs);
 
 module.exports = router;

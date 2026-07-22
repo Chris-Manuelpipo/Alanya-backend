@@ -13,6 +13,7 @@ const {
   addParticipants,
   batchUpdateConversations,
   batchDeleteConversations,
+  updateConversationMute,
 } = require('../controllers/conversationController');
 
 /**
@@ -166,6 +167,7 @@ router.delete('/:id', auth, deleteConversation);
  *         description: Messages marqués comme lus
  */
 router.post('/:id/read', auth, markAsRead);
+router.patch('/:id/mute', auth, updateConversationMute);
 
 /**
  * @swagger

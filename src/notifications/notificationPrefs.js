@@ -61,19 +61,20 @@ const upsertUserNotificationPrefs = async (alanyaID, patch = {}) => {
 const loadConversationMute = async (conversationId, alanyaID) => {
   try {
     const [rows] = await pool.execute(
-      'SELECT mutedUntil, mentionsOnly FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+      'SELECT mutedUntil, muteForever, mentionsOnly FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
       [conversationId, alanyaID],
     );
-    return rows[0] || { mutedUntil: null, mentionsOnly: 0 };
+    return rows[0] || { mutedUntil: null, muteForever: 0, mentionsOnly: 0 };
   } catch (e) {
     if (e.code === 'ER_BAD_FIELD_ERROR') {
-      return { mutedUntil: null, mentionsOnly: 0 };
+      return { mutedUntil: null, muteForever: 0, mentionsOnly: 0 };
     }
     throw e;
   }
 };
 
 const isConversationMuted = (muteRow) => {
+  if (muteRow?.muteForever) return true;
   if (!muteRow?.mutedUntil) return false;
   return new Date(muteRow.mutedUntil).getTime() > Date.now();
 };

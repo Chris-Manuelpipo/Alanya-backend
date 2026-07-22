@@ -32,7 +32,11 @@ const evaluateMessagePush = async (alanyaID, conversationId, payload, { isGroup 
 
   return {
     allowed: true,
-    payload: { ...payload, ...preview },
+    payload: {
+      ...payload,
+      ...preview,
+      soundEnabled: prefs.soundEnabled ? '1' : '0',
+    },
   };
 };
 

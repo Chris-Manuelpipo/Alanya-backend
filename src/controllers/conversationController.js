@@ -552,6 +552,80 @@ const batchDeleteConversations = async (req, res) => {
   }
 };
 
+const updateConversationMute = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { unmute, muteForever, mutedUntil, mentionsOnly } = req.body;
+    const alanyaID = req.user.alanyaID;
+
+    const [member] = await pool.execute(
+      'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ? LIMIT 1',
+      [id, alanyaID],
+    );
+    if (member.length === 0) {
+      return res.status(404).json({ error: 'Conversation introuvable' });
+    }
+
+    if (unmute === true || unmute === 1 || unmute === '1') {
+      await pool.execute(
+        'UPDATE conv_participants SET mutedUntil = NULL, muteForever = 0 WHERE conversID = ? AND alanyaID = ?',
+        [id, alanyaID],
+      );
+    } else if (muteForever === true || muteForever === 1 || muteForever === '1') {
+      await pool.execute(
+        'UPDATE conv_participants SET muteForever = 1, mutedUntil = NULL WHERE conversID = ? AND alanyaID = ?',
+        [id, alanyaID],
+      );
+    } else if (mutedUntil) {
+      const until = new Date(mutedUntil);
+      if (Number.isNaN(until.getTime())) {
+        return res.status(400).json({ error: 'mutedUntil invalide' });
+      }
+      await pool.execute(
+        'UPDATE conv_participants SET mutedUntil = ?, muteForever = 0 WHERE conversID = ? AND alanyaID = ?',
+        [until, id, alanyaID],
+      );
+    } else {
+      return res.status(400).json({ error: 'unmute, muteForever ou mutedUntil requis' });
+    }
+
+    if (mentionsOnly !== undefined) {
+      const mo = mentionsOnly === true || mentionsOnly === 1 || mentionsOnly === '1' ? 1 : 0;
+      try {
+        await pool.execute(
+          'UPDATE conv_participants SET mentionsOnly = ? WHERE conversID = ? AND alanyaID = ?',
+          [mo, id, alanyaID],
+        );
+      } catch (e) {
+        if (e.code !== 'ER_BAD_FIELD_ERROR') throw e;
+      }
+    }
+
+    let mute = { mutedUntil: null, muteForever: 0, mentionsOnly: 0 };
+    try {
+      const [rows] = await pool.execute(
+        'SELECT mutedUntil, muteForever, mentionsOnly FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+        [id, alanyaID],
+      );
+      mute = rows[0] || mute;
+    } catch (e) {
+      if (e.code !== 'ER_BAD_FIELD_ERROR') throw e;
+    }
+
+    res.json({
+      conversID: Number(id),
+      mutedUntil: mute.mutedUntil,
+      muteForever: mute.muteForever ? 1 : 0,
+      mentionsOnly: mute.mentionsOnly ? 1 : 0,
+    });
+  } catch (error) {
+    if (error.code === 'ER_BAD_FIELD_ERROR') {
+      return res.status(503).json({ error: 'Migration mute non appliquée' });
+    }
+    throw error;
+  }
+};
+
 module.exports = {
   getConversations,
   getConversationById,
@@ -564,4 +638,5 @@ module.exports = {
   addParticipants,
   batchUpdateConversations,
   batchDeleteConversations,
+  updateConversationMute,
 };

@@ -5,12 +5,12 @@ const HEARTBEAT_FRESH_MS = Number(process.env.PUSH_HEARTBEAT_FRESH_MS || 90_000)
 
 /**
  * @param {number} alanyaID
- * @returns {Promise<Array<{deviceId:string,fcmToken:string|null,platform:string,appState:string,activeConversationId:number|null,lastHeartbeatAt:Date|null,notificationsEnabled:number}>>}
+ * @returns {Promise<Array<{deviceId:string,fcmToken:string|null,voipToken:string|null,platform:string,appState:string,activeConversationId:number|null,lastHeartbeatAt:Date|null,notificationsEnabled:number}>>}
  */
 const loadUserPushDevices = async (alanyaID) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT deviceId, fcmToken, platform, appState, activeConversationId,
+      `SELECT deviceId, fcmToken, voipToken, platform, appState, activeConversationId,
               lastHeartbeatAt, notificationsEnabled
        FROM user_push_devices
        WHERE alanyaID = ? AND notificationsEnabled = 1`,
@@ -83,10 +83,28 @@ const resolvePushTargets = async (alanyaID, conversationId) => {
   return targets;
 };
 
+/**
+ * Cibles push pour appels (FCM et/ou VoIP iOS).
+ */
+const resolveCallPushTargets = async (alanyaID) => {
+  let devices = await loadUserPushDevices(alanyaID);
+  if (devices.length === 0) {
+    const legacy = await loadLegacyToken(alanyaID);
+    return legacy ? [legacy] : [];
+  }
+
+  return devices.filter(
+    (d) =>
+      (d.fcmToken && d.fcmToken !== 'INDEFINI') ||
+      (d.voipToken && String(d.voipToken).trim() !== ''),
+  );
+};
+
 module.exports = {
   HEARTBEAT_FRESH_MS,
   loadUserPushDevices,
   shouldSkipDeviceForMessage,
   loadLegacyToken,
   resolvePushTargets,
+  resolveCallPushTargets,
 };

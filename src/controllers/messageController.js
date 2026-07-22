@@ -152,8 +152,28 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
     mediaSize, mediaPageCount,
     replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
-    clickSentAt,
+    clickSentAt, clientId,
   } = fields;
+
+  if (clientId) {
+    const [existing] = await _execute(conn,
+      `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
+              p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
+       FROM message m
+       JOIN users u ON m.senderID = u.alanyaID
+       LEFT JOIN pays p ON u.idPays = p.idPays
+       WHERE m.senderID = ? AND m.clientID = ? AND m.isDeleted = 0
+       LIMIT 1`,
+      [senderID, clientId],
+    );
+    if (existing.length > 0) {
+      return {
+        msg: existing[0],
+        silentDrop: false,
+        fields: { content, mediaName, type, isViewOnce },
+      };
+    }
+  }
 
   const blockEval = await evaluateDirectMessageSend(conversationID, senderID);
   if (blockEval.isDirect && blockEval.action === 'reject') {
@@ -171,13 +191,14 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
   const [result] = await _execute(conn, 
     `INSERT INTO message
        (senderID, conversationID, content, type, status, sendAt,
-        clickSentAt,
+        clickSentAt, clientID,
         mediaUrl, mediaName, mediaDuration, mediaThumb, mediaSize, mediaPageCount,
         replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
-     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       senderID, conversationID, content ?? null, type,
       clickSentAt ? new Date(clickSentAt) : null,
+      clientId ?? null,
       mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
       mediaSize ?? null, mediaPageCount ?? null,
       resolvedReplyToID, resolvedReplyToContent, isStatusReply,
@@ -233,7 +254,7 @@ const sendMessage = async (req, res) => {
       content, type = 0, mediaUrl, mediaName, mediaDuration,
       mediaSize, mediaPageCount,
       replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
-      clickSentAt,
+      clickSentAt, clientId,
     } = req.body;
     const senderID = req.user.alanyaID;
 
@@ -245,7 +266,7 @@ const sendMessage = async (req, res) => {
       content, type, mediaUrl, mediaName, mediaDuration,
       mediaSize, mediaPageCount,
       replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce,
-      clickSentAt,
+      clickSentAt, clientId,
     });
 
     res.json(msg);

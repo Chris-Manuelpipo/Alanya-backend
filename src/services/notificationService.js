@@ -11,8 +11,9 @@ const {
 } = require('../notifications/notificationLogger');
 const { buildMessagePayload } = require('../notifications/notificationContract');
 const { getMessagePushOptions } = require('../notifications/notificationPolicy');
-const { DEVICE_REGISTRY_V2 } = require('../notifications/notificationFlags');
-const { resolvePushTargets } = require('../notifications/pushDeviceRegistry');
+const { DEVICE_REGISTRY_V2, ANDROID_NATIVE_V2, IOS_RICH_NSE, IOS_VOIP_V2 } = require('../notifications/notificationFlags');
+const { resolvePushTargets, resolveCallPushTargets } = require('../notifications/pushDeviceRegistry');
+const { sendVoipPush, clearVoipToken, isConfigured: isVoipConfigured } = require('../notifications/apnsVoipProvider');
 const { evaluateMessagePush, evaluateTypePush } = require('../notifications/notificationFilter');
 
 const _buildApnsConfig = (data) => {
@@ -29,7 +30,9 @@ const _buildApnsConfig = (data) => {
       title: data.title || 'Alanya',
       body: data.body || '',
     };
-    aps.sound = 'default';
+    if (data.soundEnabled !== '0') {
+      aps.sound = 'default';
+    }
   }
 
   if (type === 'message' && data.conversationId) {
@@ -38,6 +41,9 @@ const _buildApnsConfig = (data) => {
       aps['summary-arg'] = data.groupName;
     }
     aps.category = 'ALANYA_MESSAGE';
+    if (IOS_RICH_NSE && data.senderAvatar) {
+      aps['mutable-content'] = 1;
+    }
   }
 
   if (data.unreadTotal != null && data.unreadTotal !== '') {
@@ -63,7 +69,7 @@ const VISIBLE_TYPES = ['message', 'meeting_invite', 'meeting_reminder', 'status_
 const CALL_TYPES = ['call', 'group_call'];
 const CALL_TTL_MS = 60_000;
 
-const sendDataOnlyNotification = async (fcmToken, data = {}) => {
+const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
   if (!fcmToken || fcmToken === 'INDEFINI') return;
 
   try {
@@ -72,6 +78,12 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
       return;
     }
 
+    const platform = String(meta.platform || 'unknown').toLowerCase();
+    const androidNativeDataOnly =
+      ANDROID_NATIVE_V2 &&
+      platform === 'android' &&
+      data.type === 'message';
+
     const isVisible = VISIBLE_TYPES.includes(data.type);
     const isCall = CALL_TYPES.includes(data.type);
     const isMeeting =
@@ -79,6 +91,7 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
 
     // Messages / meetings / statut : data + notification système (filet app tuée).
     // Appels : data-only (CallKit via handler Dart).
+    // Android native v2 : data-only → MessagingStyle Kotlin.
     const message = {
       token: fcmToken,
       data: Object.fromEntries(
@@ -91,7 +104,7 @@ const sendDataOnlyNotification = async (fcmToken, data = {}) => {
       apns: _buildApnsConfig(data),
     };
 
-    if (isVisible && (data.title || data.body)) {
+    if (isVisible && (data.title || data.body) && !androidNativeDataOnly) {
       message.notification = {
         title: data.title || 'Alanya',
         body: data.body || '',
@@ -224,7 +237,7 @@ const sendToUserLegacy = async (alanyaID, data = {}, options = {}) => {
       deviceId,
     });
 
-    await sendDataOnlyNotification(fcmToken, data);
+    await sendDataOnlyNotification(fcmToken, data, { platform: 'unknown' });
   } catch (error) {
     console.error('[FCM] sendToUser error:', error.message);
   }
@@ -255,13 +268,67 @@ const sendToUserDevices = async (alanyaID, data = {}, options = {}) => {
             userId: alanyaID,
             deviceId: hashForLog(target.deviceId),
           });
-          await sendDataOnlyNotification(target.fcmToken, data);
+          await sendDataOnlyNotification(target.fcmToken, data, {
+            platform: target.platform,
+          });
         }),
       );
     }
   } catch (error) {
     console.error('[FCM] sendToUserDevices error:', error.message);
     await sendToUserLegacy(alanyaID, data, options);
+  }
+};
+
+/**
+ * Appels : multi-appareil + VoIP APNs iOS si IOS_VOIP_V2 (sinon FCM data-only).
+ */
+const sendCallToUser = async (alanyaID, data = {}) => {
+  if (!DEVICE_REGISTRY_V2) {
+    return sendToUserLegacy(alanyaID, data, {});
+  }
+
+  try {
+    const targets = await resolveCallPushTargets(alanyaID);
+    if (targets.length === 0) {
+      console.warn(`[PushCall] Pas de cible pour alanyaID=${alanyaID}`);
+      return sendToUserLegacy(alanyaID, data, {});
+    }
+
+    for (const target of targets) {
+      logQueued({
+        type: data.type,
+        userId: alanyaID,
+        deviceId: hashForLog(target.deviceId),
+      });
+
+      const platform = String(target.platform || 'unknown').toLowerCase();
+      const voipToken = String(target.voipToken || '').trim();
+      let sentViaVoip = false;
+
+      if (
+        IOS_VOIP_V2 &&
+        platform === 'ios' &&
+        voipToken &&
+        isVoipConfigured()
+      ) {
+        const result = await sendVoipPush(voipToken, data, {
+          deviceId: target.deviceId,
+        });
+        if (result.ok) {
+          sentViaVoip = true;
+        } else if (result.reason === 'stale_token') {
+          await clearVoipToken(alanyaID, target.deviceId);
+        }
+      }
+
+      if (!sentViaVoip && target.fcmToken && target.fcmToken !== 'INDEFINI') {
+        await sendDataOnlyNotification(target.fcmToken, data, { platform });
+      }
+    }
+  } catch (error) {
+    console.error('[PushCall] sendCallToUser error:', error.message);
+    await sendToUserLegacy(alanyaID, data, {});
   }
 };
 
@@ -355,7 +422,7 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
 };
 
 const notifyIncomingCall = async (idReceiver, callerID, callerName, callerPhoto, isVideo, callId) => {
-  await sendToUser(idReceiver, {
+  await sendCallToUser(idReceiver, {
     type:       'call',
     title:      callerName || 'Appel entrant',
     body:       `${callerName || 'Quelqu\'un'} vous appelle`,
@@ -369,7 +436,7 @@ const notifyIncomingCall = async (idReceiver, callerID, callerName, callerPhoto,
 
 const notifyGroupCall = async (targetUserIds = [], callerID, callerName, callerPhoto, isVideo, roomId) => {
   for (const uid of targetUserIds) {
-    await sendToUser(uid, {
+    await sendCallToUser(uid, {
       type:       'group_call',
       title:      callerName || 'Appel de groupe',
       body:       `${callerName || 'Quelqu\'un'} démarre un appel de groupe`,
@@ -450,6 +517,7 @@ module.exports = {
   sendDataOnlyNotification,
   sendToUser,
   sendToUserDevices,
+  sendCallToUser,
   sendToUserLegacy,
   notifyNewMessage,
   notifyIncomingCall,

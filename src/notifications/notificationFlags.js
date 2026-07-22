@@ -14,5 +14,6 @@ module.exports = {
   DEVICE_REGISTRY_V2: isEnabled('DEVICE_REGISTRY_V2', true),
   ANDROID_NATIVE_V2: isEnabled('NOTIFICATION_ANDROID_NATIVE_V2', false),
   IOS_CATEGORIES_V2: isEnabled('IOS_CATEGORIES_V2', false),
+  IOS_RICH_NSE: isEnabled('IOS_RICH_NSE', false),
   IOS_VOIP_V2: isEnabled('IOS_VOIP_V2', false),
 };
