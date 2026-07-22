@@ -754,6 +754,65 @@ const getMessagesSince = async (req, res) => {
   }
 };
 
+/** Statut d'un message envoyé par clientId (rattrapage outbox HTTP). */
+const getMessageStatusByClientId = async (req, res) => {
+  try {
+    const clientId =
+      typeof req.query.clientId === 'string' ? req.query.clientId.trim() : '';
+    if (!clientId) {
+      return res.status(400).json({ error: 'clientId required' });
+    }
+
+    const alanyaID = req.user.alanyaID;
+    const [rows] = await pool.execute(
+      `SELECT msgID, status, conversationID, sendAt, clientID
+       FROM message
+       WHERE clientID = ? AND senderID = ? AND isDeleted = 0
+       LIMIT 1`,
+      [clientId, alanyaID],
+    );
+
+    if (rows.length === 0) {
+      return res.json({ found: false });
+    }
+
+    const row = rows[0];
+    res.json({
+      found: true,
+      msgID: row.msgID,
+      status: row.status,
+      conversationID: row.conversationID,
+      sendAt: row.sendAt,
+      clientId: row.clientID,
+    });
+  } catch (error) {
+    throw error;
+  }
+};
+
+/** Messages sortants encore au statut « envoyé » (status=1) pour réconciliation outbox. */
+const getPendingOutgoingMessages = async (req, res) => {
+  try {
+    const alanyaID = req.user.alanyaID;
+    const [rows] = await pool.execute(
+      `SELECT msgID, clientID, conversationID, content, type, sendAt, status
+       FROM message
+       WHERE senderID = ? AND status = 1 AND isDeleted = 0
+       ORDER BY sendAt DESC
+       LIMIT 50`,
+      [alanyaID],
+    );
+
+    const messages = rows.map((row) => ({
+      ...row,
+      clientId: row.clientID,
+    }));
+    res.json({ messages });
+  } catch (error) {
+    throw error;
+  }
+};
+
 module.exports = {
   getMessages,
   getMessagesSince,
@@ -764,4 +823,6 @@ module.exports = {
   batchForwardMessages,
   pinMessage,
   markMessageViewed,
+  getMessageStatusByClientId,
+  getPendingOutgoingMessages,
 };
