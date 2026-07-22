@@ -7,12 +7,13 @@ const {
   logSent,
   logFailed,
   logTokenStale,
+  hashForLog,
 } = require('../notifications/notificationLogger');
 const { buildMessagePayload } = require('../notifications/notificationContract');
 const { getMessagePushOptions } = require('../notifications/notificationPolicy');
 const { DEVICE_REGISTRY_V2 } = require('../notifications/notificationFlags');
 const { resolvePushTargets } = require('../notifications/pushDeviceRegistry');
-const { hashForLog } = require('../notifications/notificationLogger');
+const { evaluateMessagePush, evaluateTypePush } = require('../notifications/notificationFilter');
 
 const _buildApnsConfig = (data) => {
   const type = data.type;
@@ -29,6 +30,21 @@ const _buildApnsConfig = (data) => {
       body: data.body || '',
     };
     aps.sound = 'default';
+  }
+
+  if (type === 'message' && data.conversationId) {
+    aps['thread-id'] = `conv_${data.conversationId}`;
+    if (data.isGroup === '1' && data.groupName) {
+      aps['summary-arg'] = data.groupName;
+    }
+    aps.category = 'ALANYA_MESSAGE';
+  }
+
+  if (data.unreadTotal != null && data.unreadTotal !== '') {
+    const badge = parseInt(String(data.unreadTotal), 10);
+    if (Number.isFinite(badge) && badge >= 0) {
+      aps.badge = badge;
+    }
   }
 
   return {
@@ -294,7 +310,13 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
     const pushOptions = getMessagePushOptions();
 
     for (const p of participants) {
-      const payload = buildMessagePayload({
+      const [unreadRows] = await pool.execute(
+        'SELECT COALESCE(SUM(unreadCount), 0) AS total FROM conv_participants WHERE alanyaID = ?',
+        [p.alanyaID],
+      );
+      const totalUnread = unreadRows[0]?.total ?? 0;
+
+      let payload = buildMessagePayload({
         msgID,
         clientId,
         conversationId: conversationID,
@@ -306,8 +328,25 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
         isGroup,
         groupName,
         groupAvatar,
-        unreadTotal,
+        unreadTotal: totalUnread,
       });
+
+      const decision = await evaluateMessagePush(p.alanyaID, conversationID, payload, {
+        isGroup,
+      });
+      if (!decision.allowed) {
+        logSkipped({
+          type: 'message',
+          eventId: payload.eventId,
+          msgID: payload.msgID,
+          conversationId: String(conversationID),
+          userId: p.alanyaID,
+          reason: decision.reason,
+        });
+        continue;
+      }
+      payload = decision.payload;
+
       await sendToUser(p.alanyaID, payload, pushOptions);
     }
   } catch (error) {
@@ -344,6 +383,15 @@ const notifyGroupCall = async (targetUserIds = [], callerID, callerName, callerP
 };
 
 const notifyStatusView = async (statusOwnerID, viewerName) => {
+  const decision = await evaluateTypePush(statusOwnerID, 'status_view');
+  if (!decision.allowed) {
+    logSkipped({
+      type: 'status_view',
+      userId: statusOwnerID,
+      reason: decision.reason,
+    });
+    return;
+  }
   await sendToUser(statusOwnerID, {
     type:  'status_view',
     title: 'Nouveau spectateur',
