@@ -13,6 +13,11 @@ const {
   updateMe,
   updateFcmToken,
 } = require('../controllers/authCustomController');
+const {
+  registerPushDevice,
+  updatePushDeviceState,
+  deletePushDevice,
+} = require('../controllers/pushDevicesController');
 
 /**
  * @swagger
@@ -293,5 +298,9 @@ router.put('/me',         authCustom, updateMe);
  *         description: Token FCM mis à jour
  */
 router.put('/fcm-token',  authCustom, updateFcmToken);
+
+router.post('/push-devices/register', authCustom, registerPushDevice);
+router.post('/push-devices/state', authCustom, updatePushDeviceState);
+router.delete('/push-devices/:deviceId', authCustom, deletePushDevice);
 
 module.exports = router;
