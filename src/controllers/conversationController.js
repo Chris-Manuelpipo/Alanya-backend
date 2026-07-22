@@ -60,12 +60,60 @@ async function attachParticipantsMany(rows, viewerId = null) {
   return Promise.all(rows.map((r) => attachParticipants(r, viewerId)));
 }
 
+/** Score pour choisir la conv 1-1 canonique entre deux utilisateurs. */
+function scoreDirectConversation(row) {
+  const msgCount = Number(row.messageCount) || 0;
+  const lastAt = row.lastMessageAt ? new Date(row.lastMessageAt).getTime() : 0;
+  // Priorité aux conv qui ont de vrais messages (évite les doublons « appel seul »).
+  return msgCount * 1e15 + lastAt;
+}
+
+/**
+ * Une seule entrée 1-1 par paire d'utilisateurs : garde la conversation qui
+ * contient le plus de messages, puis la plus récente. Corrige les doublons
+ * legacy (aperçu d'appel sur conv B, historique texte sur conv A).
+ */
+function dedupeDirectConversations(rows, viewerId) {
+  const groups = [];
+  const byPeer = new Map();
+  for (const row of rows) {
+    if (row.isGroup) {
+      groups.push(row);
+      continue;
+    }
+    const peer = row.participants?.find(
+      (p) => Number(p.alanyaID) !== Number(viewerId),
+    );
+    if (!peer) {
+      groups.push(row);
+      continue;
+    }
+    const a = Math.min(Number(viewerId), Number(peer.alanyaID));
+    const b = Math.max(Number(viewerId), Number(peer.alanyaID));
+    const key = `${a}:${b}`;
+    const existing = byPeer.get(key);
+    if (!existing || scoreDirectConversation(row) > scoreDirectConversation(existing)) {
+      byPeer.set(key, row);
+    }
+  }
+  const direct = [...byPeer.values()];
+  return [...groups, ...direct].sort((x, y) => {
+    const pinDiff = (y.isPinned ? 1 : 0) - (x.isPinned ? 1 : 0);
+    if (pinDiff !== 0) return pinDiff;
+    const xAt = x.lastMessageAt ? new Date(x.lastMessageAt).getTime() : 0;
+    const yAt = y.lastMessageAt ? new Date(y.lastMessageAt).getTime() : 0;
+    return yAt - xAt;
+  });
+}
+
 // Récupère la liste des conversations de l'utilisateur connecté, avec les infos des participants et les métadonnées de la conversation
 const getConversations = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
     const [rows] = await pool.execute(
-      `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived
+      `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived,
+              (SELECT COUNT(*) FROM message m
+               WHERE m.conversationID = c.conversID AND m.isDeleted = 0) AS messageCount
        FROM conversation c
        JOIN conv_participants cp ON c.conversID = cp.conversID
        WHERE cp.alanyaID = ?
@@ -73,7 +121,7 @@ const getConversations = async (req, res) => {
       [alanyaID]
     );
     const enriched = await attachParticipantsMany(rows, alanyaID);
-    res.json(enriched);
+    res.json(dedupeDirectConversations(enriched, alanyaID));
   } catch (error) {
     throw error;
   }
@@ -115,7 +163,11 @@ const createConversation = async (req, res) => {
       `SELECT c.* FROM conversation c
        JOIN conv_participants cp1 ON c.conversID = cp1.conversID
        JOIN conv_participants cp2 ON c.conversID = cp2.conversID
-       WHERE cp1.alanyaID = ? AND cp2.alanyaID = ? AND c.isGroup = 0`,
+       WHERE cp1.alanyaID = ? AND cp2.alanyaID = ? AND c.isGroup = 0
+       ORDER BY (SELECT COUNT(*) FROM message m
+                 WHERE m.conversationID = c.conversID AND m.isDeleted = 0) DESC,
+                c.lastMessageAt DESC, c.conversID DESC
+       LIMIT 1`,
       [alanyaID, participantID]
     );
 

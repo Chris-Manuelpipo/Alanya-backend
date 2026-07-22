@@ -58,6 +58,9 @@ async function getOrCreateDirectConversation(userA, userB) {
      JOIN conv_participants cp1 ON c.conversID = cp1.conversID
      JOIN conv_participants cp2 ON c.conversID = cp2.conversID
      WHERE cp1.alanyaID = ? AND cp2.alanyaID = ? AND c.isGroup = 0
+     ORDER BY (SELECT COUNT(*) FROM message m
+               WHERE m.conversationID = c.conversID AND m.isDeleted = 0) DESC,
+              c.lastMessageAt DESC, c.conversID DESC
      LIMIT 1`,
     [userA, userB]
   );

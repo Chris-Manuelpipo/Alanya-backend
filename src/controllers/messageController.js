@@ -37,6 +37,14 @@ const getMessages = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const { limit = 50, before, after } = req.query;
 
+    const [membership] = await pool.execute(
+      'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ? LIMIT 1',
+      [id, alanyaID],
+    );
+    if (membership.length === 0) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
     let query = `
       SELECT m.*,
              u.nom        AS sender_nom,
