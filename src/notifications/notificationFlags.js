@@ -17,3 +17,10 @@ module.exports = {
   IOS_RICH_NSE: isEnabled('IOS_RICH_NSE', false),
   IOS_VOIP_V2: isEnabled('IOS_VOIP_V2', false),
 };
+
+if (process.env.NODE_ENV !== 'test') {
+  console.log(
+    `[NotifFlags] ANDROID_NATIVE_V2=${module.exports.ANDROID_NATIVE_V2} ` +
+      `DEVICE_REGISTRY_V2=${module.exports.DEVICE_REGISTRY_V2}`,
+  );
+}

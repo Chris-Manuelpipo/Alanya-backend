@@ -2,16 +2,14 @@
  * Tests Phase 4 — push data-only Android quand NOTIFICATION_ANDROID_NATIVE_V2 actif.
  */
 const assert = require('assert');
-
-// Simule la branche notificationService (sans Firebase réel).
-const shouldUseAndroidNativeDataOnly = (flags, platform, type) => {
-  const ANDROID_NATIVE_V2 = flags.ANDROID_NATIVE_V2 === true;
-  const plat = String(platform || 'unknown').toLowerCase();
-  return ANDROID_NATIVE_V2 && plat === 'android' && type === 'message';
-};
+const { shouldUseAndroidNativeDataOnly } = require('./notificationAndroidNative');
 
 assert.strictEqual(
   shouldUseAndroidNativeDataOnly({ ANDROID_NATIVE_V2: true }, 'android', 'message'),
+  true,
+);
+assert.strictEqual(
+  shouldUseAndroidNativeDataOnly({ ANDROID_NATIVE_V2: true }, 'unknown', 'message'),
   true,
 );
 assert.strictEqual(
@@ -24,6 +22,10 @@ assert.strictEqual(
 );
 assert.strictEqual(
   shouldUseAndroidNativeDataOnly({ ANDROID_NATIVE_V2: true }, 'android', 'call'),
+  false,
+);
+assert.strictEqual(
+  shouldUseAndroidNativeDataOnly({ ANDROID_NATIVE_V2: true }, 'web', 'message'),
   false,
 );
 

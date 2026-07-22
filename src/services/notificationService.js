@@ -15,6 +15,7 @@ const { DEVICE_REGISTRY_V2, ANDROID_NATIVE_V2, IOS_RICH_NSE, IOS_VOIP_V2 } = req
 const { resolvePushTargets, resolveCallPushTargets } = require('../notifications/pushDeviceRegistry');
 const { sendVoipPush, clearVoipToken, isConfigured: isVoipConfigured } = require('../notifications/apnsVoipProvider');
 const { evaluateMessagePush, evaluateTypePush } = require('../notifications/notificationFilter');
+const { shouldUseAndroidNativeDataOnly } = require('../notifications/notificationAndroidNative');
 
 const _buildApnsConfig = (data) => {
   const type = data.type;
@@ -79,10 +80,11 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
     }
 
     const platform = String(meta.platform || 'unknown').toLowerCase();
-    const androidNativeDataOnly =
-      ANDROID_NATIVE_V2 &&
-      platform === 'android' &&
-      data.type === 'message';
+    const androidNativeDataOnly = shouldUseAndroidNativeDataOnly(
+      { ANDROID_NATIVE_V2 },
+      platform,
+      data.type,
+    );
 
     const isVisible = VISIBLE_TYPES.includes(data.type);
     const isCall = CALL_TYPES.includes(data.type);
@@ -135,6 +137,8 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       msgID: data.msgID,
       conversationId: data.conversationId,
       providerMessageId: messageId,
+      mode: androidNativeDataOnly ? 'android_native_data_only' : 'fcm_notification_block',
+      platform,
     });
   } catch (error) {
     const code = error?.code || error?.errorInfo?.code || '';
