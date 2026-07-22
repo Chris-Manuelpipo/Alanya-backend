@@ -2,6 +2,22 @@ const pool = require('../../../config/db');
 const { isBlockedBy, getDirectConversationPeer } = require('../../../utils/blockUtils');
 const { notifyMessageStatus } = require('../../../utils/notifyMessageStatus');
 
+/** Cache court peer + isDirect pour les accusés (TTL 60 s). */
+const _peerCache = new Map();
+const PEER_TTL_MS = 60_000;
+
+async function cachedDirectPeer(conversationID, userID) {
+  const key = `${conversationID}:${userID}`;
+  const hit = _peerCache.get(key);
+  if (hit && Date.now() - hit.at < PEER_TTL_MS) return hit.peerId;
+  const peerId = await getDirectConversationPeer(conversationID, userID);
+  _peerCache.set(key, { at: Date.now(), peerId });
+  if (_peerCache.size > 500) {
+    _peerCache.delete(_peerCache.keys().next().value);
+  }
+  return peerId;
+}
+
 const messageDelivered = (io, socket) => {
   socket.on('message:delivered', async (data) => {
     if (!socket.authenticated) return;
@@ -9,7 +25,7 @@ const messageDelivered = (io, socket) => {
     const userID = socket.alanyaID;
     if (!conversationID || !userID) return;
     try {
-      const peerId = await getDirectConversationPeer(conversationID, userID);
+      const peerId = await cachedDirectPeer(conversationID, userID);
       if (peerId != null && await isBlockedBy(userID, peerId)) return;
 
       await pool.execute(
@@ -36,7 +52,7 @@ const messageRead = (io, socket) => {
     const userID = socket.alanyaID;
     if (!conversationID || !userID) return;
     try {
-      const peerId = await getDirectConversationPeer(conversationID, userID);
+      const peerId = await cachedDirectPeer(conversationID, userID);
       if (peerId != null && await isBlockedBy(userID, peerId)) return;
 
       await pool.execute(

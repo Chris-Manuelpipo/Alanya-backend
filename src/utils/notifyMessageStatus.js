@@ -1,4 +1,8 @@
 const pool = require('../config/db');
+const {
+  getCachedParticipants,
+  setCachedParticipants,
+} = require('./conversationParticipantsCache');
 
 /**
  * Diffuse un accusé de livraison/lecture à la room conversation + à chaque
@@ -18,10 +22,15 @@ const notifyMessageStatus = async (io, conversationID, status, byUserID, extra =
   io.to(`conversation_${conversationID}`).emit('message:status', payload);
 
   try {
-    const [participants] = await pool.execute(
-      'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-      [conversationID, byUserID],
-    );
+    let participants = getCachedParticipants(conversationID, byUserID);
+    if (!participants) {
+      const [rows] = await pool.execute(
+        'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+        [conversationID, byUserID],
+      );
+      participants = rows;
+      setCachedParticipants(conversationID, byUserID, participants);
+    }
     for (const p of participants) {
       io.to(`user_${p.alanyaID}`).emit('message:status', payload);
     }

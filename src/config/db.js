@@ -8,7 +8,8 @@ const pool = mysql.createPool({
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
   waitForConnections: true,
-  connectionLimit: 10,
+  // Après réduction SQL message:send, 15–20 est raisonnable sous charge.
+  connectionLimit: Number(process.env.DB_POOL_SIZE) || 10,
   queueLimit: 0, 
   timezone: 'Z',
 });

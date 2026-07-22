@@ -52,22 +52,29 @@ const getBlockDate = async (blockerId, targetId) => {
 
 /** Autre participant d'une conv. 1-1, ou null si groupe / introuvable */
 const getDirectConversationPeer = async (conversationID, userId) => {
-  const [conv] = await pool.execute(
-    'SELECT isGroup FROM conversation WHERE conversID = ?',
-    [conversationID],
+  const [rows] = await pool.execute(
+    `SELECT c.isGroup,
+            (SELECT COUNT(*) FROM conv_participants p
+             WHERE p.conversID = c.conversID AND p.alanyaID != ?) AS peerCount,
+            (SELECT p.alanyaID FROM conv_participants p
+             WHERE p.conversID = c.conversID AND p.alanyaID != ?
+             LIMIT 1) AS peerId
+     FROM conversation c
+     WHERE c.conversID = ?
+     LIMIT 1`,
+    [userId, userId, conversationID],
   );
-  if (!conv.length || conv[0].isGroup) return null;
-
-  const [parts] = await pool.execute(
-    'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-    [conversationID, userId],
-  );
-  return parts.length === 1 ? Number(parts[0].alanyaID) : null;
+  if (!rows.length || rows[0].isGroup) return null;
+  if (Number(rows[0].peerCount) !== 1) return null;
+  const peerId = rows[0].peerId;
+  return peerId != null ? Number(peerId) : null;
 };
 
 /**
  * Évalue les règles de blocage pour un envoi 1-1.
  * action: 'deliver' | 'reject' | 'silent'
+ *
+ * Fast path : 1 requête (type conv + peer) + 1 requête blocage (au lieu de 3).
  */
 const evaluateDirectMessageSend = async (conversationID, senderID) => {
   const peerId = await getDirectConversationPeer(conversationID, senderID);

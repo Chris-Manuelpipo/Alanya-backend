@@ -2,6 +2,10 @@ const pool = require('../../../config/db');
 const { evaluateDirectMessageSend } = require('../../../utils/blockUtils');
 const { resolveLastMessagePreview } = require('../../../utils/mediaAlbum');
 const { resolveReplyToID } = require('../../../utils/resolveReplyToID');
+const {
+  getCachedParticipants,
+  setCachedParticipants,
+} = require('../../../utils/conversationParticipantsCache');
 
 const MSG_SELECT = `
   SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
@@ -36,12 +40,46 @@ async function loadMessageByClientId(senderID, clientId) {
   return rows[0] || null;
 }
 
+/** Nom expéditeur + infos groupe en une seule requête (hors chemin critique). */
+async function loadNotifyContext(conversationID, senderID) {
+  const [rows] = await pool.execute(
+    `SELECT u.nom AS senderName, c.isGroup, c.GroupName AS groupName
+     FROM users u
+     CROSS JOIN conversation c
+     WHERE u.alanyaID = ? AND c.conversID = ?
+     LIMIT 1`,
+    [senderID, conversationID],
+  );
+  const row = rows[0] || {};
+  return {
+    senderName: row.senderName ?? 'Talky',
+    isGroup: !!row.isGroup,
+    groupName: row.groupName ?? '',
+  };
+}
+
+async function loadParticipantsExcept(conversationID, senderID) {
+  const cached = getCachedParticipants(conversationID, senderID);
+  if (cached) return cached;
+  const [participants] = await pool.execute(
+    'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+    [conversationID, senderID],
+  );
+  setCachedParticipants(conversationID, senderID, participants);
+  return participants;
+}
+
 function emitSendFailed(socket, { clientId, code, message }) {
   socket.emit('message:send_failed', {
     clientId: clientId || null,
     code,
     message,
   });
+}
+
+function logMsgPath(clientId, stage, t0) {
+  const ms = t0 != null ? Date.now() - t0 : 0;
+  console.log(`[MsgPath] clientId=${clientId} stage=${stage} ms_since_received=${ms}`);
 }
 
 const joinConversation = (io, socket) => {
@@ -59,6 +97,7 @@ const joinConversation = (io, socket) => {
 const messageSend = (io, socket) => {
   socket.on('message:send', async (data) => {
     let clientId = null;
+    const t0 = Date.now();
     try {
       if (!socket.authenticated) {
         emitSendFailed(socket, {
@@ -80,6 +119,7 @@ const messageSend = (io, socket) => {
       } = data;
       clientId = typeof data.clientId === 'string' ? data.clientId.trim() : '';
       const senderID = socket.alanyaID;
+      logMsgPath(clientId || '?', 'received', t0);
 
       if (!clientId || clientId.length > 64) {
         emitSendFailed(socket, {
@@ -100,6 +140,7 @@ const messageSend = (io, socket) => {
       }
 
       const blockEval = await evaluateDirectMessageSend(conversationID, senderID);
+      logMsgPath(clientId, 'policy_checked', t0);
       if (blockEval.isDirect && blockEval.action === 'reject') {
         const code = blockEval.code || 'BLOCKED_BY_SENDER';
         emitSendFailed(socket, {
@@ -114,54 +155,50 @@ const messageSend = (io, socket) => {
       }
       const silentDrop = blockEval.isDirect && blockEval.action === 'silent';
 
-      // Idempotence : même (senderID, clientID) → toujours le même message.
-      const existing = await loadMessageByClientId(senderID, clientId);
-      if (existing) {
-        const payload = toClientMsg(existing, clientId);
-        socket.emit('message:sent', payload);
-        socket.to(`user_${senderID}`).emit('message:sent', payload);
-        return;
-      }
-
       const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
-      // Garder le texte de citation même si l'ID n'a pas pu être résolu
-      // (média encore en ack côté client, ID temporaire, etc.).
       const resolvedReplyToContent =
         (replyToContent != null && String(replyToContent).trim() !== '')
           ? replyToContent
           : null;
 
-      let msgID;
-      try {
-        const [result] = await pool.execute(
-          `INSERT INTO message
-             (senderID, conversationID, clientID, content, type, status, sendAt,
-              clickSentAt,
-              mediaUrl, mediaName, mediaDuration, mediaThumb, mediaSize, mediaPageCount,
-              replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
-           VALUES (?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            senderID, conversationID, clientId, content ?? null, type,
-            clickSentAt ? new Date(clickSentAt) : null,
-            mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
-            mediaSize ?? null, mediaPageCount ?? null,
-            resolvedReplyToID, resolvedReplyToContent, isStatusReply,
-            isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
-          ],
-        );
-        msgID = result.insertId;
-      } catch (insertErr) {
-        // Course concurrente : un autre emit a déjà créé la ligne.
-        if (insertErr && (insertErr.code === 'ER_DUP_ENTRY' || insertErr.errno === 1062)) {
-          const raced = await loadMessageByClientId(senderID, clientId);
-          if (raced) {
-            const payload = toClientMsg(raced, clientId);
-            socket.emit('message:sent', payload);
-            socket.to(`user_${senderID}`).emit('message:sent', payload);
-            return;
-          }
+      // Idempotence via unique (senderID, clientID) : insertId = nouveau ou existant.
+      const [result] = await pool.execute(
+        `INSERT INTO message
+           (senderID, conversationID, clientID, content, type, status, sendAt,
+            clickSentAt,
+            mediaUrl, mediaName, mediaDuration, mediaThumb, mediaSize, mediaPageCount,
+            replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
+         VALUES (?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE msgID = LAST_INSERT_ID(msgID)`,
+        [
+          senderID, conversationID, clientId, content ?? null, type,
+          clickSentAt ? new Date(clickSentAt) : null,
+          mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
+          mediaSize ?? null, mediaPageCount ?? null,
+          resolvedReplyToID, resolvedReplyToContent, isStatusReply,
+          isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
+        ],
+      );
+      const msgID = result.insertId;
+      const isNewInsert = result.affectedRows === 1;
+      logMsgPath(clientId, 'insert_done', t0);
+
+      // Replay / course : message déjà présent → ack seulement, pas de double unread.
+      if (!isNewInsert) {
+        const existing = await loadMessageById(msgID) || await loadMessageByClientId(senderID, clientId);
+        if (existing) {
+          const payload = toClientMsg(existing, clientId);
+          socket.emit('message:sent', payload);
+          socket.to(`user_${senderID}`).emit('message:sent', payload);
+          logMsgPath(clientId, 'sender_ack_emit', t0);
+          return;
         }
-        throw insertErr;
+        emitSendFailed(socket, {
+          clientId,
+          code: 'INSERT_LOST',
+          message: 'Duplicate key but message not found',
+        });
+        return;
       }
 
       if (!silentDrop) {
@@ -195,45 +232,46 @@ const messageSend = (io, socket) => {
       const payload = toClientMsg(msg, clientId);
 
       if (!silentDrop) {
-        const [participants] = await pool.execute(
-          'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-          [conversationID, senderID],
-        );
+        const participants = await loadParticipantsExcept(conversationID, senderID);
 
         for (const p of participants) {
           io.to(`user_${p.alanyaID}`).emit('message:received', payload);
         }
+        logMsgPath(clientId, 'recipient_emit', t0);
 
-        const [sender] = await pool.execute(
-          'SELECT nom FROM users WHERE alanyaID = ?', [senderID],
-        );
-        const senderName = sender[0]?.nom ?? 'Talky';
+        // Accusé expéditeur immédiatement (avant prep FCM).
+        socket.emit('message:sent', payload);
+        socket.to(`user_${senderID}`).emit('message:sent', payload);
+        logMsgPath(clientId, 'sender_ack_emit', t0);
 
-        const [convRows] = await pool.execute(
-          'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
-          [conversationID],
-        );
-        const conv = convRows[0] ?? {};
-        const notifyFields = {
-          content,
-          mediaName,
-          type,
-          isViewOnce,
-          isGroup: !!conv.isGroup,
-          groupName: conv.GroupName ?? '',
-        };
-
-        setTimeout(() => {
-          const { notifyNewMessage } = require('../../../services/notificationService');
-          // Passer `io` : skip FCM si le destinataire est déjà dans user_*.
-          notifyNewMessage(conversationID, senderID, senderName, notifyFields, io).catch((e) =>
-            console.warn('[FCM notification]', e.message),
-          );
-        }, 0);
+        // Prep FCM hors chemin critique.
+        setImmediate(() => {
+          loadNotifyContext(conversationID, senderID)
+            .then((ctx) => {
+              const notifyFields = {
+                content,
+                mediaName,
+                type,
+                isViewOnce,
+                isGroup: ctx.isGroup,
+                groupName: ctx.groupName,
+              };
+              const { notifyNewMessage } = require('../../../services/notificationService');
+              return notifyNewMessage(
+                conversationID,
+                senderID,
+                ctx.senderName,
+                notifyFields,
+                io,
+              );
+            })
+            .catch((e) => console.warn('[FCM notification]', e.message));
+        });
+      } else {
+        socket.emit('message:sent', payload);
+        socket.to(`user_${senderID}`).emit('message:sent', payload);
+        logMsgPath(clientId, 'sender_ack_emit', t0);
       }
-
-      socket.emit('message:sent', payload);
-      socket.to(`user_${senderID}`).emit('message:sent', payload);
     } catch (error) {
       console.error('[Socket message:send]', error.message);
       emitSendFailed(socket, {
