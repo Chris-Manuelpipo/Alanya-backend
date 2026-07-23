@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { markConversationReadBy } = require('../utils/readReceiptUtils');
 const { getBlockPair, maskPresenceIfBlocked } = require('../utils/blockUtils');
+const { attachParticipantsBatch } = require('../utils/conversationParticipantsBatch');
 const MAX_BATCH_CONVERSATIONS = 50;
 
 // Nettoyer les URL d'avatar pour éviter les valeurs indésirables et les problèmes de sécurité
@@ -55,9 +56,9 @@ async function attachParticipants(conversationRow, viewerId = null) {
 }
 
 
-// Attacher les participants à plusieurs conversations en parallèle
+// Attacher les participants à plusieurs conversations (≤ 3 requêtes SQL).
 async function attachParticipantsMany(rows, viewerId = null) {
-  return Promise.all(rows.map((r) => attachParticipants(r, viewerId)));
+  return attachParticipantsBatch(pool, rows, viewerId, sanitizeUrl);
 }
 
 /** Score pour choisir la conv 1-1 canonique entre deux utilisateurs. */
@@ -112,10 +113,15 @@ const getConversations = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const [rows] = await pool.execute(
       `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived,
-              (SELECT COUNT(*) FROM message m
-               WHERE m.conversationID = c.conversID AND m.isDeleted = 0) AS messageCount
+              COALESCE(mc.cnt, 0) AS messageCount
        FROM conversation c
        JOIN conv_participants cp ON c.conversID = cp.conversID
+       LEFT JOIN (
+         SELECT conversationID, COUNT(*) AS cnt
+         FROM message
+         WHERE isDeleted = 0
+         GROUP BY conversationID
+       ) mc ON mc.conversationID = c.conversID
        WHERE cp.alanyaID = ?
        ORDER BY cp.isPinned DESC, c.lastMessageAt DESC`,
       [alanyaID]
