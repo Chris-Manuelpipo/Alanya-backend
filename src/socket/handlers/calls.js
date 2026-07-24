@@ -154,6 +154,13 @@ async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
     reason:   'no_answer',
   });
 
+  // Coupe de façon DÉTERMINISTE la sonnerie/l'écran entrant d'une cible au premier
+  // plan (socket ouvert) : le FCM ci-dessous ne couvre que l'arrière-plan et peut
+  // être retardé/perdu sous Doze. call_ended est traité quel que soit le statut.
+  emitToUser(io, targetID, 'call_ended', {
+    callId: callID != null ? String(callID) : null,
+  });
+
   // Coupe la sonnerie/CallKit du destinataire s'il a été réveillé en arrière-plan.
   notifyCallEnded(targetID, callerID, 'Appel manqué', callID)
     .catch((err) => console.warn('[Socket call_user] no-answer notifyCallEnded error:', err.message));
@@ -221,6 +228,32 @@ async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnec
   return true;
 }
 
+// Récupère un état « occupé » fantôme : l'utilisateur est marqué ringing/in_call
+// mais n'a PLUS AUCUN socket connecté et aucune reconnexion en grâce → son appel
+// précédent n'a jamais été nettoyé (kill multi-socket, socket fantôme, crash sans
+// end_call…). On le purge des deux côtés pour ne pas renvoyer un faux call_busy.
+function reclaimStaleBusy(io, userID) {
+  const entry = callState.getEntry(userID);
+  if (!entry) return false;
+  if (entry.status !== 'in_call' && entry.status !== 'ringing') return false;
+  if (isUserOnline(io, userID)) return false;   // en ligne : appel en arrière-plan légitime
+  if (entry.disconnectTimer) return false;       // grâce de reconnexion déjà armée
+  const peerID = entry.peerId != null ? toInt(entry.peerId) : null;
+  console.log(
+    `[callState] reclaimStaleBusy user=${userID} status=${entry.status} (offline, sans grâce)`,
+  );
+  callState.clear(userID);
+  pendingCalls.clear(userID);
+  if (peerID) {
+    const peerEntry = callState.getEntry(peerID);
+    if (peerEntry && String(peerEntry.peerId) === String(userID)) {
+      callState.clear(peerID);
+      pendingCalls.clear(peerID);
+    }
+  }
+  return true;
+}
+
 const callUser = (io, socket, userSockets) => {
   socket.on('call_user', async (data) => {
     try {
@@ -263,6 +296,11 @@ const callUser = (io, socket, userSockets) => {
         }
         return;
       }
+
+      // Purge un éventuel « occupé » fantôme (appel précédent jamais nettoyé)
+      // avant d'évaluer la disponibilité réelle des deux participants.
+      reclaimStaleBusy(io, targetID);
+      reclaimStaleBusy(io, callerID);
 
       if (callState.isBusyForNewCall(callerID, targetID, pendingCalls)) {
         console.log(`[Socket call_user] ⛔ Appelant occupé: caller=${callerID} (${callState.get(callerID)})`);
@@ -370,6 +408,12 @@ const answerCall = (io, socket, userSockets) => {
       const isVideo = !!callerEntry?.isVideo;
       callState.setInCall(receiverID, { callId, peerId: callerID, isVideo });
       callState.setInCall(callerID, { callId, peerId: receiverID, lastAnswer: answer, isVideo });
+
+      // Lie l'appel à CE socket destinataire : la déconnexion de ce socket précis
+      // doit nettoyer l'appel même si le compte garde d'autres sockets ouverts
+      // (sinon état « in_call » orphelin → occupé à tort). Voir handleDisconnect.
+      socket.currentCallID = callId;
+      socket.currentCallTarget = callerID;
 
       try {
         const [result] = await pool.execute(
@@ -912,6 +956,7 @@ const callRejoin = (io, socket, userSockets) => {
 };
 
 module.exports = {
+  reclaimStaleBusy,
   callUser,
   answerCall,
   rejectCall,
