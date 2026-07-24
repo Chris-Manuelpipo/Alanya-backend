@@ -90,15 +90,31 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
 
   const pending = pendingCalls.getReplayable(alanyaID);
   if (pending) {
-    console.log(`[Socket] !! Rejeu incoming_call à User ${alanyaID} (appel en attente)`);
-    socket.emit('incoming_call', pending);
-    const delivery = pendingCalls.markDelivered(alanyaID, 'auth-replay');
-    if (delivery) {
+    // Garde autoritaire : ne rejouer que si l'appel est TOUJOURS en sonnerie pour
+    // ce callId côté callState. Sinon (refusé / terminé / timeout, ou tout état
+    // désynchronisé du buffer) on purge et on ne rejoue pas un écran fantôme.
+    const entry = callState.getEntry(alanyaID);
+    const stillRinging =
+      !!entry &&
+      entry.status === 'ringing' &&
+      (pending.callId == null || String(entry.callId) === String(pending.callId));
+
+    if (!stillRinging) {
       console.log(
-        `[PhantomCallFix] pending:replay target=${alanyaID} callId=${delivery.callId ?? 'none'} attempts=${delivery.attempts}`,
+        `[PhantomCallFix] pending:stale-skip target=${alanyaID} status=${entry?.status ?? 'idle'} callId=${pending.callId ?? 'none'}`,
       );
+      pendingCalls.clear(alanyaID);
+    } else {
+      console.log(`[Socket] !! Rejeu incoming_call à User ${alanyaID} (appel en attente)`);
+      socket.emit('incoming_call', pending);
+      const delivery = pendingCalls.markDelivered(alanyaID, 'auth-replay');
+      if (delivery) {
+        console.log(
+          `[PhantomCallFix] pending:replay target=${alanyaID} callId=${delivery.callId ?? 'none'} attempts=${delivery.attempts}`,
+        );
+      }
+      pendingCalls.clear(alanyaID);
     }
-    pendingCalls.clear(alanyaID);
   } else {
     console.log(`[PhantomCallFix] pending:skip-replay target=${alanyaID}`);
   }
