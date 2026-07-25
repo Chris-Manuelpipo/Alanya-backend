@@ -50,8 +50,17 @@ const imageFilter = (req, file, cb) => {
 const mediaFilter = (req, file, cb) => {
   const allowed = [
     'image/jpeg', 'image/png', 'image/webp', 'image/gif',
-    'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/aac', 'audio/mp4',
-    'audio/x-m4a', 'audio/m4a', 'audio/webm',
+    // Audio — inclure les variantes `x-` : le package `mime` côté Flutter
+    // renvoie audio/x-wav pour .wav, audio/x-flac pour .flac, etc.
+    'audio/mpeg', 'audio/mp3', 'audio/x-mpeg',
+    'audio/ogg', 'audio/vorbis', 'audio/opus',
+    'audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave',
+    'audio/aac', 'audio/mp4', 'audio/x-m4a', 'audio/m4a', 'audio/webm',
+    'audio/flac', 'audio/x-flac',
+    'audio/x-ms-wma',
+    'audio/aiff', 'audio/x-aiff',
+    'audio/midi', 'audio/x-midi',
+    'audio/x-caf', 'audio/amr',
     'video/mp4', 'video/webm', 'video/quicktime', 'video/3gpp',
     // Documents
     'application/pdf',

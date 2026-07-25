@@ -66,6 +66,29 @@ function contactPreviewFromContent(content) {
   }
 }
 
+// Extensions traitées comme de la musique. Miroir de la liste de
+// lib/core/utils/audio_message_kind.dart côté Talky — garder les deux alignées.
+const MUSIC_EXTENSIONS = new Set([
+  'mp3', 'm4a', 'm4b', 'aac', 'wav', 'flac', 'ogg', 'oga', 'opus',
+  'wma', 'aiff', 'aif', 'caf', 'amr', 'weba', 'mid', 'midi', 'alac',
+]);
+
+/**
+ * Vocal ou musique : les deux sont des messages `type = 3`, seul le nom de
+ * fichier les distingue. Un vocal enregistré porte un libellé localisé
+ * (« Message vocal »), sans extension.
+ */
+function musicTitle(mediaName) {
+  if (typeof mediaName !== 'string') return null;
+  const base = mediaName.trim().split('/').pop().split('?')[0];
+  const dot = base.lastIndexOf('.');
+  if (dot < 0 || dot >= base.length - 1) return null;
+  const ext = base.slice(dot + 1).toLowerCase();
+  if (!MUSIC_EXTENSIONS.has(ext)) return null;
+  const title = base.slice(0, dot).trim();
+  return title || null;
+}
+
 function mediaTypeLabel(type, { isViewOnce = false, mediaName } = {}) {
   const t = parseInt(type, 10) || 0;
   switch (t) {
@@ -73,8 +96,11 @@ function mediaTypeLabel(type, { isViewOnce = false, mediaName } = {}) {
       return isViewOnce ? '📷 Photo · Vue unique' : '📷 Photo';
     case 2:
       return isViewOnce ? '🎥 Vidéo · Vue unique' : '🎥 Vidéo';
-    case 3:
-      return isViewOnce ? '🎵 Audio · Vue unique' : '🎵 Audio';
+    case 3: {
+      if (isViewOnce) return '🎵 Audio · Vue unique';
+      const track = musicTitle(mediaName);
+      return track ? `🎵 ${track}` : '🎤 Message vocal';
+    }
     case 4:
       return mediaName ? `📎 ${mediaName}` : '📎 Fichier';
     case 5:
