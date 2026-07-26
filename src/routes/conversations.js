@@ -1,7 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { requireParticipant } = require('../middleware/groupAuth');
+const {
+  requireParticipant,
+  requireGroup,
+  requireGroupAdmin,
+  requireGroupOwner,
+} = require('../middleware/groupAuth');
 const {
   getConversations,
   getConversationById,
@@ -14,6 +19,10 @@ const {
   addParticipants,
   batchUpdateConversations,
   batchDeleteConversations,
+  updateGroupInfo,
+  updateGroupSettings,
+  removeParticipant,
+  setParticipantRole,
   updateConversationMute,
 } = require('../controllers/conversationController');
 
@@ -102,7 +111,12 @@ router.post('/group', auth, createGroup);
  *       200:
  *         description: Détails de la conversation
  *   put:
- *     summary: Mettre à jour une conversation
+ *     summary: Flags par utilisateur (épinglage, archivage)
+ *     description: >
+ *       Ne modifie QUE les champs propres à l'utilisateur courant, stockés dans
+ *       `conv_participants`. `GroupName` et `groupPhoto` y étaient acceptés sans
+ *       contrôle d'appartenance ; ils sont désormais refusés (400
+ *       `USE_GROUP_ENDPOINT`) et relèvent de `PATCH /{id}/group`.
  *     tags: [Conversations]
  *     security:
  *       - bearerAuth: []
@@ -119,17 +133,19 @@ router.post('/group', auth, createGroup);
  *           schema:
  *             type: object
  *             properties:
- *               GroupName:
- *                 type: string
- *               groupPhoto:
- *                 type: string
  *               isPinned:
- *                 type: boolean
+ *                 type: integer
+ *                 enum: [0, 1]
  *               isArchived:
- *                 type: boolean
+ *                 type: integer
+ *                 enum: [0, 1]
  *     responses:
  *       200:
  *         description: Conversation mise à jour
+ *       400:
+ *         description: USE_GROUP_ENDPOINT — infos de groupe envoyées ici
+ *       404:
+ *         description: Conversation introuvable ou non autorisée
  *   delete:
  *     summary: Supprimer une conversation (quitter)
  *     tags: [Conversations]
@@ -224,5 +240,131 @@ router.post('/:id/leave', auth, leaveGroup);
  *         description: Participants ajoutés
  */
 router.post('/:id/participants', auth, addParticipants);
+
+/**
+ * @swagger
+ * /api/conversations/{id}/group:
+ *   patch:
+ *     summary: Modifier les infos du groupe (nom, photo, description)
+ *     description: >
+ *       Réservé aux administrateurs si `onlyAdminsCanEditInfo` est actif,
+ *       ouvert à tous les membres sinon. Chemin distinct de `PUT /{id}`, qui
+ *       porte les flags par utilisateur (épinglage, archivage).
+ *     tags: [Conversations]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               GroupName: { type: string, maxLength: 255 }
+ *               groupPhoto: { type: string, nullable: true }
+ *               description: { type: string, maxLength: 512, nullable: true }
+ *     responses:
+ *       200: { description: Conversation enrichie }
+ *       403: { description: GROUP_INFO_LOCKED }
+ *       404: { description: Conversation introuvable ou non autorisée }
+ */
+router.patch('/:id/group', auth, requireParticipant, requireGroup, updateGroupInfo);
+
+/**
+ * @swagger
+ * /api/conversations/{id}/settings:
+ *   patch:
+ *     summary: Verrous du groupe (mode annonce, édition réservée)
+ *     description: Toujours réservé aux administrateurs.
+ *     tags: [Conversations]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               onlyAdminsCanSend: { type: integer, enum: [0, 1] }
+ *               onlyAdminsCanEditInfo: { type: integer, enum: [0, 1] }
+ *     responses:
+ *       200: { description: Conversation enrichie }
+ *       403: { description: GROUP_ADMIN_REQUIRED }
+ */
+router.patch('/:id/settings', auth, requireGroupAdmin, updateGroupSettings);
+
+/**
+ * @swagger
+ * /api/conversations/{id}/participants/{userId}:
+ *   delete:
+ *     summary: Retirer un membre du groupe
+ *     description: >
+ *       Administrateur ou propriétaire. On ne peut retirer ni un rôle supérieur
+ *       ou égal au sien, ni le propriétaire, ni soi-même (utiliser `/leave`).
+ *       Idempotent : un membre déjà parti renvoie 200 avec `alreadyGone`.
+ *     tags: [Conversations]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200: { description: Membre retiré }
+ *       400: { description: USE_LEAVE_ENDPOINT }
+ *       403: { description: CANNOT_REMOVE_OWNER ou INSUFFICIENT_ROLE }
+ */
+router.delete('/:id/participants/:userId', auth, requireGroupAdmin, removeParticipant);
+
+/**
+ * @swagger
+ * /api/conversations/{id}/participants/{userId}/role:
+ *   patch:
+ *     summary: Promouvoir ou rétrograder un membre
+ *     description: >
+ *       Propriétaire uniquement — un administrateur ne crée pas
+ *       d'administrateur. Le transfert de propriété (role 2) n'est pas exposé :
+ *       la succession se fait automatiquement au départ du propriétaire.
+ *     tags: [Conversations]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema: { type: integer }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [role]
+ *             properties:
+ *               role: { type: integer, enum: [0, 1] }
+ *     responses:
+ *       200: { description: Conversation enrichie }
+ *       403: { description: GROUP_OWNER_REQUIRED }
+ *       404: { description: Membre introuvable dans ce groupe }
+ */
+router.patch(
+  '/:id/participants/:userId/role',
+  auth,
+  requireGroupOwner,
+  setParticipantRole,
+);
 
 module.exports = router;

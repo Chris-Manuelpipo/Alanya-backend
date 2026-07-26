@@ -474,6 +474,317 @@ const addParticipants = async (req, res) => {
   }
 };
 
+/** Conversation enrichie telle que la renvoie GET /:id (rôle inclus). */
+async function loadEnrichedConversation(conversID, alanyaID) {
+  const [rows] = await pool.execute(
+    `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived,
+            cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly
+       FROM conversation c
+       JOIN conv_participants cp ON c.conversID = cp.conversID
+      WHERE c.conversID = ? AND cp.alanyaID = ?`,
+    [conversID, alanyaID],
+  );
+  if (rows.length === 0) return null;
+  return attachParticipants(rows[0], alanyaID);
+}
+
+// PATCH /conversations/:id/group — nom, photo, description.
+//
+// Route dédiée plutôt que PUT /:id : cette dernière porte une sémantique PAR
+// UTILISATEUR (épinglage, archivage) avec une règle d'autorisation différente.
+// Les avoir mélangées est exactement ce qui avait laissé n'importe quel compte
+// renommer n'importe quel groupe.
+const updateGroupInfo = async (req, res) => {
+  try {
+    const conversID = req.membership.conversID;
+    const alanyaID = req.user.alanyaID;
+    const { GroupName, groupPhoto, description } = req.body;
+
+    if (req.membership.onlyAdminsCanEditInfo && req.membership.role < 1) {
+      return res.status(403).json({
+        error: 'Seuls les administrateurs peuvent modifier les infos du groupe',
+        code: 'GROUP_INFO_LOCKED',
+      });
+    }
+
+    const updates = [];
+    const values = [];
+    const events = [];
+
+    if (GroupName !== undefined) {
+      const name = String(GroupName).trim();
+      if (name === '' || name.length > 255) {
+        return res.status(400).json({ error: 'Nom de groupe invalide (1 à 255 caractères)' });
+      }
+      updates.push('GroupName = ?');
+      values.push(name);
+      events.push({ event: 'group_renamed', payload: { value: name } });
+    }
+
+    if (groupPhoto !== undefined) {
+      const photo = groupPhoto === null ? null : String(groupPhoto).trim() || null;
+      updates.push('groupPhoto = ?');
+      values.push(photo);
+      events.push({ event: 'group_photo_changed', payload: {} });
+    }
+
+    if (description !== undefined) {
+      const desc = description === null ? null : String(description).trim().slice(0, 512) || null;
+      updates.push('description = ?');
+      values.push(desc);
+      events.push({
+        event: 'group_description_changed',
+        payload: { value: desc || '' },
+      });
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'Aucun champ à modifier' });
+    }
+
+    values.push(conversID);
+    await pool.execute(
+      `UPDATE conversation SET ${updates.join(', ')} WHERE conversID = ?`,
+      values,
+    );
+
+    const enriched = await loadEnrichedConversation(conversID, alanyaID);
+    const io = req.app.get('io');
+
+    // Un message système PAR CHAMP réellement modifié : « X a renommé le
+    // groupe » et « X a changé la photo » sont deux informations distinctes.
+    for (const e of events) {
+      await postSystemMessage({
+        conversationID: conversID,
+        actorID: alanyaID,
+        event: e.event,
+        payload: e.payload,
+        io,
+      });
+    }
+    await emitConversationUpdated(io, conversID);
+
+    res.json(enriched);
+  } catch (error) {
+    throw error;
+  }
+};
+
+// PATCH /conversations/:id/settings — les deux verrous de permission.
+// Toujours réservé aux admins, contrairement à /group qui est déverrouillable.
+const updateGroupSettings = async (req, res) => {
+  try {
+    const conversID = req.membership.conversID;
+    const alanyaID = req.user.alanyaID;
+    const { onlyAdminsCanSend, onlyAdminsCanEditInfo } = req.body;
+
+    const asFlag = (v) => (v === 1 || v === true || v === '1' ? 1 : 0);
+
+    const updates = [];
+    const values = [];
+    const events = [];
+
+    if (onlyAdminsCanSend !== undefined) {
+      const next = asFlag(onlyAdminsCanSend);
+      // On ne poste une trace que si la valeur CHANGE : un rejeu à l'identique
+      // ne doit pas empiler des messages système.
+      if (next !== (req.membership.onlyAdminsCanSend ? 1 : 0)) {
+        updates.push('onlyAdminsCanSend = ?');
+        values.push(next);
+        events.push({ lock: 'send', on: next });
+      }
+    }
+
+    if (onlyAdminsCanEditInfo !== undefined) {
+      const next = asFlag(onlyAdminsCanEditInfo);
+      if (next !== (req.membership.onlyAdminsCanEditInfo ? 1 : 0)) {
+        updates.push('onlyAdminsCanEditInfo = ?');
+        values.push(next);
+        events.push({ lock: 'edit', on: next });
+      }
+    }
+
+    if (updates.length > 0) {
+      values.push(conversID);
+      await pool.execute(
+        `UPDATE conversation SET ${updates.join(', ')} WHERE conversID = ?`,
+        values,
+      );
+    }
+
+    const enriched = await loadEnrichedConversation(conversID, alanyaID);
+    const io = req.app.get('io');
+
+    for (const e of events) {
+      await postSystemMessage({
+        conversationID: conversID,
+        actorID: alanyaID,
+        event: 'settings_changed',
+        payload: { lock: e.lock, on: e.on },
+        io,
+      });
+    }
+    if (events.length > 0) await emitConversationUpdated(io, conversID);
+
+    res.json(enriched);
+  } catch (error) {
+    throw error;
+  }
+};
+
+// DELETE /conversations/:id/participants/:userId — retirer un membre.
+const removeParticipant = async (req, res) => {
+  try {
+    const conversID = req.membership.conversID;
+    const alanyaID = req.user.alanyaID;
+    const targetId = parseInt(req.params.userId, 10);
+
+    if (!Number.isInteger(targetId) || targetId < 1) {
+      return res.status(400).json({ error: 'Identifiant de membre invalide' });
+    }
+    if (targetId === Number(alanyaID)) {
+      return res.status(400).json({
+        error: 'Utiliser /leave pour quitter le groupe',
+        code: 'USE_LEAVE_ENDPOINT',
+      });
+    }
+
+    const [targetRows] = await pool.execute(
+      'SELECT role FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+      [conversID, targetId],
+    );
+
+    // Membre déjà parti : 200 et non 404. Un double-tap sur « Retirer » ne doit
+    // pas afficher d'erreur alors que le résultat voulu est atteint.
+    if (targetRows.length === 0) {
+      return res.json({ conversID, removed: targetId, alreadyGone: true });
+    }
+
+    const targetRole = Number(targetRows[0].role) || 0;
+
+    if (targetRole === 2) {
+      return res.status(403).json({
+        error: 'Le propriétaire du groupe ne peut pas être retiré',
+        code: 'CANNOT_REMOVE_OWNER',
+      });
+    }
+    // Rôle supérieur OU ÉGAL : un admin ne retire pas un autre admin.
+    if (targetRole >= req.membership.role) {
+      return res.status(403).json({
+        error: 'Vous ne pouvez pas retirer ce membre',
+        code: 'INSUFFICIENT_ROLE',
+      });
+    }
+
+    // Noms lus AVANT le DELETE, et snapshot des membres à prévenir : l'exclu
+    // ne sera plus dans conv_participants juste après.
+    const names = await loadUserNames([targetId]);
+    const [before] = await pool.execute(
+      'SELECT alanyaID FROM conv_participants WHERE conversID = ?',
+      [conversID],
+    );
+    const membersBefore = before.map((r) => Number(r.alanyaID));
+
+    await pool.execute(
+      'DELETE FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+      [conversID, targetId],
+    );
+
+    const io = req.app.get('io');
+
+    await postSystemMessage({
+      conversationID: conversID,
+      actorID: alanyaID,
+      event: 'member_removed',
+      payload: { ids: names.ids, names: names.names },
+      io,
+      notifyExtra: [targetId],
+    });
+
+    if (io) {
+      const payload = {
+        conversID,
+        alanyaID: targetId,
+        removedBy: Number(alanyaID),
+        reason: 'kicked',
+      };
+      for (const memberId of membersBefore) {
+        io.to(`user_${memberId}`).emit('group:participant:removed', payload);
+      }
+      await emitConversationUpdated(io, conversID);
+    }
+
+    res.json({ conversID, removed: targetId });
+  } catch (error) {
+    throw error;
+  }
+};
+
+// PATCH /conversations/:id/participants/:userId/role — promouvoir / rétrograder.
+// Propriétaire uniquement : un admin ne crée pas d'admin.
+const setParticipantRole = async (req, res) => {
+  try {
+    const conversID = req.membership.conversID;
+    const alanyaID = req.user.alanyaID;
+    const targetId = parseInt(req.params.userId, 10);
+    const role = parseInt(req.body?.role, 10);
+
+    if (!Number.isInteger(targetId) || targetId < 1) {
+      return res.status(400).json({ error: 'Identifiant de membre invalide' });
+    }
+    // 2 exclu : le transfert de propriété n'est pas au périmètre, et la
+    // succession automatique du départ suffit à garantir un propriétaire.
+    if (role !== 0 && role !== 1) {
+      return res.status(400).json({ error: 'role doit valoir 0 ou 1' });
+    }
+    if (targetId === Number(alanyaID)) {
+      return res.status(400).json({
+        error: 'Vous ne pouvez pas changer votre propre rôle',
+        code: 'CANNOT_CHANGE_OWN_ROLE',
+      });
+    }
+
+    const [targetRows] = await pool.execute(
+      'SELECT role FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+      [conversID, targetId],
+    );
+    if (targetRows.length === 0) {
+      return res.status(404).json({ error: 'Membre introuvable dans ce groupe' });
+    }
+
+    const currentRole = Number(targetRows[0].role) || 0;
+    const roleUnchanged = currentRole === role;
+
+    if (!roleUnchanged) {
+      await pool.execute(
+        'UPDATE conv_participants SET role = ? WHERE conversID = ? AND alanyaID = ?',
+        [role, conversID, targetId],
+      );
+    }
+
+    const enriched = await loadEnrichedConversation(conversID, alanyaID);
+    const io = req.app.get('io');
+
+    // Rôle déjà en place : 200 sans message système. Le résultat voulu est
+    // atteint, et empiler « X a nommé Y administrateur » serait faux.
+    if (!roleUnchanged) {
+      const names = await loadUserNames([targetId]);
+      await postSystemMessage({
+        conversationID: conversID,
+        actorID: alanyaID,
+        event: 'role_changed',
+        payload: { ids: names.ids, names: names.names, role },
+        io,
+      });
+      await emitConversationUpdated(io, conversID);
+    }
+
+    res.json(enriched);
+  } catch (error) {
+    throw error;
+  }
+};
+
 const leaveGroup = async (req, res) => {
   try {
     const { id } = req.params;
@@ -795,4 +1106,8 @@ module.exports = {
   batchUpdateConversations,
   batchDeleteConversations,
   updateConversationMute,
+  updateGroupInfo,
+  updateGroupSettings,
+  removeParticipant,
+  setParticipantRole,
 };
