@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const { requireParticipant } = require('../middleware/groupAuth');
 const {
   getConversations,
   getConversationById,
@@ -145,7 +146,9 @@ router.post('/group', auth, createGroup);
  *         description: Conversation supprimée
  */
 router.get('/:id', auth, getConversationById);
-router.put('/:id', auth, updateConversation);
+// requireParticipant : la route écrivait dans `conversation` sans vérifier
+// l'appartenance (voir le commentaire du contrôleur).
+router.put('/:id', auth, requireParticipant, updateConversation);
 router.delete('/:id', auth, deleteConversation);
 
 /**

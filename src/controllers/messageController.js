@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
+const { assertCanSendToConversation } = require('../utils/groupSendPolicy');
 const { markConversationDeliveredBy } = require('../utils/deliveryReceiptUtils');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
@@ -176,6 +177,17 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     }
   }
 
+  // Appartenance + mode annonce. Placé APRÈS le court-circuit d'idempotence
+  // ci-dessus : un message déjà persisté doit rester rejouable même si le mode
+  // annonce a été activé entre-temps, sinon un retry légitime échouerait.
+  const sendPolicy = await assertCanSendToConversation(conversationID, senderID);
+  if (!sendPolicy.ok) {
+    const err = new Error(sendPolicy.message);
+    err.status = sendPolicy.code === 'CONVERSATION_NOT_FOUND' ? 404 : 403;
+    err.code = sendPolicy.code;
+    throw err;
+  }
+
   const blockEval = await evaluateDirectMessageSend(conversationID, senderID);
   if (blockEval.isDirect && blockEval.action === 'reject') {
     const err = new Error('Cannot message blocked user');
@@ -272,8 +284,10 @@ const sendMessage = async (req, res) => {
 
     res.json(msg);
   } catch (error) {
-    if (error.status === 403) {
-      return res.status(403).json({ error: error.message, code: error.code });
+    // `error.status` et non `=== 403` : la politique d'envoi renvoie aussi un
+    // 404 (conversation inexistante), qui finirait sinon en 500.
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
     }
     throw error;
   }
@@ -898,8 +912,8 @@ const batchForwardMessages = async (req, res) => {
     res.json({ forwarded: createdMessages.length, messages: createdMessages });
   } catch (error) {
     await conn.rollback();
-    if (error.status === 403) {
-      return res.status(403).json({ error: error.message, code: error.code });
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
     }
     throw error;
   } finally {

@@ -1,5 +1,6 @@
 const pool = require('../../../config/db');
 const { evaluateDirectMessageSend } = require('../../../utils/blockUtils');
+const { assertCanSendToConversation } = require('../../../utils/groupSendPolicy');
 const { resolveLastMessagePreview } = require('../../../utils/mediaAlbum');
 const { resolveReplyToID } = require('../../../utils/resolveReplyToID');
 const {
@@ -85,7 +86,31 @@ function logMsgPath(clientId, stage, t0) {
 const joinConversation = (io, socket) => {
   socket.on('join_conversation', async (data) => {
     try {
-      const { conversationID } = data;
+      // La room `conversation_<id>` reçoit message:updated, message:deleted,
+      // message:reaction, message:pinned, message:viewed et le typing. Sans ces
+      // deux gardes, n'importe quelle socket — même non authentifiée — pouvait
+      // la rejoindre et écouter la vie d'une conversation dont elle n'est pas.
+      if (!socket.authenticated) {
+        return socket.emit('error', {
+          message: 'Unauthenticated',
+          code: 'UNAUTHENTICATED',
+        });
+      }
+
+      const conversationID = parseInt(data?.conversationID, 10);
+      if (!conversationID || conversationID < 1) return;
+
+      const [rows] = await pool.execute(
+        'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ? LIMIT 1',
+        [conversationID, socket.alanyaID],
+      );
+      if (rows.length === 0) {
+        return socket.emit('error', {
+          message: 'Conversation introuvable ou non autorisée',
+          code: 'NOT_A_MEMBER',
+        });
+      }
+
       socket.join(`conversation_${conversationID}`);
       socket.emit('joined_conversation', { conversationID });
     } catch (error) {
@@ -137,6 +162,22 @@ const messageSend = (io, socket) => {
           message: 'conversationID and (content or mediaUrl) required',
         });
         return;
+      }
+
+      // Appartenance + mode annonce. `evaluateDirectMessageSend` ci-dessous ne
+      // couvre que le 1-1 : sans cette vérification, rien n'empêchait d'écrire
+      // dans un groupe dont on n'est pas membre.
+      const sendPolicy = await assertCanSendToConversation(conversationID, senderID);
+      if (!sendPolicy.ok) {
+        emitSendFailed(socket, {
+          clientId,
+          code: sendPolicy.code,
+          message: sendPolicy.message,
+        });
+        return socket.emit('error', {
+          message: sendPolicy.message,
+          code: sendPolicy.code,
+        });
       }
 
       const blockEval = await evaluateDirectMessageSend(conversationID, senderID);

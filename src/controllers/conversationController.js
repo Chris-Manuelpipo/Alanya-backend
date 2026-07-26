@@ -2,6 +2,12 @@ const pool = require('../config/db');
 const { markConversationReadBy } = require('../utils/readReceiptUtils');
 const { getBlockPair, maskPresenceIfBlocked } = require('../utils/blockUtils');
 const { attachParticipantsBatch } = require('../utils/conversationParticipantsBatch');
+const {
+  SELF_CHAT_MARKER,
+  buildDirectConversationLookup,
+  isSelfChatRow,
+  dedupeDirectConversations,
+} = require('../utils/directConversation');
 const MAX_BATCH_CONVERSATIONS = 50;
 
 // Nettoyer les URL d'avatar pour éviter les valeurs indésirables et les problèmes de sécurité
@@ -41,7 +47,9 @@ async function attachParticipants(conversationRow, viewerId = null) {
       last_seen:   masked.last_seen,
     });
 
-    if (viewerId != null && !conversationRow.isGroup
+    // Pas de blockStatus sur une conversation avec soi-même : il n'y a pas de
+    // pair à bloquer. La clé reste donc absente du payload.
+    if (viewerId != null && !conversationRow.isGroup && !isSelfChatRow(conversationRow)
         && Number(p.alanyaID) !== Number(viewerId)) {
       const pair = await getBlockPair(viewerId, p.alanyaID);
       conversationRow.blockStatus = {
@@ -61,51 +69,8 @@ async function attachParticipantsMany(rows, viewerId = null) {
   return attachParticipantsBatch(pool, rows, viewerId, sanitizeUrl);
 }
 
-/** Score pour choisir la conv 1-1 canonique entre deux utilisateurs. */
-function scoreDirectConversation(row) {
-  const msgCount = Number(row.messageCount) || 0;
-  const lastAt = row.lastMessageAt ? new Date(row.lastMessageAt).getTime() : 0;
-  // Priorité aux conv qui ont de vrais messages (évite les doublons « appel seul »).
-  return msgCount * 1e15 + lastAt;
-}
-
-/**
- * Une seule entrée 1-1 par paire d'utilisateurs : garde la conversation qui
- * contient le plus de messages, puis la plus récente. Corrige les doublons
- * legacy (aperçu d'appel sur conv B, historique texte sur conv A).
- */
-function dedupeDirectConversations(rows, viewerId) {
-  const groups = [];
-  const byPeer = new Map();
-  for (const row of rows) {
-    if (row.isGroup) {
-      groups.push(row);
-      continue;
-    }
-    const peer = row.participants?.find(
-      (p) => Number(p.alanyaID) !== Number(viewerId),
-    );
-    if (!peer) {
-      groups.push(row);
-      continue;
-    }
-    const a = Math.min(Number(viewerId), Number(peer.alanyaID));
-    const b = Math.max(Number(viewerId), Number(peer.alanyaID));
-    const key = `${a}:${b}`;
-    const existing = byPeer.get(key);
-    if (!existing || scoreDirectConversation(row) > scoreDirectConversation(existing)) {
-      byPeer.set(key, row);
-    }
-  }
-  const direct = [...byPeer.values()];
-  return [...groups, ...direct].sort((x, y) => {
-    const pinDiff = (y.isPinned ? 1 : 0) - (x.isPinned ? 1 : 0);
-    if (pinDiff !== 0) return pinDiff;
-    const xAt = x.lastMessageAt ? new Date(x.lastMessageAt).getTime() : 0;
-    const yAt = y.lastMessageAt ? new Date(y.lastMessageAt).getTime() : 0;
-    return yAt - xAt;
-  });
-}
+// `scoreDirectConversation` et `dedupeDirectConversations` vivent désormais dans
+// utils/directConversation.js, avec la résolution des conversations 1-1.
 
 // Récupère la liste des conversations de l'utilisateur connecté, avec les infos des participants et les métadonnées de la conversation
 const getConversations = async (req, res) => {
@@ -157,44 +122,50 @@ const getConversationById = async (req, res) => {
 
 // Créer une nouvelle conversation privée entre l'utilisateur connecté et un autre participant, ou un groupe si plusieurs participants sont fournis
 const createConversation = async (req, res) => {
+  let conn = null;
   try {
-    const { participantID } = req.body;
-    const alanyaID = req.user.alanyaID;
+    const alanyaID = Number(req.user.alanyaID);
+    const peerID = parseInt(req.body.participantID, 10);
 
-    if (!participantID) {
-      return res.status(400).json({ error: 'participantID required' });
+    if (!Number.isInteger(peerID) || peerID <= 0) {
+      return res.status(400).json({ error: 'participantID invalide' });
     }
 
-    const [existing] = await pool.execute(
-      `SELECT c.* FROM conversation c
-       JOIN conv_participants cp1 ON c.conversID = cp1.conversID
-       JOIN conv_participants cp2 ON c.conversID = cp2.conversID
-       WHERE cp1.alanyaID = ? AND cp2.alanyaID = ? AND c.isGroup = 0
-       ORDER BY (SELECT COUNT(*) FROM message m
-                 WHERE m.conversationID = c.conversID AND m.isDeleted = 0) DESC,
-                c.lastMessageAt DESC, c.conversID DESC
-       LIMIT 1`,
-      [alanyaID, participantID]
-    );
+    // Conversation « avec soi-même » : un seul participant, marquée par
+    // GroupName. Voir utils/directConversation.js.
+    const isSelf = peerID === alanyaID;
+
+    const lookup = buildDirectConversationLookup({ meId: alanyaID, peerId: peerID });
+    const [existing] = await pool.execute(lookup.sql, lookup.params);
 
     if (existing.length > 0) {
       const enriched = await attachParticipants(existing[0], alanyaID);
       return res.json(enriched);
     }
 
-    const [result] = await pool.execute(
-      'INSERT INTO conversation (isGroup, lastMessageAt) VALUES (0, NOW())'
+    // Transaction : sans elle, l'échec du second INSERT laissait une
+    // conversation orpheline (aucun rollback) que la recherche ci-dessus
+    // retrouvait ensuite comme si elle était valide.
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    const [result] = await conn.execute(
+      'INSERT INTO conversation (isGroup, GroupName, lastMessageAt) VALUES (0, ?, NOW())',
+      [isSelf ? SELF_CHAT_MARKER : null]
     );
     const conversID = result.insertId;
 
-    await pool.execute(
-      'INSERT INTO conv_participants (conversID, alanyaID) VALUES (?, ?)',
-      [conversID, alanyaID]
-    );
-    await pool.execute(
-      'INSERT INTO conv_participants (conversID, alanyaID) VALUES (?, ?)',
-      [conversID, participantID]
-    );
+    // `uq_conv_user (conversID, alanyaID)` interdit deux lignes identiques :
+    // une conversation avec soi-même n'a donc qu'un seul participant.
+    const participantIds = isSelf ? [alanyaID] : [alanyaID, peerID];
+    for (const id of participantIds) {
+      await conn.execute(
+        'INSERT INTO conv_participants (conversID, alanyaID) VALUES (?, ?)',
+        [conversID, id]
+      );
+    }
+
+    await conn.commit();
 
     const [rows] = await pool.execute(
       'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
@@ -205,14 +176,19 @@ const createConversation = async (req, res) => {
     // Notifier l'autre participant en temps réel. Émission vers la room
     // `user_<id>` (rejointe à l'auth) plutôt qu'un socket-id précis : robuste
     // aux reconnexions / multi-onglets où le socket-id mémorisé est périmé.
+    // Pour un self-chat, `peerID` vaut ma propre room : les autres appareils du
+    // compte reçoivent la conversation sans traitement particulier.
     const io = req.app.get('io');
     if (io) {
-      io.to(`user_${parseInt(participantID)}`).emit('conversation:created', enriched);
+      io.to(`user_${peerID}`).emit('conversation:created', enriched);
     }
 
     res.json(enriched);
   } catch (error) {
+    if (conn) await conn.rollback();
     throw error;
+  } finally {
+    if (conn) conn.release();
   }
 };
 
@@ -264,21 +240,25 @@ const createGroup = async (req, res) => {
   }
 };
 
+// PUT /conversations/:id — flags PAR UTILISATEUR uniquement (épinglage,
+// archivage), stockés dans conv_participants. Sous `requireParticipant`.
+//
+// Cette route acceptait aussi GroupName / groupPhoto, et les écrivait SANS
+// aucune vérification d'appartenance : n'importe quel compte authentifié
+// pouvait renommer ou rephotographier n'importe quel groupe du système. Les
+// infos de groupe sont désormais sur PATCH /:id/group, qui porte sa propre
+// règle d'autorisation. Aucun client n'envoyait ces champs par ici.
 const updateConversation = async (req, res) => {
   try {
     const { id } = req.params;
     const { isPinned, isArchived, GroupName, groupPhoto } = req.body;
     const alanyaID = req.user.alanyaID;
 
-    const updates = [];
-    const values = [];
-
-    if (GroupName) { updates.push('GroupName = ?'); values.push(GroupName); }
-    if (groupPhoto !== undefined) { updates.push('groupPhoto = ?'); values.push(groupPhoto); }
-
-    if (updates.length > 0) {
-      values.push(id);
-      await pool.execute(`UPDATE conversation SET ${updates.join(', ')} WHERE conversID = ?`, values);
+    if (GroupName !== undefined || groupPhoto !== undefined) {
+      return res.status(400).json({
+        error: 'Utiliser PATCH /conversations/:id/group pour les infos du groupe',
+        code: 'USE_GROUP_ENDPOINT',
+      });
     }
 
     if (typeof isPinned === 'number') {

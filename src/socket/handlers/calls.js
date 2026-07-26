@@ -3,6 +3,7 @@ const { notifyIncomingCall, notifyGroupCall, notifyCallEnded } = require('../../
 const { maxParticipants, maxInvitees } = require('../../constants/participantLimits');
 const { isBlockedEitherWay } = require('../../utils/blockUtils');
 const { getClientIp, parseCallMode } = require('../../utils/clientIp');
+const { buildDirectConversationLookup } = require('../../utils/directConversation');
 const pendingCalls = require('../state/pendingCalls');
 const callState = require('../state/callState');
 const { emitToUser, isUserOnline } = require('../../utils/userSocketRegistry');
@@ -23,6 +24,7 @@ const { emitToUser, isUserOnline } = require('../../utils/userSocketRegistry');
 //   call_rejected { callId? }
 //   call_ended    { callId? }
 //   call_failed   { reason, code? }                     — erreur (hors-ligne, données invalides…)
+//                 code CALL_SELF : la cible est l'appelant lui-même.
 //   call_busy     { callId, targetId, reason:'busy' }   — cible déjà ringing / in_call
 //   call_no_answer{ callId, targetId, reason:'no_answer' } — timeout serveur sans réponse
 //   ice_candidate { candidate }
@@ -52,29 +54,37 @@ function getRoomParticipants(room) {
 }
 
 // Récupère (ou crée) la conversation 1-à-1 entre deux utilisateurs.
+// Renvoie null si les deux identifiants sont identiques : un appel ne peut pas
+// être dirigé vers soi-même, et créer une conv « à soi » ici la ferait passer
+// pour une conversation d'appel.
 async function getOrCreateDirectConversation(userA, userB) {
-  const [existing] = await pool.execute(
-    `SELECT c.conversID FROM conversation c
-     JOIN conv_participants cp1 ON c.conversID = cp1.conversID
-     JOIN conv_participants cp2 ON c.conversID = cp2.conversID
-     WHERE cp1.alanyaID = ? AND cp2.alanyaID = ? AND c.isGroup = 0
-     ORDER BY (SELECT COUNT(*) FROM message m
-               WHERE m.conversationID = c.conversID AND m.isDeleted = 0) DESC,
-              c.lastMessageAt DESC, c.conversID DESC
-     LIMIT 1`,
-    [userA, userB]
-  );
+  if (Number(userA) === Number(userB)) return null;
+
+  const lookup = buildDirectConversationLookup({ meId: userA, peerId: userB });
+  const [existing] = await pool.execute(lookup.sql, lookup.params);
   if (existing.length > 0) return existing[0].conversID;
 
-  const [result] = await pool.execute(
-    'INSERT INTO conversation (isGroup, lastMessageAt) VALUES (0, NOW())'
-  );
-  const conversID = result.insertId;
-  await pool.execute(
-    'INSERT INTO conv_participants (conversID, alanyaID) VALUES (?, ?), (?, ?)',
-    [conversID, userA, conversID, userB]
-  );
-  return conversID;
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [result] = await conn.execute(
+      'INSERT INTO conversation (isGroup, lastMessageAt) VALUES (0, NOW())'
+    );
+    const conversID = result.insertId;
+    for (const id of [userA, userB]) {
+      await conn.execute(
+        'INSERT INTO conv_participants (conversID, alanyaID) VALUES (?, ?)',
+        [conversID, id]
+      );
+    }
+    await conn.commit();
+    return conversID;
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 // Appelée dès qu'un appel atteint un état terminal (terminé / refusé).
@@ -100,17 +110,21 @@ async function finalizeCallAndNotify(io, userSockets, callID) {
 
     const conversID = await getOrCreateDirectConversation(idCaller, idReceiver);
 
-    const isVideo = call.type === 1;
-    const lastMessageType = isVideo ? 6 : 5; // 5=appel audio, 6=appel vidéo (réservés)
-    const preview = isVideo ? '📹 Appel vidéo' : '📞 Appel vocal';
+    // conversID null (auto-appel) : pas d'aperçu à mettre à jour, mais on
+    // notifie quand même le journal d'appels.
+    if (conversID != null) {
+      const isVideo = call.type === 1;
+      const lastMessageType = isVideo ? 6 : 5; // 5=appel audio, 6=appel vidéo (réservés)
+      const preview = isVideo ? '📹 Appel vidéo' : '📞 Appel vocal';
 
-    await pool.execute(
-      `UPDATE conversation
-       SET lastMessage = ?, lastMessageAt = NOW(),
-           lastMessageSenderID = ?, lastMessageType = ?
-       WHERE conversID = ?`,
-      [preview, idCaller, lastMessageType, conversID]
-    );
+      await pool.execute(
+        `UPDATE conversation
+         SET lastMessage = ?, lastMessageAt = NOW(),
+             lastMessageSenderID = ?, lastMessageType = ?
+         WHERE conversID = ?`,
+        [preview, idCaller, lastMessageType, conversID]
+      );
+    }
 
     const payload = { conversationID: conversID, call };
     for (const uid of [idCaller, idReceiver]) {
@@ -271,6 +285,14 @@ const callUser = (io, socket, userSockets) => {
       if (!targetID || !offer) {
         console.warn('[Socket call_user] ** Données invalides', { targetID, offerExists: !!offer });
         socket.emit('call_failed', { reason: 'Données d\'appel invalides' });
+        return;
+      }
+
+      // Auto-appel : à refuser avant isBlockedEitherWay, qui renvoie false pour
+      // une paire identique et laisserait passer l'appel.
+      if (targetID === callerID) {
+        console.warn(`[Socket call_user] ** Auto-appel refusé: user=${callerID}`);
+        socket.emit('call_failed', { reason: 'Appel impossible', code: 'CALL_SELF' });
         return;
       }
 

@@ -3,6 +3,8 @@
  * Replaces N+1 attachParticipantsMany with ≤ 3 SQL queries.
  */
 
+const { isSelfChatRow } = require('./directConversation');
+
 /**
  * @param {import('mysql2/promise').Pool} pool
  * @param {object[]} rows conversation rows
@@ -40,7 +42,7 @@ async function attachParticipantsBatch(pool, rows, viewerId, sanitizeUrl) {
   // Peer IDs des convs 1-1 (pour blockStatus)
   const peerIds = new Set();
   for (const row of rows) {
-    if (row.isGroup || viewerId == null) continue;
+    if (row.isGroup || isSelfChatRow(row) || viewerId == null) continue;
     const parts = byConv.get(Number(row.conversID)) || [];
     for (const p of parts) {
       if (Number(p.alanyaID) !== Number(viewerId)) {
@@ -111,9 +113,11 @@ async function attachParticipantsBatch(pool, rows, viewerId, sanitizeUrl) {
         last_seen: lastSeen,
       });
 
+      // Pas de blockStatus sur une conversation avec soi-même : aucun pair.
       if (
         viewerId != null &&
         !row.isGroup &&
+        !isSelfChatRow(row) &&
         subjectId !== Number(viewerId)
       ) {
         const pair = blockByPeer.get(subjectId) || {

@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { isSelfChatRow } = require('./directConversation');
 
 /** true si blockerId a bloqué targetId */
 const isBlockedBy = async (blockerId, targetId) => {
@@ -50,10 +51,16 @@ const getBlockDate = async (blockerId, targetId) => {
   return rows.length ? rows[0].dateBlock : null;
 };
 
-/** Autre participant d'une conv. 1-1, ou null si groupe / introuvable */
+/**
+ * Autre participant d'une conv. 1-1, ou null si groupe / self-chat / introuvable.
+ *
+ * Une conversation avec soi-même n'a pas de pair : elle est donc traitée comme
+ * « non directe » et échappe à toute la politique de blocage, ce qui est le
+ * comportement voulu (on ne se bloque pas soi-même).
+ */
 const getDirectConversationPeer = async (conversationID, userId) => {
   const [rows] = await pool.execute(
-    `SELECT c.isGroup,
+    `SELECT c.isGroup, c.GroupName,
             (SELECT COUNT(*) FROM conv_participants p
              WHERE p.conversID = c.conversID AND p.alanyaID != ?) AS peerCount,
             (SELECT p.alanyaID FROM conv_participants p
@@ -65,6 +72,7 @@ const getDirectConversationPeer = async (conversationID, userId) => {
     [userId, userId, conversationID],
   );
   if (!rows.length || rows[0].isGroup) return null;
+  if (isSelfChatRow(rows[0])) return null;
   if (Number(rows[0].peerCount) !== 1) return null;
   const peerId = rows[0].peerId;
   return peerId != null ? Number(peerId) : null;
