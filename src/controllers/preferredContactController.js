@@ -23,11 +23,15 @@ const getPreferredContacts = async (req, res) => {
          u.nom,
          u.pseudo,
          u.alanyaPhone,
+         u.idPays,
          u.avatar_url,
          u.is_online,
-         u.last_seen
+         u.last_seen,
+         p.libelle AS pays_libelle,
+         p.prefix AS pays_prefix
        FROM preferredContact pc
        JOIN users u ON pc.idFriend = u.alanyaID
+       LEFT JOIN pays p ON u.idPays = p.idPays
        WHERE pc.alanyaID = ?
        ORDER BY u.nom ASC`,
       [alanyaID]
@@ -45,6 +49,9 @@ const getPreferredContacts = async (req, res) => {
         nom:           r.nom,
         pseudo:        r.pseudo,
         alanyaPhone:   r.alanyaPhone,
+        idPays:        r.idPays,
+        pays_libelle:  r.pays_libelle,
+        pays_prefix:   r.pays_prefix,
         avatar_url:    sanitizeUrl(r.avatar_url),
         is_online:     masked.is_online,
         last_seen:     masked.last_seen,

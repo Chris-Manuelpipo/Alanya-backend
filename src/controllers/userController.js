@@ -18,7 +18,7 @@ const getUserById = async (req, res) => {
     const targetId = parseInt(id, 10);
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
-              u.avatar_url, u.is_online, u.last_seen,
+              u.avatar_url, u.type_compte, u.is_online, u.last_seen,
               p.libelle AS pays_libelle, p.prefix AS pays_prefix
          FROM users u
          LEFT JOIN pays p ON u.idPays = p.idPays
@@ -51,7 +51,12 @@ const getUserByPhone = async (req, res) => {
     const { phone } = req.params;
     const canonical = normalize(phone);
     const [rows] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, avatar_url, is_online FROM users WHERE alanyaPhone = ? AND exclus = 0',
+      `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
+              u.avatar_url, u.is_online,
+              p.libelle AS pays_libelle, p.prefix AS pays_prefix
+         FROM users u
+         LEFT JOIN pays p ON u.idPays = p.idPays
+        WHERE u.alanyaPhone = ? AND u.exclus = 0`,
       [canonical]
     );
 
@@ -75,21 +80,29 @@ const searchUsers = async (req, res) => {
     const trimmed = String(q).trim();
     let rows;
 
+    // Le pays voyage avec l'utilisateur : sans lui, la fiche contact ne peut
+    // l'afficher qu'après un aller-retour supplémentaire sur /users/:id.
     if (isNumericQuery(trimmed)) {
       const canonical = normalize(trimmed);
       [rows] = await pool.execute(
-        `SELECT alanyaID, nom, pseudo, alanyaPhone, avatar_url, is_online
-         FROM users
-         WHERE alanyaPhone = ? AND exclus = 0
-         LIMIT 20`,
+        `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
+                u.avatar_url, u.is_online,
+                p.libelle AS pays_libelle, p.prefix AS pays_prefix
+           FROM users u
+           LEFT JOIN pays p ON u.idPays = p.idPays
+          WHERE u.alanyaPhone = ? AND u.exclus = 0
+          LIMIT 20`,
         [canonical]
       );
     } else {
       [rows] = await pool.execute(
-        `SELECT alanyaID, nom, pseudo, alanyaPhone, avatar_url, is_online
-         FROM users
-         WHERE (nom = ? OR pseudo = ?) AND exclus = 0
-         LIMIT 20`,
+        `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
+                u.avatar_url, u.is_online,
+                p.libelle AS pays_libelle, p.prefix AS pays_prefix
+           FROM users u
+           LEFT JOIN pays p ON u.idPays = p.idPays
+          WHERE (u.nom = ? OR u.pseudo = ?) AND u.exclus = 0
+          LIMIT 20`,
         [trimmed, trimmed]
       );
     }
@@ -164,12 +177,16 @@ const getBlockedUsers = async (req, res) => {
          u.nom,
          u.pseudo,
          u.alanyaPhone,
+         u.idPays,
          u.avatar_url,
          u.is_online,
          u.last_seen,
+         p.libelle AS pays_libelle,
+         p.prefix AS pays_prefix,
          b.dateBlock
        FROM blocked b
        JOIN users u ON b.idCallerBlock = u.alanyaID
+       LEFT JOIN pays p ON u.idPays = p.idPays
        WHERE b.alanyaID = ?
        ORDER BY b.dateBlock DESC, u.nom ASC`,
       [alanyaID]
@@ -181,6 +198,9 @@ const getBlockedUsers = async (req, res) => {
         nom: r.nom,
         pseudo: r.pseudo,
         alanyaPhone: r.alanyaPhone,
+        idPays: r.idPays,
+        pays_libelle: r.pays_libelle,
+        pays_prefix: r.pays_prefix,
         avatar_url: sanitizeUrl(r.avatar_url),
         is_online: 0,
         last_seen: null,
