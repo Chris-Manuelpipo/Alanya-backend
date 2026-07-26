@@ -382,20 +382,26 @@ const deleteConversation = async (req, res) => {
   }
 };
 
-const markAsRead = async (req, res) => {
+// Sous `requireParticipant` : `req.membership` garantit que l'appelant est
+// membre, et que `:id` est un entier valide.
+//
+// `next(error)` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+// `async`, donc un `throw` ici remonte en unhandled rejection et, sous Node 24,
+// tue le process. Ce chemin est celui de l'action « Lu » de la notification,
+// app fermée : une erreur SQL transitoire suffirait à faire tomber le serveur.
+const markAsRead = async (req, res, next) => {
   try {
-    const { id } = req.params;
     const alanyaID = req.user.alanyaID;
 
     await markConversationReadBy({
-      conversationID: id,
+      conversationID: req.membership.conversID,
       readerID: alanyaID,
       io: req.app.get('io'),
     });
 
     res.json({ message: 'Marked as read' });
   } catch (error) {
-    throw error;
+    next(error);
   }
 };
 

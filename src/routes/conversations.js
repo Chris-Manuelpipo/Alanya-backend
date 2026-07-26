@@ -185,7 +185,11 @@ router.delete('/:id', auth, deleteConversation);
  *       200:
  *         description: Messages marqués comme lus
  */
-router.post('/:id/read', auth, markAsRead);
+// requireParticipant : la route écrivait `status = 3` / `readAt` sur les messages
+// de n'importe quelle conversation du système, et remettait son unreadCount à
+// zéro, sans vérifier l'appartenance. C'est le chemin appelé par l'action
+// « Lu » de la notification, app fermée, donc sans écran pour s'en apercevoir.
+router.post('/:id/read', auth, requireParticipant, markAsRead);
 router.patch('/:id/mute', auth, updateConversationMute);
 
 /**
