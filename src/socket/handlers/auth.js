@@ -57,6 +57,10 @@ const socketAuth = (io, socket, userSockets) => {
 function _registerSocket(socket, alanyaID, userSockets, io) {
   socket.alanyaID      = alanyaID;
   socket.authenticated = true;
+  // Une socket authentifiée n'est PAS en ligne tant qu'elle ne l'a pas déclaré
+  // via `presence:online` : l'app peut se (re)connecter en arrière-plan, par
+  // exemple réveillée par une push d'appel.
+  socket.isForeground  = false;
 
   registerUserSocket(userSockets, alanyaID, socket.id);
   socket.join(`user_${alanyaID}`);

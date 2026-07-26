@@ -47,6 +47,26 @@ function isUserOnline(io, alanyaID) {
   return !!(room && room.size > 0);
 }
 
+/**
+ * Vrai si AU MOINS UNE socket du compte se déclare au premier plan.
+ *
+ * C'est la définition de la présence « en ligne » : une socket ouverte ne
+ * suffit pas (l'app peut être en arrière-plan tout en gardant sa socket), il
+ * faut que le client l'ait explicitement signalé via `presence:online`.
+ * L'agrégation sur toute la room gère le multi-appareil : un téléphone qui
+ * passe en arrière-plan ne doit pas éteindre la présence si la tablette est
+ * encore active.
+ */
+function hasForegroundSocket(io, alanyaID) {
+  if (!io?.sockets?.adapter?.rooms) return false;
+  const room = io.sockets.adapter.rooms.get(`user_${Number(alanyaID)}`);
+  if (!room) return false;
+  for (const sid of room) {
+    if (io.sockets.sockets.get(sid)?.isForeground === true) return true;
+  }
+  return false;
+}
+
 /** device_id des sockets authentifiés dans user_{alanyaID}. */
 function getConnectedDeviceIds(io, alanyaID) {
   const ids = new Set();
@@ -66,6 +86,7 @@ module.exports = {
   registerUserSocket,
   unregisterUserSocket,
   hasUserSockets,
+  hasForegroundSocket,
   emitToUser,
   isUserOnline,
   getConnectedDeviceIds,

@@ -5,59 +5,74 @@ const meetingMuteStates = require('../../state/meetingMuteStates');
 const callState = require('../../state/callState');
 const { endActiveCallForUser } = require('../calls');
 const {
-  registerUserSocket,
   unregisterUserSocket,
+  hasForegroundSocket,
 } = require('../../../utils/userSocketRegistry');
 
-const presenceOnline = (io, socket, userSockets) => {
-  socket.on('presence:online', async (data) => {
-    const userID = typeof data === 'object' ? data.userID : data;
-    if (!userID) return;
+/**
+ * Dernier état diffusé par utilisateur, pour ne pas réécrire en base ni
+ * rediffuser quand rien n'a changé. `emitPresenceUpdate` fait un `io.emit`
+ * global : sans ce garde-fou, chaque bascule d'app d'un seul utilisateur
+ * inonderait tous les clients connectés.
+ */
+const _lastBroadcast = new Map();
 
-    registerUserSocket(userSockets, Number(userID), socket.id);
-    socket.alanyaID = Number(userID);
+/**
+ * Recalcule la présence d'un compte à partir de ses sockets et diffuse le
+ * changement s'il y en a un.
+ *
+ * « En ligne » ⇔ au moins une socket du compte se déclare au premier plan.
+ * Une socket ouverte ne suffit pas : l'app la garde en arrière-plan pour
+ * continuer à recevoir messages et appels.
+ */
+const syncPresence = async (io, alanyaID) => {
+  const uid = Number(alanyaID);
+  if (!uid) return;
 
-    try {
-      await pool.execute(
-        'UPDATE users SET is_online = 1, last_seen = NOW() WHERE alanyaID = ?',
-        [userID],
-      );
-    } catch (e) {
-      console.warn('[Socket presence:online] DB update failed:', e.message);
-    }
+  const online = hasForegroundSocket(io, uid);
+  if (_lastBroadcast.get(uid) === online) return;
+  _lastBroadcast.set(uid, online);
 
-    await emitPresenceUpdate(io, userID, {
-      userID: Number(userID),
-      online: true,
-      lastSeen: new Date().toISOString(),
-    });
+  const lastSeen = new Date();
+  try {
+    await pool.execute(
+      'UPDATE users SET is_online = ?, last_seen = NOW() WHERE alanyaID = ?',
+      [online ? 1 : 0, uid],
+    );
+  } catch (e) {
+    console.error('[Socket presence] DB update failed:', e.code || '', e.message);
+  }
+
+  await emitPresenceUpdate(io, uid, {
+    userID: uid,
+    online,
+    lastSeen: lastSeen.toISOString(),
+  });
+
+  // Compte totalement déconnecté : ne pas garder d'entrée résiduelle.
+  if (!online && !io.sockets.adapter.rooms.get(`user_${uid}`)) {
+    _lastBroadcast.delete(uid);
+  }
+};
+
+const presenceOnline = (io, socket) => {
+  socket.on('presence:online', async () => {
+    // On ignore le `userID` fourni par le client : seul le JWT fait foi,
+    // sinon n'importe quelle socket pourrait mettre n'importe qui en ligne.
+    if (!socket.authenticated || !socket.alanyaID) return;
+    socket.isForeground = true;
+    await syncPresence(io, socket.alanyaID);
   });
 };
 
-const presenceOffline = (io, socket, userSockets) => {
-  socket.on('presence:offline', async (data) => {
-    const userID = typeof data === 'object' ? data.userID : data;
-    if (!userID) return;
-
-    const uid = Number(userID);
-    const lastSocket = unregisterUserSocket(userSockets, uid, socket.id);
-
-    if (!lastSocket) return;
-
-    try {
-      await pool.execute(
-        'UPDATE users SET is_online = 0, last_seen = NOW() WHERE alanyaID = ?',
-        [userID],
-      );
-    } catch (e) {
-      console.warn('[Socket presence:offline] DB update failed:', e.message);
-    }
-
-    await emitPresenceUpdate(io, userID, {
-      userID: uid,
-      online: false,
-      lastSeen: new Date().toISOString(),
-    });
+const presenceOffline = (io, socket) => {
+  socket.on('presence:offline', async () => {
+    if (!socket.authenticated || !socket.alanyaID) return;
+    // Passer en arrière-plan n'est PAS une déconnexion : la socket reste
+    // enregistrée (routage des appels, réception des messages), seul son
+    // drapeau premier plan tombe.
+    socket.isForeground = false;
+    await syncPresence(io, socket.alanyaID);
   });
 };
 
@@ -124,22 +139,10 @@ const handleDisconnect = async (io, socket, userSockets) => {
     socket.currentMeetingID = null;
   }
 
-  if (!lastSocket) return;
-
-  try {
-    await pool.execute(
-      'UPDATE users SET is_online = 0, last_seen = NOW() WHERE alanyaID = ?',
-      [userID],
-    );
-  } catch (e) {
-    console.warn('[Socket disconnect] DB update failed:', e.message);
-  }
-
-  await emitPresenceUpdate(io, userID, {
-    userID: Number(userID),
-    online: false,
-    lastSeen: new Date().toISOString(),
-  });
+  // À ce stade la socket a déjà quitté ses rooms : `syncPresence` ne voit que
+  // les sockets restantes du compte, et ne passe hors ligne que si aucune
+  // d'elles n'est au premier plan.
+  await syncPresence(io, userID);
 };
 
-module.exports = { presenceOnline, presenceOffline, handleDisconnect };
+module.exports = { presenceOnline, presenceOffline, handleDisconnect, syncPresence };

@@ -151,9 +151,30 @@ io.on('connection', (socket) => {
   });
 });
 
+/**
+ * La présence vit dans la mémoire du process (registre des sockets). Après un
+ * crash ou un redéploiement, ce registre est vide mais les lignes
+ * `users.is_online = 1` survivent : sans ce ménage, ces comptes resteraient
+ * « en ligne » indéfiniment, y compris dans les statistiques admin.
+ */
+const resetStalePresence = async () => {
+  try {
+    const pool = require('./src/config/db');
+    const [res] = await pool.execute(
+      'UPDATE users SET is_online = 0 WHERE is_online = 1',
+    );
+    if (res.affectedRows > 0) {
+      console.log(`[Presence] ${res.affectedRows} présence(s) fantôme(s) nettoyée(s) au démarrage`);
+    }
+  } catch (e) {
+    console.error('[Presence] reset au démarrage échoué:', e.code || '', e.message);
+  }
+};
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Serveur en marche sur le port ${PORT}`);
+  resetStalePresence();
   startMeetingScheduler();
 });
 
