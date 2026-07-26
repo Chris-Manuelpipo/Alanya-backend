@@ -178,6 +178,25 @@ server.listen(PORT, () => {
   startMeetingScheduler();
 });
 
+// Filet de dernier recours. Express 4 ne capture PAS le rejet d'un handler
+// `async` : toute erreur non rattrapée y remonte en unhandled rejection, et
+// Node >= 18 termine le process par défaut. Une seule requête malformée
+// suffisait donc à tuer le serveur entier — toutes les sockets tombent, tous
+// les appels en cours coupent.
+//
+// Les handlers doivent passer par `next(error)` pour atteindre `errorHandler` ;
+// ceci ne les en dispense pas, mais garantit qu'un oubli dégrade une requête
+// au lieu d'abattre le service. La trace est complète pour que l'oubli se
+// corrige.
+process.on('unhandledRejection', (reason) => {
+  console.error('[UnhandledRejection] requête dégradée, process préservé :',
+    reason instanceof Error ? reason.stack : reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[UncaughtException]', err?.stack || err);
+});
+
 process.on('SIGINT', () => {
   console.log('Arrêt du serveur...');
   stopMeetingScheduler();

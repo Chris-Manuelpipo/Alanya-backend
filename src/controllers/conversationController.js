@@ -246,7 +246,7 @@ const createConversation = async (req, res) => {
   }
 };
 
-const createGroup = async (req, res) => {
+const createGroup = async (req, res, next) => {
   try {
     const { participantIDs, groupName, groupPhoto, description } = req.body;
     const alanyaID = req.user.alanyaID;
@@ -276,7 +276,25 @@ const createGroup = async (req, res) => {
       [conversID, alanyaID]
     );
 
-    for (const pid of participantIDs) {
+    // Mêmes garde-fous qu'addParticipants : un id inconnu violerait fk_cp_user
+    // et l'erreur tuerait le process, en laissant au passage un groupe à demi
+    // créé (il n'y a pas de transaction ici).
+    const demandes = [...new Set(participantIDs
+      .map((p) => parseInt(p, 10))
+      .filter((p) => Number.isInteger(p) && p > 0 && p <= 2147483647
+                     && p !== Number(alanyaID)))];
+    let membres = [];
+    if (demandes.length > 0) {
+      const ph = demandes.map(() => '?').join(',');
+      const [rows] = await pool.execute(
+        `SELECT alanyaID FROM users WHERE alanyaID IN (${ph}) AND exclus = 0`,
+        demandes,
+      );
+      const valides = new Set(rows.map((r) => Number(r.alanyaID)));
+      membres = demandes.filter((p) => valides.has(p));
+    }
+
+    for (const pid of membres) {
       await pool.execute(
         'INSERT INTO conv_participants (conversID, alanyaID, role) VALUES (?, ?, 0)',
         [conversID, pid]
@@ -293,8 +311,8 @@ const createGroup = async (req, res) => {
     // robuste aux reconnexions vs socket-id mémorisé périmé).
     const io = req.app.get('io');
     if (io) {
-      for (const pid of participantIDs) {
-        io.to(`user_${parseInt(pid)}`).emit('conversation:created', enriched);
+      for (const pid of membres) {
+        io.to(`user_${pid}`).emit('conversation:created', enriched);
       }
     }
 
@@ -310,7 +328,10 @@ const createGroup = async (req, res) => {
 
     res.json(enriched);
   } catch (error) {
-    throw error;
+    // `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+    // `async`. L'erreur remontait en unhandled rejection et tuait le PROCESS
+    // sans jamais atteindre `errorHandler` — une seule requête suffisait.
+    next(error);
   }
 };
 
@@ -322,7 +343,7 @@ const createGroup = async (req, res) => {
 // pouvait renommer ou rephotographier n'importe quel groupe du système. Les
 // infos de groupe sont désormais sur PATCH /:id/group, qui porte sa propre
 // règle d'autorisation. Aucun client n'envoyait ces champs par ici.
-const updateConversation = async (req, res) => {
+const updateConversation = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { isPinned, isArchived, GroupName, groupPhoto } = req.body;
@@ -349,11 +370,14 @@ const updateConversation = async (req, res) => {
     const enriched = await attachParticipants(rows[0], alanyaID);
     res.json(enriched);
   } catch (error) {
-    throw error;
+    // `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+    // `async`. L'erreur remontait en unhandled rejection et tuait le PROCESS
+    // sans jamais atteindre `errorHandler` — une seule requête suffisait.
+    next(error);
   }
 };
 
-const deleteConversation = async (req, res) => {
+const deleteConversation = async (req, res, next) => {
   try {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
@@ -378,7 +402,10 @@ const deleteConversation = async (req, res) => {
 
     res.json({ message: 'Conversation deleted' });
   } catch (error) {
-    throw error;
+    // `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+    // `async`. L'erreur remontait en unhandled rejection et tuait le PROCESS
+    // sans jamais atteindre `errorHandler` — une seule requête suffisait.
+    next(error);
   }
 };
 
@@ -407,7 +434,7 @@ const markAsRead = async (req, res, next) => {
 
 // POST /conversations/:id/participants — ajoute des participants à un groupe.
 // L'appelant doit déjà être membre. Idempotent : ignore les IDs déjà présents.
-const addParticipants = async (req, res) => {
+const addParticipants = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { participantIDs } = req.body;
@@ -438,9 +465,24 @@ const addParticipants = async (req, res) => {
     );
     const existingIds = new Set(existing.map((r) => Number(r.alanyaID)));
 
-    const toAdd = participantIDs
+    const demandes = participantIDs
       .map((p) => parseInt(p, 10))
-      .filter((p) => !isNaN(p) && !existingIds.has(p));
+      .filter((p) => Number.isInteger(p) && p > 0 && p <= 2147483647
+                     && !existingIds.has(p));
+
+    // Filtrer sur les comptes qui EXISTENT réellement. Sans ça, un id inconnu
+    // — ou dépassant la borne d'un INT — violait fk_cp_user, et l'erreur
+    // remontait jusqu'à tuer le process (Express 4 ne capture pas le rejet
+    // d'un handler async). Une requête d'un membre ordinaire suffisait.
+    const toAdd = demandes.length === 0 ? [] : await (async () => {
+      const ph = demandes.map(() => '?').join(',');
+      const [rows] = await pool.execute(
+        `SELECT alanyaID FROM users WHERE alanyaID IN (${ph}) AND exclus = 0`,
+        demandes,
+      );
+      const valides = new Set(rows.map((r) => Number(r.alanyaID)));
+      return demandes.filter((p) => valides.has(p));
+    })();
 
     for (const pid of toAdd) {
       await pool.execute(
@@ -486,7 +528,10 @@ const addParticipants = async (req, res) => {
 
     res.json(enriched);
   } catch (error) {
-    throw error;
+    // `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+    // `async`. L'erreur remontait en unhandled rejection et tuait le PROCESS
+    // sans jamais atteindre `errorHandler` — une seule requête suffisait.
+    next(error);
   }
 };
 
@@ -510,7 +555,7 @@ async function loadEnrichedConversation(conversID, alanyaID) {
 // UTILISATEUR (épinglage, archivage) avec une règle d'autorisation différente.
 // Les avoir mélangées est exactement ce qui avait laissé n'importe quel compte
 // renommer n'importe quel groupe.
-const updateGroupInfo = async (req, res) => {
+const updateGroupInfo = async (req, res, next) => {
   try {
     const conversID = req.membership.conversID;
     const alanyaID = req.user.alanyaID;
@@ -587,13 +632,16 @@ const updateGroupInfo = async (req, res) => {
 
     res.json(enriched);
   } catch (error) {
-    throw error;
+    // `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+    // `async`. L'erreur remontait en unhandled rejection et tuait le PROCESS
+    // sans jamais atteindre `errorHandler` — une seule requête suffisait.
+    next(error);
   }
 };
 
 // PATCH /conversations/:id/settings — les deux verrous de permission.
 // Toujours réservé aux admins, contrairement à /group qui est déverrouillable.
-const updateGroupSettings = async (req, res) => {
+const updateGroupSettings = async (req, res, next) => {
   try {
     const conversID = req.membership.conversID;
     const alanyaID = req.user.alanyaID;
@@ -651,12 +699,15 @@ const updateGroupSettings = async (req, res) => {
 
     res.json(enriched);
   } catch (error) {
-    throw error;
+    // `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+    // `async`. L'erreur remontait en unhandled rejection et tuait le PROCESS
+    // sans jamais atteindre `errorHandler` — une seule requête suffisait.
+    next(error);
   }
 };
 
 // DELETE /conversations/:id/participants/:userId — retirer un membre.
-const removeParticipant = async (req, res) => {
+const removeParticipant = async (req, res, next) => {
   try {
     const conversID = req.membership.conversID;
     const alanyaID = req.user.alanyaID;
@@ -739,13 +790,16 @@ const removeParticipant = async (req, res) => {
 
     res.json({ conversID, removed: targetId });
   } catch (error) {
-    throw error;
+    // `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+    // `async`. L'erreur remontait en unhandled rejection et tuait le PROCESS
+    // sans jamais atteindre `errorHandler` — une seule requête suffisait.
+    next(error);
   }
 };
 
 // PATCH /conversations/:id/participants/:userId/role — promouvoir / rétrograder.
 // Propriétaire uniquement : un admin ne crée pas d'admin.
-const setParticipantRole = async (req, res) => {
+const setParticipantRole = async (req, res, next) => {
   try {
     const conversID = req.membership.conversID;
     const alanyaID = req.user.alanyaID;
@@ -804,11 +858,14 @@ const setParticipantRole = async (req, res) => {
     const enriched = await loadEnrichedConversation(conversID, alanyaID);
     res.json(enriched);
   } catch (error) {
-    throw error;
+    // `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+    // `async`. L'erreur remontait en unhandled rejection et tuait le PROCESS
+    // sans jamais atteindre `errorHandler` — une seule requête suffisait.
+    next(error);
   }
 };
 
-const leaveGroup = async (req, res) => {
+const leaveGroup = async (req, res, next) => {
   try {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
@@ -877,7 +934,10 @@ const leaveGroup = async (req, res) => {
 
     res.json({ message: 'Left group' });
   } catch (error) {
-    throw error;
+    // `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+    // `async`. L'erreur remontait en unhandled rejection et tuait le PROCESS
+    // sans jamais atteindre `errorHandler` — une seule requête suffisait.
+    next(error);
   }
 };
 
