@@ -111,6 +111,9 @@ const buildMessageReadSyncPayload = (input = {}) =>
     type: 'message_read_sync',
     conversationId: input.conversationId,
     msgID: input.msgID ?? '',
+    // Badge : _buildApnsConfig le transforme en aps.badge, donc les autres
+    // appareils iOS du lecteur se remettent à jour sans ouvrir l'app.
+    unreadTotal: input.unreadTotal,
   });
 
 /**

@@ -83,6 +83,12 @@ const run = () => {
   const readSync = buildMessageReadSyncPayload({ conversationId: 12, msgID: 34 });
   assert.strictEqual(readSync.type, 'message_read_sync');
   assert.strictEqual(readSync.conversationId, '12');
+  assert.ok(!('unreadTotal' in readSync), 'unreadTotal absent si non fourni');
+
+  const readSyncBadge = buildMessageReadSyncPayload({
+    conversationId: 12, msgID: 34, unreadTotal: 3,
+  });
+  assert.strictEqual(readSyncBadge.unreadTotal, '3', 'badge porté par la sync');
 
   assert.strictEqual(isV2Payload(direct), true);
   assert.strictEqual(isV2Payload(legacy), false);

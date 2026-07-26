@@ -583,9 +583,24 @@ const notifyCallEnded = async (receiverId, callerId, callerName, callId = null) 
  */
 const notifyMessageReadSync = async (alanyaID, conversationID, msgID = null) => {
   const { buildMessageReadSyncPayload } = require('../notifications/notificationContract');
+  // Total non lu APRÈS la lecture : porté dans la push pour que le badge des
+  // autres appareils iOS suive sans ouvrir l'app (aps.badge). Best-effort : la
+  // sync de lecture part même si ce SELECT échoue.
+  let unreadTotal;
+  try {
+    const pool = require('../config/db');
+    const [rows] = await pool.execute(
+      'SELECT COALESCE(SUM(unreadCount), 0) AS total FROM conv_participants WHERE alanyaID = ?',
+      [alanyaID],
+    );
+    unreadTotal = Number(rows[0]?.total ?? 0);
+  } catch (e) {
+    console.warn('[FCM message_read_sync] unreadTotal:', e.message);
+  }
   const payload = buildMessageReadSyncPayload({
     conversationId: conversationID,
     msgID,
+    unreadTotal,
   });
   await sendToUser(alanyaID, payload, getMessagePushOptions());
 };
