@@ -35,6 +35,25 @@ const markConversationReadBy = async ({
       reason: 'read',
     });
   }
+
+  // Sync de lecture vers les AUTRES appareils du lecteur, pour qu'ils retirent
+  // leur notification. `inbox:sync` ci-dessus ne touche que les appareils
+  // connectés en socket ; celui qui est fermé n'a que cette push.
+  //
+  // L'appel vivait dans le seul handler socket `message:read`, alors que le
+  // chemin qui en a le plus besoin est justement l'HTTP : c'est celui de
+  // l'action « Lu » de la notification, app fermée. Ici, les deux en profitent.
+  //
+  // `require` tardif : notificationService remonte jusqu'à ce module par
+  // transitivité, un require en tête de fichier créerait un cycle.
+  // `setImmediate` : hors du chemin critique, un échec FCM ne doit pas faire
+  // échouer la lecture.
+  setImmediate(() => {
+    const { notifyMessageReadSync } = require('../services/notificationService');
+    notifyMessageReadSync(readerID, conversationID).catch((e) =>
+      console.warn('[FCM message_read_sync]', e.message),
+    );
+  });
 };
 
 module.exports = { markConversationReadBy };

@@ -1,7 +1,6 @@
-const pool = require('../../../config/db');
 const { isBlockedBy, getCachedDirectConversationPeer } = require('../../../utils/blockUtils');
-const { notifyMessageStatus } = require('../../../utils/notifyMessageStatus');
 const { markConversationDeliveredBy } = require('../../../utils/deliveryReceiptUtils');
+const { markConversationReadBy } = require('../../../utils/readReceiptUtils');
 
 const messageDelivered = (io, socket) => {
   socket.on('message:delivered', async (data) => {
@@ -26,36 +25,15 @@ const messageRead = (io, socket) => {
     const userID = socket.alanyaID;
     if (!conversationID || !userID) return;
     try {
+      // Contrôle propre au chemin socket, absent de l'utilitaire : pas d'accusé
+      // de lecture vers quelqu'un qui m'a bloqué.
       const peerId = await getCachedDirectConversationPeer(conversationID, userID);
       if (peerId != null && await isBlockedBy(userID, peerId)) return;
 
-      await pool.execute(
-        `UPDATE message SET status = 3, readAt = NOW(),
-                deliveredAt = COALESCE(deliveredAt, NOW())
-         WHERE conversationID = ? AND senderID != ? AND status < 3`,
-        [conversationID, userID],
-      );
-      await pool.execute(
-        'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
-        [conversationID, userID],
-      );
-      await pool.execute(
-        `UPDATE conversation SET lastMessageStatus = 3
-         WHERE conversID = ? AND lastMessageSenderID <> ? AND lastMessageStatus < 3`,
-        [conversationID, userID],
-      );
-      await notifyMessageStatus(io, conversationID, 3, userID);
-      io.to(`user_${userID}`).emit('inbox:sync', {
-        conversationID: Number(conversationID),
-        unreadCount: 0,
-        reason: 'read',
-      });
-      const { notifyMessageReadSync } = require('../../../services/notificationService');
-      setImmediate(() => {
-        notifyMessageReadSync(userID, conversationID).catch((e) =>
-          console.warn('[FCM message_read_sync]', e.message),
-        );
-      });
+      // Chemin partagé avec POST /api/conversations/:id/read. Ce handler en
+      // dupliquait les trois UPDATE mot pour mot, et c'était le seul des deux à
+      // déclencher la sync de lecture multi-appareil.
+      await markConversationReadBy({ conversationID, readerID: userID, io });
     } catch (e) {
       console.error('[Socket message:read]', e.code || '', e.message);
     }

@@ -17,6 +17,7 @@ const { resolvePushTargets, resolveCallPushTargets } = require('../notifications
 const { sendVoipPush, clearVoipToken, isConfigured: isVoipConfigured } = require('../notifications/apnsVoipProvider');
 const { evaluateMessagePush, evaluateTypePush } = require('../notifications/notificationFilter');
 const { shouldUseAndroidNativeDataOnly } = require('../notifications/notificationAndroidNative');
+const { shouldUseDeviceRegistry } = require('../notifications/notificationRouting');
 
 /**
  * Push silencieuse : le destinataire a coupé ses notifications ou mis la
@@ -192,7 +193,7 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
 };
 
 const sendToUser = async (alanyaID, data = {}, options = {}) => {
-  if (DEVICE_REGISTRY_V2 && data.type === 'message' && data.conversationId) {
+  if (shouldUseDeviceRegistry(DEVICE_REGISTRY_V2, data)) {
     return sendToUserDevices(alanyaID, data, options);
   }
   return sendToUserLegacy(alanyaID, data, options);
