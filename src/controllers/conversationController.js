@@ -3,6 +3,7 @@ const { markConversationReadBy } = require('../utils/readReceiptUtils');
 const { getBlockPair, maskPresenceIfBlocked } = require('../utils/blockUtils');
 const { attachParticipantsBatch } = require('../utils/conversationParticipantsBatch');
 const { postSystemMessage, loadUserNames } = require('../utils/systemMessage');
+const { ensureGroupOwner } = require('../utils/groupOwnership');
 const {
   SELF_CHAT_MARKER,
   buildDirectConversationLookup,
@@ -364,6 +365,15 @@ const deleteConversation = async (req, res) => {
     if (remaining.length === 0) {
       await pool.execute('DELETE FROM message WHERE conversationID = ?', [id]);
       await pool.execute('DELETE FROM conversation WHERE conversID = ?', [id]);
+    } else {
+      // Cette route retire l'appelant sans regarder son rôle : un propriétaire
+      // qui « supprime » un groupe de sa liste le laissait vivant et SANS
+      // propriétaire, donc définitivement ingérable (403 GROUP_OWNER_REQUIRED
+      // pour tout le monde). Le garant rétablit la succession.
+      await ensureGroupOwner(Number(id), {
+        departingID: alanyaID,
+        io: req.app.get('io'),
+      });
     }
 
     res.json({ message: 'Conversation deleted' });
@@ -548,7 +558,6 @@ const updateGroupInfo = async (req, res) => {
       values,
     );
 
-    const enriched = await loadEnrichedConversation(conversID, alanyaID);
     const io = req.app.get('io');
 
     // Un message système PAR CHAMP réellement modifié : « X a renommé le
@@ -562,6 +571,12 @@ const updateGroupInfo = async (req, res) => {
         io,
       });
     }
+
+    // Relu APRÈS les messages système : ceux-ci réécrivent la ligne
+    // (updatedAt, lastMessage*), donc une lecture antérieure renverrait au
+    // client un corps périmé d'un cran par rapport à la trame socket — et sa
+    // garde d'ordonnancement rejetterait ensuite la trame.
+    const enriched = await loadEnrichedConversation(conversID, alanyaID);
     await emitConversationUpdated(io, conversID);
 
     res.json(enriched);
@@ -612,7 +627,6 @@ const updateGroupSettings = async (req, res) => {
       );
     }
 
-    const enriched = await loadEnrichedConversation(conversID, alanyaID);
     const io = req.app.get('io');
 
     for (const e of events) {
@@ -624,6 +638,9 @@ const updateGroupSettings = async (req, res) => {
         io,
       });
     }
+
+    // Relu après, même raison que dans updateGroupInfo.
+    const enriched = await loadEnrichedConversation(conversID, alanyaID);
     if (events.length > 0) await emitConversationUpdated(io, conversID);
 
     res.json(enriched);
@@ -762,7 +779,6 @@ const setParticipantRole = async (req, res) => {
       );
     }
 
-    const enriched = await loadEnrichedConversation(conversID, alanyaID);
     const io = req.app.get('io');
 
     // Rôle déjà en place : 200 sans message système. Le résultat voulu est
@@ -779,6 +795,7 @@ const setParticipantRole = async (req, res) => {
       await emitConversationUpdated(io, conversID);
     }
 
+    const enriched = await loadEnrichedConversation(conversID, alanyaID);
     res.json(enriched);
   } catch (error) {
     throw error;
@@ -805,7 +822,6 @@ const leaveGroup = async (req, res) => {
       return res.status(404).json({ error: 'Conversation introuvable ou non autorisée' });
     }
     const isGroup = !!me.isGroup;
-    const wasOwner = Number(me.role) === 2;
     const membersBefore = before.map((r) => Number(r.alanyaID));
 
     await pool.execute('DELETE FROM conv_participants WHERE conversID = ? AND alanyaID = ?', [id, alanyaID]);
@@ -820,28 +836,6 @@ const leaveGroup = async (req, res) => {
 
     const io = req.app.get('io');
 
-    // Succession : un groupe ne doit jamais se retrouver sans propriétaire,
-    // sinon plus personne ne peut promouvoir ni rétrograder. On prend l'admin
-    // restant le plus ancien, à défaut le membre le plus ancien — `before` est
-    // déjà trié par rôle décroissant puis ancienneté.
-    let successor = null;
-    if (isGroup && wasOwner) {
-      const candidates = before.filter(
-        (r) => Number(r.alanyaID) !== Number(alanyaID),
-      );
-      successor = candidates[0] || null;
-      if (successor) {
-        await pool.execute(
-          'UPDATE conv_participants SET role = 2 WHERE conversID = ? AND alanyaID = ?',
-          [id, successor.alanyaID],
-        );
-        await pool.execute(
-          'UPDATE conversation SET createdBy = ? WHERE conversID = ?',
-          [successor.alanyaID, id],
-        );
-      }
-    }
-
     if (isGroup) {
       await postSystemMessage({
         conversationID: Number(id),
@@ -853,16 +847,11 @@ const leaveGroup = async (req, res) => {
         notifyExtra: [alanyaID],
       });
 
-      if (successor) {
-        const names = await loadUserNames([successor.alanyaID]);
-        await postSystemMessage({
-          conversationID: Number(id),
-          actorID: alanyaID,
-          event: 'role_changed',
-          payload: { ids: names.ids, names: names.names, role: 2 },
-          io,
-        });
-      }
+      // Succession, déléguée au garant partagé — les trois autres chemins de
+      // sortie l'appellent aussi. Il constate l'absence de propriétaire plutôt
+      // que de la prédire, donc l'appel est sûr même si l'appelant n'était pas
+      // propriétaire.
+      await ensureGroupOwner(Number(id), { departingID: alanyaID, io });
 
       if (io) {
         const payload = {
@@ -1010,6 +999,17 @@ const batchDeleteConversations = async (req, res) => {
     }
 
     await conn.commit();
+
+    // Même trou que deleteConversation, en lot : la suppression ne regarde pas
+    // le rôle, donc un propriétaire pouvait laisser derrière lui un groupe sans
+    // aucun role=2. APRÈS le commit — le garant lit l'état réel via le pool, et
+    // son échec ne doit pas annuler une suppression déjà validée.
+    const io = req.app.get('io');
+    const survivants = ids.filter((id) => !orphanIDs.includes(id));
+    for (const convID of survivants) {
+      await ensureGroupOwner(convID, { departingID: alanyaID, io });
+    }
+
     res.json({ deleted: ids.length });
   } catch (error) {
     await conn.rollback();

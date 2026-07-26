@@ -1,4 +1,5 @@
 const pool = require('../../config/db');
+const { ensureGroupOwner } = require('../../utils/groupOwnership');
 const { _notifyUserAccountAction } = require('./helpers');
 
 // Utilisateurs (liste complète, détails, bannissement, rôle, suppression…)
@@ -236,7 +237,29 @@ const deleteUser = async (req, res) => {
       'SELECT email, nom FROM users WHERE alanyaID = ?',
       [id]
     );
+    // Groupes dont ce compte est membre, lus AVANT la suppression : le
+    // ON DELETE CASCADE de fk_cp_user va effacer ses lignes conv_participants,
+    // et si c'était le propriétaire, le groupe se retrouverait sans role=2 —
+    // donc ingérable, plus personne ne pouvant promouvoir. fk_conv_created_by
+    // met en plus createdBy à NULL.
+    const [groupesDuCompte] = await pool.execute(
+      `SELECT cp.conversID
+         FROM conv_participants cp
+         JOIN conversation c ON c.conversID = cp.conversID
+        WHERE cp.alanyaID = ? AND c.isGroup = 1`,
+      [id],
+    );
+
     const [result] = await pool.execute('DELETE FROM users WHERE alanyaID = ?', [id]);
+
+    // Après la cascade : le garant constate l'absence de propriétaire et
+    // désigne le membre restant le plus ancien.
+    for (const g of groupesDuCompte) {
+      await ensureGroupOwner(Number(g.conversID), {
+        departingID: Number(id),
+        io: req.app.get('io'),
+      });
+    }
     if (result.affectedRows === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
     _notifyUserAccountAction({
       email: users[0]?.email,
