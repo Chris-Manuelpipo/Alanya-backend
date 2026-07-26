@@ -16,6 +16,18 @@
 -- ⚠️ Le BACKFILL en fin de fichier n'est PAS optionnel : sans lui, tous les
 -- groupes existants se retrouvent sans propriétaire, donc ingérables.
 
+-- ── 0. Filet : colonnes de la 022 ────────────────────────────
+--
+-- `GET /conversations` va désormais projeter mutedUntil / muteForever /
+-- mentionsOnly (l'app doit pouvoir afficher l'état de sourdine hors ligne).
+-- Sur une base où la 022 n'aurait pas été appliquée, la LISTE DES
+-- CONVERSATIONS entière tomberait en ER_BAD_FIELD_ERROR — bien pire que la
+-- dégradation locale que conversationController gérait jusqu'ici en try/catch.
+-- On les repose donc ici, idempotemment.
+ALTER TABLE conv_participants ADD COLUMN mutedUntil DATETIME NULL;
+ALTER TABLE conv_participants ADD COLUMN muteForever TINYINT NOT NULL DEFAULT 0;
+ALTER TABLE conv_participants ADD COLUMN mentionsOnly TINYINT NOT NULL DEFAULT 0;
+
 -- ── 1. Rôles ─────────────────────────────────────────────────
 
 ALTER TABLE conv_participants

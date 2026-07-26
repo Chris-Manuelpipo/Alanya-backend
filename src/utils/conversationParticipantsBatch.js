@@ -24,8 +24,8 @@ async function attachParticipantsBatch(pool, rows, viewerId, sanitizeUrl) {
 
   // 1) Tous les participants en une requête
   const [partRows] = await pool.execute(
-    `SELECT cp.conversID, u.alanyaID, u.nom, u.pseudo, u.avatar_url,
-            u.alanyaPhone, u.is_online, u.last_seen
+    `SELECT cp.conversID, cp.role, cp.joinedAt, u.alanyaID, u.nom, u.pseudo,
+            u.avatar_url, u.alanyaPhone, u.is_online, u.last_seen
      FROM conv_participants cp
      JOIN users u ON cp.alanyaID = u.alanyaID
      WHERE cp.conversID IN (${placeholders})`,
@@ -111,6 +111,8 @@ async function attachParticipantsBatch(pool, rows, viewerId, sanitizeUrl) {
         alanyaPhone: p.alanyaPhone,
         is_online: isOnline,
         last_seen: lastSeen,
+        role: Number(p.role) || 0,
+        joinedAt: p.joinedAt,
       });
 
       // Pas de blockStatus sur une conversation avec soi-même : aucun pair.

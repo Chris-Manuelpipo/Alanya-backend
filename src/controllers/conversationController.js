@@ -25,7 +25,8 @@ async function attachParticipants(conversationRow, viewerId = null) {
   if (!conversationRow) return conversationRow;
   const [parts] = await pool.execute(
     `SELECT u.alanyaID, u.nom, u.pseudo, u.avatar_url,
-            u.alanyaPhone, u.is_online, u.last_seen
+            u.alanyaPhone, u.is_online, u.last_seen,
+            cp.role, cp.joinedAt
      FROM conv_participants cp
      JOIN users u ON cp.alanyaID = u.alanyaID
      WHERE cp.conversID = ?`,
@@ -45,6 +46,8 @@ async function attachParticipants(conversationRow, viewerId = null) {
       alanyaPhone: p.alanyaPhone,
       is_online:   masked.is_online,
       last_seen:   masked.last_seen,
+      role:        Number(p.role) || 0,
+      joinedAt:    p.joinedAt,
     });
 
     // Pas de blockStatus sur une conversation avec soi-même : il n'y a pas de
@@ -78,6 +81,7 @@ const getConversations = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const [rows] = await pool.execute(
       `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived,
+              cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly,
               COALESCE(mc.cnt, 0) AS messageCount
        FROM conversation c
        JOIN conv_participants cp ON c.conversID = cp.conversID
@@ -104,7 +108,8 @@ const getConversationById = async (req, res) => {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
     const [rows] = await pool.execute(
-      `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived
+      `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived,
+              cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly
        FROM conversation c
        JOIN conv_participants cp ON c.conversID = cp.conversID
        WHERE c.conversID = ? AND cp.alanyaID = ?`,
@@ -168,7 +173,7 @@ const createConversation = async (req, res) => {
     await conn.commit();
 
     const [rows] = await pool.execute(
-      'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
+      'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived, cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
       [conversID, alanyaID]
     );
     const enriched = await attachParticipants(rows[0], alanyaID);
@@ -194,33 +199,43 @@ const createConversation = async (req, res) => {
 
 const createGroup = async (req, res) => {
   try {
-    const { participantIDs, groupName, groupPhoto } = req.body;
+    const { participantIDs, groupName, groupPhoto, description } = req.body;
     const alanyaID = req.user.alanyaID;
 
     if (!participantIDs || !Array.isArray(participantIDs) || participantIDs.length === 0) {
       return res.status(400).json({ error: 'participantIDs required as array' });
     }
 
+    const cleanDescription =
+      typeof description === 'string' && description.trim() !== ''
+        ? description.trim().slice(0, 512)
+        : null;
+
     const [result] = await pool.execute(
-      'INSERT INTO conversation (isGroup, GroupName, groupPhoto, lastMessageAt) VALUES (1, ?, ?, NOW())',
-      [groupName || 'Groupe', groupPhoto || null]
+      `INSERT INTO conversation
+         (isGroup, GroupName, groupPhoto, description, createdBy, lastMessageAt)
+       VALUES (1, ?, ?, ?, ?, NOW())`,
+      [groupName || 'Groupe', groupPhoto || null, cleanDescription, alanyaID]
     );
     const conversID = result.insertId;
 
+    // Le créateur est propriétaire (role = 2). Il reste inséré en premier :
+    // le backfill de la 024 s'appuie sur MIN(cp.id) pour retrouver le
+    // propriétaire des groupes antérieurs.
     await pool.execute(
-      'INSERT INTO conv_participants (conversID, alanyaID) VALUES (?, ?)',
+      'INSERT INTO conv_participants (conversID, alanyaID, role) VALUES (?, ?, 2)',
       [conversID, alanyaID]
     );
 
     for (const pid of participantIDs) {
       await pool.execute(
-        'INSERT INTO conv_participants (conversID, alanyaID) VALUES (?, ?)',
+        'INSERT INTO conv_participants (conversID, alanyaID, role) VALUES (?, ?, 0)',
         [conversID, pid]
       );
     }
 
     const [rows] = await pool.execute(
-      'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
+      'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived, cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
       [conversID, alanyaID]
     );
     const enriched = await attachParticipants(rows[0], alanyaID);
@@ -269,7 +284,7 @@ const updateConversation = async (req, res) => {
     }
 
     const [rows] = await pool.execute(
-      'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
+      'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived, cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
       [id, alanyaID]
     );
     const enriched = await attachParticipants(rows[0], alanyaID);
@@ -364,7 +379,8 @@ const addParticipants = async (req, res) => {
     // (existants + nouveaux). Les clients upsertent et voient la liste des
     // participants mise à jour.
     const [rows] = await pool.execute(
-      `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived
+      `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived,
+              cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly
        FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID
        WHERE c.conversID = ? AND cp.alanyaID = ?`,
       [id, alanyaID]

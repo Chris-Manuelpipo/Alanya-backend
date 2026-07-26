@@ -16,8 +16,11 @@ const getAllGroups = async (req, res) => {
               c.groupPhoto,
               c.lastMessage,
               c.lastMessageAt,
-              (SELECT COUNT(*) FROM conv_participants cp WHERE cp.conversID = c.conversID) AS members,
-              (SELECT MIN(cp2.joinedAt) FROM conv_participants cp2 WHERE cp2.conversID = c.conversID) AS createdAt
+              c.createdAt,
+              c.createdBy,
+              c.onlyAdminsCanSend,
+              c.onlyAdminsCanEditInfo,
+              (SELECT COUNT(*) FROM conv_participants cp WHERE cp.conversID = c.conversID) AS members
        FROM conversation c
        WHERE ${where.join(' AND ')}
        ORDER BY c.lastMessageAt IS NULL, c.lastMessageAt DESC, c.conversID DESC
@@ -37,7 +40,9 @@ const getGroupById = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute(
-      `SELECT conversID, isGroup, GroupName, groupPhoto, lastMessage, lastMessageAt
+      `SELECT conversID, isGroup, GroupName, groupPhoto, description,
+              lastMessage, lastMessageAt, createdAt, createdBy,
+              onlyAdminsCanSend, onlyAdminsCanEditInfo
        FROM conversation WHERE conversID = ?`,
       [id]
     );
@@ -46,11 +51,11 @@ const getGroupById = async (req, res) => {
 
     const [members] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.avatar_url, u.alanyaPhone,
-              u.is_online, u.last_seen, u.type_compte, cp.joinedAt
+              u.is_online, u.last_seen, u.type_compte, cp.joinedAt, cp.role
        FROM conv_participants cp
        JOIN users u ON u.alanyaID = cp.alanyaID
        WHERE cp.conversID = ?
-       ORDER BY cp.joinedAt ASC`,
+       ORDER BY cp.role DESC, cp.joinedAt ASC`,
       [id]
     );
     const [[{ messageCount }]] = await pool.execute(
@@ -63,11 +68,17 @@ const getGroupById = async (req, res) => {
       isGroup: g.isGroup,
       GroupName: g.GroupName,
       groupPhoto: g.groupPhoto,
+      description: g.description,
       lastMessage: g.lastMessage,
       lastMessageAt: g.lastMessageAt,
       memberCount: members.length,
       messageCount,
-      createdAt: members.length ? members[0].joinedAt : null,
+      // Colonnes réelles depuis la 024. Auparavant dérivés : createdAt de
+      // MIN(joinedAt), et le créateur supposé être members[0].
+      createdAt: g.createdAt,
+      createdBy: g.createdBy,
+      onlyAdminsCanSend: g.onlyAdminsCanSend ? 1 : 0,
+      onlyAdminsCanEditInfo: g.onlyAdminsCanEditInfo ? 1 : 0,
       members: members.map((m) => ({
         alanyaID: m.alanyaID,
         nom: m.nom,
@@ -78,6 +89,7 @@ const getGroupById = async (req, res) => {
         last_seen: m.last_seen,
         type_compte: m.type_compte,
         joinedAt: m.joinedAt,
+        role: Number(m.role) || 0,
       })),
     });
   } catch (error) {
