@@ -8,7 +8,12 @@ const {
 /**
  * @returns {Promise<{allowed:boolean, reason?:string, payload?:object}>}
  */
-const evaluateMessagePush = async (alanyaID, conversationId, payload, { isGroup = false } = {}) => {
+const evaluateMessagePush = async (
+  alanyaID,
+  conversationId,
+  payload,
+  { isGroup = false, isMentioned = false } = {},
+) => {
   const prefs = await loadUserNotificationPrefs(alanyaID);
 
   // Notifications coupées ou conversation en sourdine : on n'affiche rien, mais
@@ -30,8 +35,23 @@ const evaluateMessagePush = async (alanyaID, conversationId, payload, { isGroup 
   }
 
   const mute = await loadConversationMute(conversationId, alanyaID);
-  if (isConversationMuted(mute)) {
+  const muted = isConversationMuted(mute);
+  const mentionsOnly = !!mute.mentionsOnly;
+
+  // `mentionsOnly` était lu par loadConversationMute mais n'entrait dans AUCUNE
+  // décision : activer « uniquement les mentions » se comportait exactement
+  // comme une sourdine totale. Les deux branches ci-dessous lui donnent enfin
+  // son sens.
+  //
+  // 1. En sourdine : la mention perce le silence — c'est tout l'intérêt de
+  //    l'option. Sans elle, on retombe sur le comportement précédent.
+  if (muted && !(mentionsOnly && isMentioned)) {
     return silence('conversation_muted');
+  }
+  // 2. Pas en sourdine mais « uniquement les mentions » : on filtre le bruit
+  //    d'un groupe bavard sans le rendre complètement silencieux.
+  if (!muted && mentionsOnly && isGroup && !isMentioned) {
+    return silence('mentions_only');
   }
 
   const preview = applyPreviewPolicy(prefs, {

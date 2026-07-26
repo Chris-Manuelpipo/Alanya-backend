@@ -1,3 +1,4 @@
+const { parseMentionsColumn, isMentioned } = require('../utils/mentions');
 const admin = require('../config/firebase');
 const { messagePreview } = require('../utils/messagePreview');
 const { getConnectedDeviceIds } = require('../utils/userSocketRegistry');
@@ -425,7 +426,12 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       senderAvatar,
       groupAvatar,
       unreadTotal,
+      mentions,
     } = fields;
+
+    // Parsé UNE FOIS hors de la boucle : la colonne arrive avec la ligne
+    // message que l'appelant a déjà chargée, donc zéro requête ici.
+    const mentionList = parseMentionsColumn(mentions);
 
     const body = messagePreview({
       content,
@@ -464,8 +470,12 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
         unreadTotal: totalUnread,
       });
 
+      const mentioned = isMentioned(mentionList, p.alanyaID, senderID);
+      payload = { ...payload, mentioned: mentioned ? '1' : '0' };
+
       const decision = await evaluateMessagePush(p.alanyaID, conversationID, payload, {
         isGroup,
+        isMentioned: mentioned,
       });
       if (!decision.allowed) {
         logSkipped({

@@ -4,6 +4,7 @@ const path = require('path');
 const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
 const { assertCanSendToConversation } = require('../utils/groupSendPolicy');
+const { sanitizeMentions, serializeMentionsColumn } = require('../utils/mentions');
 const { markConversationDeliveredBy } = require('../utils/deliveryReceiptUtils');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
@@ -108,7 +109,7 @@ const getMessages = async (req, res) => {
 const _deliverMessage = async (req, conversationID, senderID, msg, fields, silentDrop) => {
   if (silentDrop) return;
 
-  const { content, mediaName, type, isViewOnce } = fields;
+  const { content, mediaName, type, isViewOnce, mentions } = fields;
   const io = req.app.get('io');
   if (io) {
     const [participants] = await pool.execute(
@@ -146,6 +147,7 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
     isViewOnce,
     isGroup: !!conv.isGroup,
     groupName: conv.GroupName ?? '',
+    mentions,
   }, io);
 };
 
@@ -154,7 +156,7 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
     mediaSize, mediaPageCount,
     replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
-    clickSentAt, clientId,
+    clickSentAt, clientId, mentions, mentionsAll = false,
   } = fields;
 
   if (clientId) {
@@ -172,7 +174,12 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
       return {
         msg: existing[0],
         silentDrop: false,
-        fields: { content, mediaName, type, isViewOnce },
+        // Rejeu : on relit les mentions déjà persistées plutôt que de refaire
+        // confiance au payload, qui peut avoir changé entre deux tentatives.
+        fields: {
+          content, mediaName, type, isViewOnce,
+          mentions: existing[0].mentions,
+        },
       };
     }
   }
@@ -201,13 +208,17 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
   const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
   const resolvedReplyToContent = resolvedReplyToID != null ? (replyToContent ?? null) : null;
 
+  const mentionsValue = await sanitizeMentions(
+    conversationID, senderID, mentions, { all: mentionsAll === true },
+  );
+
   const [result] = await _execute(conn, 
     `INSERT INTO message
        (senderID, conversationID, content, type, status, sendAt,
         clickSentAt, clientID,
         mediaUrl, mediaName, mediaDuration, mediaThumb, mediaSize, mediaPageCount,
-        replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
-     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce, mentions)
+     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       senderID, conversationID, content ?? null, type,
       clickSentAt ? new Date(clickSentAt) : null,
@@ -216,6 +227,7 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
       mediaSize ?? null, mediaPageCount ?? null,
       resolvedReplyToID, resolvedReplyToContent, isStatusReply,
       isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
+      serializeMentionsColumn(mentionsValue),
     ]
   );
 
@@ -249,7 +261,11 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     [msgID]
   );
 
-  return { msg: rows[0], silentDrop, fields: { content, mediaName, type, isViewOnce } };
+  return {
+    msg: rows[0],
+    silentDrop,
+    fields: { content, mediaName, type, isViewOnce, mentions: mentionsValue },
+  };
 };
 
 const _persistAndDeliverMessage = async (req, conversationID, senderID, fields, { conn = null, skipDelivery = false } = {}) => {

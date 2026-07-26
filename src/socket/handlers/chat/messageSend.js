@@ -1,6 +1,10 @@
 const pool = require('../../../config/db');
 const { evaluateDirectMessageSend } = require('../../../utils/blockUtils');
 const { assertCanSendToConversation } = require('../../../utils/groupSendPolicy');
+const {
+  sanitizeMentions,
+  serializeMentionsColumn,
+} = require('../../../utils/mentions');
 const { resolveLastMessagePreview } = require('../../../utils/mediaAlbum');
 const { resolveReplyToID } = require('../../../utils/resolveReplyToID');
 const {
@@ -140,7 +144,7 @@ const messageSend = (io, socket) => {
         conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
         mediaSize, mediaPageCount,
         replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
-        clickSentAt,
+        clickSentAt, mentions, mentionsAll = false,
       } = data;
       clientId = typeof data.clientId === 'string' ? data.clientId.trim() : '';
       const senderID = socket.alanyaID;
@@ -202,14 +206,21 @@ const messageSend = (io, socket) => {
           ? replyToContent
           : null;
 
+      // Écrites DANS l'INSERT et pas en UPDATE séparé : l'idempotence devient
+      // gratuite, un rejeu du même clientID ne peut ni les dupliquer ni les
+      // perdre. L'intersection avec les participants se fait côté serveur.
+      const mentionsValue = await sanitizeMentions(
+        conversationID, senderID, mentions, { all: mentionsAll === true },
+      );
+
       // Idempotence via unique (senderID, clientID) : insertId = nouveau ou existant.
       const [result] = await pool.execute(
         `INSERT INTO message
            (senderID, conversationID, clientID, content, type, status, sendAt,
             clickSentAt,
             mediaUrl, mediaName, mediaDuration, mediaThumb, mediaSize, mediaPageCount,
-            replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce)
-         VALUES (?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce, mentions)
+         VALUES (?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE msgID = LAST_INSERT_ID(msgID)`,
         [
           senderID, conversationID, clientId, content ?? null, type,
@@ -218,6 +229,7 @@ const messageSend = (io, socket) => {
           mediaSize ?? null, mediaPageCount ?? null,
           resolvedReplyToID, resolvedReplyToContent, isStatusReply,
           isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
+          serializeMentionsColumn(mentionsValue),
         ],
       );
       const msgID = result.insertId;
@@ -298,6 +310,9 @@ const messageSend = (io, socket) => {
                 groupName: ctx.groupName,
                 msgID,
                 clientId,
+                // La liste déjà normalisée : le fan-out n'a aucune requête à
+                // refaire pour savoir qui est mentionné.
+                mentions: mentionsValue,
               };
               const { notifyNewMessage } = require('../../../services/notificationService');
               return notifyNewMessage(
