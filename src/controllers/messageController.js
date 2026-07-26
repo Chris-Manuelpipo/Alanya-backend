@@ -106,6 +106,22 @@ const getMessages = async (req, res) => {
   }
 };
 
+/**
+ * Ack à l'expéditeur seul. Extrait pour être réutilisé au rejeu, où l'on ne doit
+ * ni rediffuser aux autres participants ni renvoyer de push.
+ */
+const _emitSenderAck = (req, senderID, msg) => {
+  const io = req.app.get('io');
+  if (!io || !senderID) return;
+  const clientId = msg.clientID ?? msg.clientId ?? null;
+  io.to(`user_${senderID}`).emit('message:sent', {
+    ...msg,
+    clientId,
+    clientID: clientId,
+    msgID: msg.msgID,
+  });
+};
+
 const _deliverMessage = async (req, conversationID, senderID, msg, fields, silentDrop) => {
   if (silentDrop) return;
 
@@ -119,15 +135,7 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
     for (const p of participants) {
       io.to(`user_${p.alanyaID}`).emit('message:received', msg);
     }
-    if (senderID) {
-      const clientId = msg.clientID ?? msg.clientId ?? null;
-      io.to(`user_${senderID}`).emit('message:sent', {
-        ...msg,
-        clientId,
-        clientID: clientId,
-        msgID: msg.msgID,
-      });
-    }
+    _emitSenderAck(req, senderID, msg);
   }
 
   const [sender] = await pool.execute(
@@ -148,6 +156,12 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
     isGroup: !!conv.isGroup,
     groupName: conv.GroupName ?? '',
     mentions,
+    // Sans eux, `stringifyData` les retirait du payload (clés undefined) : la
+    // push d'une réponse rapide partait sans msgID, et la déduplication client
+    // retombait sur `eventId`, régénéré à chaque envoi — donc inopérante. Le
+    // chemin socket les transmet depuis toujours.
+    msgID: msg.msgID,
+    clientId: msg.clientID ?? msg.clientId ?? null,
   }, io);
 };
 
@@ -174,6 +188,9 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
       return {
         msg: existing[0],
         silentDrop: false,
+        // Le message existe déjà : l'appelant ne doit PAS rediffuser. Voir
+        // `_persistAndDeliverMessage`.
+        replayed: true,
         // Rejeu : on relit les mentions déjà persistées plutôt que de refaire
         // confiance au payload, qui peut avoir changé entre deux tentatives.
         fields: {
@@ -264,19 +281,36 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
   return {
     msg: rows[0],
     silentDrop,
+    replayed: false,
     fields: { content, mediaName, type, isViewOnce, mentions: mentionsValue },
   };
 };
 
 const _persistAndDeliverMessage = async (req, conversationID, senderID, fields, { conn = null, skipDelivery = false } = {}) => {
-  const { msg, silentDrop, fields: deliveryFields } = await _persistMessage(conn, conversationID, senderID, fields);
+  const { msg, silentDrop, replayed, fields: deliveryFields } =
+    await _persistMessage(conn, conversationID, senderID, fields);
   if (!skipDelivery) {
-    await _deliverMessage(req, conversationID, senderID, msg, deliveryFields, silentDrop);
+    if (replayed) {
+      // Rejeu d'un `clientId` déjà persisté. Rediffuser enverrait un second
+      // `message:received` ET une seconde push : le destinataire verrait deux
+      // fois le même message. Seul l'ack expéditeur est rejoué, pour que le
+      // client qui retente puisse réconcilier sa ligne locale.
+      //
+      // Même comportement que le chemin socket, qui sort immédiatement dans ce
+      // cas (src/socket/handlers/chat/messageSend.js).
+      _emitSenderAck(req, senderID, msg);
+    } else {
+      await _deliverMessage(req, conversationID, senderID, msg, deliveryFields, silentDrop);
+    }
   }
-  return { msg, silentDrop, deliveryFields };
+  return { msg, silentDrop, replayed, deliveryFields };
 };
 
-const sendMessage = async (req, res) => {
+// `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
+// `async`, donc l'erreur remontait en unhandled rejection et tuait le process
+// sous Node 24, sans jamais atteindre `errorHandler`. C'est le chemin de la
+// réponse rapide depuis la notification, app fermée.
+const sendMessage = async (req, res, next) => {
   try {
     const { id } = req.params;
     const {
@@ -305,7 +339,7 @@ const sendMessage = async (req, res) => {
     if (error.status) {
       return res.status(error.status).json({ error: error.message, code: error.code });
     }
-    throw error;
+    next(error);
   }
 };
 
@@ -1028,7 +1062,10 @@ const getMessagesSince = async (req, res) => {
 };
 
 /** Statut d'un message envoyé par clientId (rattrapage outbox HTTP). */
-const getMessageStatusByClientId = async (req, res) => {
+// `next(error)` : même raison que `sendMessage`. C'est la requête que le client
+// utilise pour savoir si une réponse rapide était déjà passée avant de la
+// rejouer — elle ne doit surtout pas pouvoir tuer le process.
+const getMessageStatusByClientId = async (req, res, next) => {
   try {
     const clientId =
       typeof req.query.clientId === 'string' ? req.query.clientId.trim() : '';
@@ -1059,7 +1096,7 @@ const getMessageStatusByClientId = async (req, res) => {
       clientId: row.clientID,
     });
   } catch (error) {
-    throw error;
+    next(error);
   }
 };
 
@@ -1091,7 +1128,10 @@ const getPendingOutgoingMessages = async (req, res) => {
  * notification mais n'a pas de socket). Équivalent HTTP de `message:delivered`,
  * idempotent, sans effet si les messages sont déjà remis ou déjà lus.
  */
-const markMessagesDelivered = async (req, res) => {
+// `next(error)` : appelé à CHAQUE push reçue par la couche native. Une base sans
+// la migration 023 renvoie ER_BAD_FIELD_ERROR sur `deliveredAt` — avec `throw`,
+// c'était un crash du process à chaque notification, en boucle.
+const markMessagesDelivered = async (req, res, next) => {
   try {
     const alanyaID = req.user.alanyaID;
     const conversationID = Number(
@@ -1117,7 +1157,7 @@ const markMessagesDelivered = async (req, res) => {
 
     res.json({ ok: true, changed: result.changed });
   } catch (error) {
-    throw error;
+    next(error);
   }
 };
 

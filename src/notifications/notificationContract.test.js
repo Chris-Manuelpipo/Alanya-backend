@@ -87,6 +87,24 @@ const run = () => {
   assert.strictEqual(isV2Payload(direct), true);
   assert.strictEqual(isV2Payload(legacy), false);
 
+  // msgID / clientId : `stringifyData` supprime les clés undefined, donc un
+  // appelant qui ne les passe pas produit un payload SANS msgID. La
+  // déduplication client retombe alors sur `eventId`, régénéré à chaque envoi,
+  // et redevient inopérante. C'était le cas du chemin HTTP — celui de la réponse
+  // rapide depuis la notification.
+  const withIds = buildMessagePayload({
+    conversationId: 7, senderId: 3, senderName: 'A', body: 'x',
+    msgID: 42, clientId: 'notif_1_7',
+  });
+  assert.strictEqual(withIds.msgID, '42');
+  assert.strictEqual(withIds.clientId, 'notif_1_7');
+
+  const withoutIds = buildMessagePayload({
+    conversationId: 7, senderId: 3, senderName: 'A', body: 'x',
+  });
+  assert.strictEqual(withoutIds.msgID, undefined, 'msgID absent si non fourni');
+  assert.ok(!('msgID' in withoutIds), 'la clé msgID est retirée, pas mise à vide');
+
   console.log('notificationContract.test.js: OK');
 };
 

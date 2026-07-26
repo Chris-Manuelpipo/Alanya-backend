@@ -78,4 +78,40 @@ const r4 = upsertMessage(store, {
 assert.strictEqual(r4.created, true);
 assert.strictEqual(store.length, 3);
 
+// --- Effets de bord du rejeu ---
+//
+// Persister une seule ligne ne suffisait pas : `_persistAndDeliverMessage`
+// appelait `_deliverMessage` même quand le court-circuit d'idempotence avait
+// rendu un message existant. Le destinataire recevait donc un second
+// `message:received` ET une seconde push — un doublon visible, déclenché par la
+// file de rejeu des actions de notification.
+//
+// Modèle du comportement attendu, miroir de messageController.
+const deliverEffects = ({ created }) => ({
+  senderAck: true,               // toujours : le client qui retente doit réconcilier
+  broadcastToOthers: created,    // jamais au rejeu
+  push: created,                 // jamais au rejeu
+});
+
+const firstSend = deliverEffects(r1);
+assert.deepStrictEqual(
+  firstSend,
+  { senderAck: true, broadcastToOthers: true, push: true },
+  'premier envoi : diffusion et push',
+);
+
+const replay = deliverEffects(r2);
+assert.deepStrictEqual(
+  replay,
+  { senderAck: true, broadcastToOthers: false, push: false },
+  'rejeu : ack expéditeur seul, ni diffusion ni push',
+);
+
+// Un clientId distinct n'est pas un rejeu : il doit diffuser normalement.
+assert.deepStrictEqual(
+  deliverEffects(r3),
+  { senderAck: true, broadcastToOthers: true, push: true },
+  'clientId distinct : envoi normal',
+);
+
 console.log('notificationIdempotence.test.js OK');
