@@ -102,7 +102,14 @@ const getGroupById = async (req, res) => {
 const deleteGroup = async (req, res) => {
   try {
     const { id } = req.params;
-    const [rows] = await pool.execute('SELECT conversID FROM conversation WHERE conversID = ?', [id]);
+    // `AND isGroup = 1` : sans ce filtre, saisir ou coller l'id d'une
+    // conversation privée dans l'endpoint « supprimer un groupe » effaçait
+    // définitivement la discussion 1-1 de deux utilisateurs et tous ses
+    // messages — avec un message de succès. getAllGroups filtrait bien, lui.
+    const [rows] = await pool.execute(
+      'SELECT conversID FROM conversation WHERE conversID = ? AND isGroup = 1',
+      [id],
+    );
     if (rows.length === 0) return res.status(404).json({ error: 'Groupe introuvable' });
     await pool.execute('DELETE FROM message WHERE conversationID = ?', [id]);
     await pool.execute('DELETE FROM conv_participants WHERE conversID = ?', [id]);

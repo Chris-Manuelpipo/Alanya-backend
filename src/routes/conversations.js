@@ -243,7 +243,11 @@ router.post('/:id/leave', auth, leaveGroup);
  *       200:
  *         description: Participants ajoutés
  */
-router.post('/:id/participants', auth, addParticipants);
+// requireParticipant + requireGroup : le contrôleur applique ensuite le verrou
+// onlyAdminsCanEditInfo. Sans règle de rôle, un simple membre pouvait
+// RÉINTÉGRER immédiatement la personne qu'un admin venait d'exclure — le
+// retrait, lui, est réservé aux admins. L'exclusion n'était donc pas tenable.
+router.post('/:id/participants', auth, requireParticipant, requireGroup, addParticipants);
 
 /**
  * @swagger

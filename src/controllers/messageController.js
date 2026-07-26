@@ -353,8 +353,17 @@ const updateMessage = async (req, res) => {
       return res.status(400).json({ error: 'content requis' });
     }
 
+    // Être l'auteur ne suffit pas : il faut être ENCORE membre. Sans ça, un
+    // exclu gardait 30 minutes pour réécrire le contenu de ses messages restés
+    // dans le fil du groupe — modification rediffusée aux membres restants — et
+    // un temps illimité pour les supprimer pour tout le monde. C'était aussi un
+    // contournement du mode annonce : interdit d'envoyer, mais libre de
+    // remplacer le texte d'un message antérieur au verrou.
     const [existing] = await pool.execute(
-      'SELECT * FROM message WHERE msgID = ? AND senderID = ? AND isDeleted = 0',
+      `SELECT m.* FROM message m
+         JOIN conv_participants cp
+           ON cp.conversID = m.conversationID AND cp.alanyaID = m.senderID
+        WHERE m.msgID = ? AND m.senderID = ? AND m.isDeleted = 0`,
       [id, senderID]
     );
 

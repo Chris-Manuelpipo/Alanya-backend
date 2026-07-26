@@ -5,6 +5,9 @@ const { attachParticipantsBatch } = require('../utils/conversationParticipantsBa
 const { postSystemMessage, loadUserNames } = require('../utils/systemMessage');
 const { ensureGroupOwner } = require('../utils/groupOwnership');
 const {
+  invalidateConversationParticipants,
+} = require('../utils/conversationParticipantsCache');
+const {
   SELF_CHAT_MARKER,
   buildDirectConversationLookup,
   isSelfChatRow,
@@ -382,22 +385,65 @@ const deleteConversation = async (req, res, next) => {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
 
+    // Lus AVANT le DELETE : après, le partant n'est plus destinataire et on ne
+    // saurait plus s'il s'agissait d'un groupe.
+    const [avant] = await pool.execute(
+      `SELECT cp.alanyaID, c.isGroup
+         FROM conv_participants cp
+         JOIN conversation c ON c.conversID = cp.conversID
+        WHERE cp.conversID = ?`,
+      [id],
+    );
+    const isGroup = avant.length > 0 && !!avant[0].isGroup;
+    const membresAvant = avant.map((r) => Number(r.alanyaID));
+
     await pool.execute('DELETE FROM conv_participants WHERE conversID = ? AND alanyaID = ?', [id, alanyaID]);
+    invalidateConversationParticipants(Number(id));
+    {
+      const ioLeave = req.app.get('io');
+      if (ioLeave) {
+        ioLeave.in(`user_${alanyaID}`).socketsLeave(`conversation_${id}`);
+      }
+    }
 
     const [remaining] = await pool.execute('SELECT * FROM conv_participants WHERE conversID = ?', [id]);
 
     if (remaining.length === 0) {
       await pool.execute('DELETE FROM message WHERE conversationID = ?', [id]);
       await pool.execute('DELETE FROM conversation WHERE conversID = ?', [id]);
-    } else {
-      // Cette route retire l'appelant sans regarder son rôle : un propriétaire
+    } else if (isGroup) {
+      const io = req.app.get('io');
+
+      // « Supprimer la conversation » sur un groupe EST un départ : les autres
+      // membres doivent le voir, exactement comme via /leave. Sans ça,
+      // l'utilisateur disparaissait de la liste des membres sans un mot, et le
+      // fil ne gardait aucune trace.
+      await postSystemMessage({
+        conversationID: Number(id),
+        actorID: alanyaID,
+        event: 'member_left',
+        io,
+        notifyExtra: [alanyaID],
+      });
+
+      // Cette route retirait l'appelant sans regarder son rôle : un propriétaire
       // qui « supprime » un groupe de sa liste le laissait vivant et SANS
       // propriétaire, donc définitivement ingérable (403 GROUP_OWNER_REQUIRED
       // pour tout le monde). Le garant rétablit la succession.
-      await ensureGroupOwner(Number(id), {
-        departingID: alanyaID,
-        io: req.app.get('io'),
-      });
+      await ensureGroupOwner(Number(id), { departingID: alanyaID, io });
+
+      if (io) {
+        const payload = {
+          conversID: Number(id),
+          alanyaID: Number(alanyaID),
+          removedBy: Number(alanyaID),
+          reason: 'left',
+        };
+        for (const memberId of membresAvant) {
+          io.to(`user_${memberId}`).emit('group:participant:removed', payload);
+        }
+        await emitConversationUpdated(io, Number(id));
+      }
     }
 
     res.json({ message: 'Conversation deleted' });
@@ -442,6 +488,15 @@ const addParticipants = async (req, res, next) => {
 
     if (!participantIDs || !Array.isArray(participantIDs) || participantIDs.length === 0) {
       return res.status(400).json({ error: 'participantIDs required as array' });
+    }
+
+    // Même verrou que l'édition des infos : inviter, c'est modifier le groupe.
+    // Sans ça, un membre ordinaire annulait le retrait décidé par un admin.
+    if (req.membership.onlyAdminsCanEditInfo && req.membership.role < 1) {
+      return res.status(403).json({
+        error: 'Seuls les administrateurs peuvent ajouter des participants',
+        code: 'GROUP_INFO_LOCKED',
+      });
     }
 
     // Vérifier que la conv est bien un groupe et que l'appelant est membre.
@@ -764,6 +819,19 @@ const removeParticipant = async (req, res, next) => {
       [conversID, targetId],
     );
 
+    // Le fan-out temps réel lit un cache de participants à TTL 60 s, dont la
+    // fonction d'invalidation existait sans être appelée nulle part : l'exclu
+    // continuait de recevoir les `message:received` complets — contenu et
+    // média — pendant jusqu'à une minute.
+    invalidateConversationParticipants(conversID);
+
+    // Et le sortir de la room : la garde d'entrée de `join_conversation` est
+    // correcte, mais rien ne révoquait une adhésion déjà accordée. Tant que sa
+    // socket vivait, il recevait indéfiniment message:updated, les réactions,
+    // les épinglages et le typing du groupe.
+    const io0 = req.app.get('io');
+    if (io0) io0.in(`user_${targetId}`).socketsLeave(`conversation_${conversID}`);
+
     const io = req.app.get('io');
 
     await postSystemMessage({
@@ -888,6 +956,13 @@ const leaveGroup = async (req, res, next) => {
     const membersBefore = before.map((r) => Number(r.alanyaID));
 
     await pool.execute('DELETE FROM conv_participants WHERE conversID = ? AND alanyaID = ?', [id, alanyaID]);
+    invalidateConversationParticipants(Number(id));
+    {
+      const ioLeave = req.app.get('io');
+      if (ioLeave) {
+        ioLeave.in(`user_${alanyaID}`).socketsLeave(`conversation_${id}`);
+      }
+    }
 
     const [remaining] = await pool.execute('SELECT * FROM conv_participants WHERE conversID = ?', [id]);
 
