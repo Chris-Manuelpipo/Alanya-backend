@@ -1,46 +1,20 @@
 const pool = require('../../../config/db');
-const { isBlockedBy, getDirectConversationPeer } = require('../../../utils/blockUtils');
+const { isBlockedBy, getCachedDirectConversationPeer } = require('../../../utils/blockUtils');
 const { notifyMessageStatus } = require('../../../utils/notifyMessageStatus');
-
-/** Cache court peer + isDirect pour les accusés (TTL 60 s). */
-const _peerCache = new Map();
-const PEER_TTL_MS = 60_000;
-
-async function cachedDirectPeer(conversationID, userID) {
-  const key = `${conversationID}:${userID}`;
-  const hit = _peerCache.get(key);
-  if (hit && Date.now() - hit.at < PEER_TTL_MS) return hit.peerId;
-  const peerId = await getDirectConversationPeer(conversationID, userID);
-  _peerCache.set(key, { at: Date.now(), peerId });
-  if (_peerCache.size > 500) {
-    _peerCache.delete(_peerCache.keys().next().value);
-  }
-  return peerId;
-}
+const { markConversationDeliveredBy } = require('../../../utils/deliveryReceiptUtils');
 
 const messageDelivered = (io, socket) => {
   socket.on('message:delivered', async (data) => {
     if (!socket.authenticated) return;
-    const { conversationID } = data;
+    const { conversationID } = data || {};
     const userID = socket.alanyaID;
     if (!conversationID || !userID) return;
     try {
-      const peerId = await cachedDirectPeer(conversationID, userID);
-      if (peerId != null && await isBlockedBy(userID, peerId)) return;
-
-      await pool.execute(
-        `UPDATE message SET status = 2, deliveredAt = NOW()
-         WHERE conversationID = ? AND senderID != ? AND status = 1`,
-        [conversationID, userID],
-      );
-      await pool.execute(
-        `UPDATE conversation SET lastMessageStatus = 2
-         WHERE conversID = ? AND lastMessageSenderID <> ? AND lastMessageStatus < 2`,
-        [conversationID, userID],
-      );
-      await notifyMessageStatus(io, conversationID, 2, userID);
+      // Chemin partagé avec POST /api/messages/delivered, l'accusé émis par la
+      // couche push quand l'app du destinataire est fermée.
+      await markConversationDeliveredBy({ conversationID, recipientID: userID, io });
     } catch (e) {
-      console.warn('[Socket message:delivered]', e.message);
+      console.error('[Socket message:delivered]', e.code || '', e.message);
     }
   });
 };
@@ -48,11 +22,11 @@ const messageDelivered = (io, socket) => {
 const messageRead = (io, socket) => {
   socket.on('message:read', async (data) => {
     if (!socket.authenticated) return;
-    const { conversationID } = data;
+    const { conversationID } = data || {};
     const userID = socket.alanyaID;
     if (!conversationID || !userID) return;
     try {
-      const peerId = await cachedDirectPeer(conversationID, userID);
+      const peerId = await getCachedDirectConversationPeer(conversationID, userID);
       if (peerId != null && await isBlockedBy(userID, peerId)) return;
 
       await pool.execute(
@@ -83,7 +57,7 @@ const messageRead = (io, socket) => {
         );
       });
     } catch (e) {
-      console.warn('[Socket message:read]', e.message);
+      console.error('[Socket message:read]', e.code || '', e.message);
     }
   });
 };

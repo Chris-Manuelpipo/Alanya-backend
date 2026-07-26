@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
+const { markConversationDeliveredBy } = require('../utils/deliveryReceiptUtils');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
 
@@ -1055,6 +1056,41 @@ const getPendingOutgoingMessages = async (req, res) => {
   }
 };
 
+/**
+ * Accusé de REMISE émis par la couche push (app fermée : le terminal a reçu la
+ * notification mais n'a pas de socket). Équivalent HTTP de `message:delivered`,
+ * idempotent, sans effet si les messages sont déjà remis ou déjà lus.
+ */
+const markMessagesDelivered = async (req, res) => {
+  try {
+    const alanyaID = req.user.alanyaID;
+    const conversationID = Number(
+      req.body?.conversationId ?? req.body?.conversationID,
+    );
+    if (!conversationID) {
+      return res.status(400).json({ error: 'conversationId required' });
+    }
+
+    const [membership] = await pool.execute(
+      'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ? LIMIT 1',
+      [conversationID, alanyaID],
+    );
+    if (membership.length === 0) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const result = await markConversationDeliveredBy({
+      conversationID,
+      recipientID: alanyaID,
+      io: req.app.get('io'),
+    });
+
+    res.json({ ok: true, changed: result.changed });
+  } catch (error) {
+    throw error;
+  }
+};
+
 module.exports = {
   getMessages,
   getMessagesSince,
@@ -1070,4 +1106,5 @@ module.exports = {
   getConversationReactions,
   getMessageStatusByClientId,
   getPendingOutgoingMessages,
+  markMessagesDelivered,
 };

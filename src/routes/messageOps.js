@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { updateMessage, deleteMessage, batchDeleteMessages, batchForwardMessages, pinMessage, markMessageViewed, setReaction, removeReaction, getMessagesSince, getMessageStatusByClientId, getPendingOutgoingMessages } = require('../controllers/messageController');
+const { updateMessage, deleteMessage, batchDeleteMessages, batchForwardMessages, pinMessage, markMessageViewed, setReaction, removeReaction, getMessagesSince, getMessageStatusByClientId, getPendingOutgoingMessages, markMessagesDelivered } = require('../controllers/messageController');
 
 /**
  * @swagger
@@ -54,6 +54,9 @@ const { updateMessage, deleteMessage, batchDeleteMessages, batchForwardMessages,
 // Sync delta globale multi-conversations (curseur par conv). Déclarée avant
 // les routes `/:id` pour éviter toute capture par un pattern paramétré.
 router.post('/sync', auth, getMessagesSince);
+// Accusé de remise émis par la couche push (app fermée, pas de socket).
+// Équivalent HTTP de l'event socket `message:delivered`, idempotent.
+router.post('/delivered', auth, markMessagesDelivered);
 router.get('/status', auth, getMessageStatusByClientId);
 router.get('/pending', auth, getPendingOutgoingMessages);
 router.post('/batch-delete', auth, batchDeleteMessages);

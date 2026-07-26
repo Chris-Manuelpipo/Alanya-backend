@@ -17,13 +17,21 @@ const { sendVoipPush, clearVoipToken, isConfigured: isVoipConfigured } = require
 const { evaluateMessagePush, evaluateTypePush } = require('../notifications/notificationFilter');
 const { shouldUseAndroidNativeDataOnly } = require('../notifications/notificationAndroidNative');
 
+/**
+ * Push silencieuse : le destinataire a coupé ses notifications ou mis la
+ * conversation en sourdine. On envoie quand même le `data` pour que son
+ * terminal puisse accuser réception, mais sans alerte, son ni badge.
+ */
+const isSilentPush = (data) => String(data?.silent ?? '') === '1';
+
 const _buildApnsConfig = (data) => {
   const type = data.type;
   const showAlert =
-    type === 'message' ||
-    type === 'meeting_invite' ||
-    type === 'meeting_reminder' ||
-    type === 'status_view';
+    !isSilentPush(data) &&
+    (type === 'message' ||
+      type === 'meeting_invite' ||
+      type === 'meeting_reminder' ||
+      type === 'status_view');
 
   const aps = { 'content-available': 1 };
   if (showAlert && (data.title || data.body)) {
@@ -47,7 +55,7 @@ const _buildApnsConfig = (data) => {
     }
   }
 
-  if (data.unreadTotal != null && data.unreadTotal !== '') {
+  if (!isSilentPush(data) && data.unreadTotal != null && data.unreadTotal !== '') {
     const badge = parseInt(String(data.unreadTotal), 10);
     if (Number.isFinite(badge) && badge >= 0) {
       aps.badge = badge;
@@ -86,6 +94,7 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       data.type,
     );
 
+    const silent = isSilentPush(data);
     const isVisible = VISIBLE_TYPES.includes(data.type);
     const isCall = CALL_TYPES.includes(data.type);
     const isMeeting =
@@ -106,7 +115,9 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       apns: _buildApnsConfig(data),
     };
 
-    if (isVisible && (data.title || data.body) && !androidNativeDataOnly) {
+    // Priorité haute conservée pour les push silencieuses : elles portent
+    // l'accusé de remise, qui doit partir sans attendre la sortie de Doze.
+    if (!silent && isVisible && (data.title || data.body) && !androidNativeDataOnly) {
       message.notification = {
         title: data.title || 'Alanya',
         body: data.body || '',
@@ -137,7 +148,11 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       msgID: data.msgID,
       conversationId: data.conversationId,
       providerMessageId: messageId,
-      mode: androidNativeDataOnly ? 'android_native_data_only' : 'fcm_notification_block',
+      mode: silent
+        ? 'silent_delivery_ack'
+        : androidNativeDataOnly
+          ? 'android_native_data_only'
+          : 'fcm_notification_block',
       platform,
     });
   } catch (error) {

@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS message (
   sendAt         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   clickSentAt    DATETIME     NULL COMMENT 'Instant (horloge expéditeur) où il a appuyé sur Envoyer',
   readAt         DATETIME     NULL,
+  deliveredAt    DATETIME     NULL COMMENT 'Instant de remise sur le terminal destinataire (2 coches grises)',
   mediaUrl       VARCHAR(255) NULL,
   mediaName      VARCHAR(255) NULL,
   mediaDuration  INT          NULL     DEFAULT 0  COMMENT 'Durée en secondes (audio/vidéo)',

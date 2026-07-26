@@ -71,6 +71,25 @@ const getDirectConversationPeer = async (conversationID, userId) => {
 };
 
 /**
+ * Cache court (TTL 60 s) au-dessus de getDirectConversationPeer, pour les
+ * chemins d'accusés de réception qui l'appellent à chaque message reçu.
+ */
+const _peerCache = new Map();
+const PEER_TTL_MS = 60_000;
+
+const getCachedDirectConversationPeer = async (conversationID, userId) => {
+  const key = `${conversationID}:${userId}`;
+  const hit = _peerCache.get(key);
+  if (hit && Date.now() - hit.at < PEER_TTL_MS) return hit.peerId;
+  const peerId = await getDirectConversationPeer(conversationID, userId);
+  _peerCache.set(key, { at: Date.now(), peerId });
+  if (_peerCache.size > 500) {
+    _peerCache.delete(_peerCache.keys().next().value);
+  }
+  return peerId;
+};
+
+/**
  * Évalue les règles de blocage pour un envoi 1-1.
  * action: 'deliver' | 'reject' | 'silent'
  *
@@ -128,6 +147,7 @@ module.exports = {
   getBlockPair,
   getBlockDate,
   getDirectConversationPeer,
+  getCachedDirectConversationPeer,
   evaluateDirectMessageSend,
   shouldSuppressDirectInteraction,
   maskPresenceIfBlocked,

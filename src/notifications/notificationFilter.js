@@ -11,16 +11,27 @@ const {
 const evaluateMessagePush = async (alanyaID, conversationId, payload, { isGroup = false } = {}) => {
   const prefs = await loadUserNotificationPrefs(alanyaID);
 
+  // Notifications coupées ou conversation en sourdine : on n'affiche rien, mais
+  // on envoie quand même une push SILENCIEUSE (data-only, sans alerte ni son).
+  // Sans elle, le terminal ne pourrait pas accuser réception quand l'app est
+  // fermée, et l'expéditeur resterait bloqué sur une seule coche.
+  // Titre et corps sont retirés : rien ne sera affiché, et le contenu du
+  // message n'a pas à voyager vers un terminal qui n'en fera rien.
+  const silence = (reason) => {
+    const { title: _t, body: _b, ...rest } = payload;
+    return { allowed: true, silent: true, reason, payload: { ...rest, silent: '1' } };
+  };
+
   if (!prefs.messagesEnabled) {
-    return { allowed: false, reason: 'messages_disabled' };
+    return silence('messages_disabled');
   }
   if (isGroup && !prefs.groupMessagesEnabled) {
-    return { allowed: false, reason: 'group_messages_disabled' };
+    return silence('group_messages_disabled');
   }
 
   const mute = await loadConversationMute(conversationId, alanyaID);
   if (isConversationMuted(mute)) {
-    return { allowed: false, reason: 'conversation_muted' };
+    return silence('conversation_muted');
   }
 
   const preview = applyPreviewPolicy(prefs, {

@@ -14,6 +14,8 @@
 -- `message → users → pays` au moment de la lecture, sans rien dupliquer
 -- sur chaque ligne de message. Voir messageController.js / chat.js.
 
+-- NB : `deliveredAt`, décrit ci-dessus, n'a jamais été créé par cette migration.
+-- Il l'est par la 023_message_delivered_at.sql — ne pas le rajouter ici.
+
 ALTER TABLE message
   ADD COLUMN clickSentAt DATETIME NULL COMMENT 'Instant (horloge expéditeur) où il a appuyé sur Envoyer' AFTER sendAt;
-  -- ADD COLUMN deliveredAt DATETIME NULL COMMENT 'Instant où le destinataire a reçu le message' AFTER readAt;
