@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const { markConversationReadBy } = require('../utils/readReceiptUtils');
 const { getBlockPair, maskPresenceIfBlocked } = require('../utils/blockUtils');
 const { attachParticipantsBatch } = require('../utils/conversationParticipantsBatch');
+const { postSystemMessage, loadUserNames } = require('../utils/systemMessage');
 const {
   SELF_CHAT_MARKER,
   buildDirectConversationLookup,
@@ -70,6 +71,53 @@ async function attachParticipants(conversationRow, viewerId = null) {
 // Attacher les participants à plusieurs conversations (≤ 3 requêtes SQL).
 async function attachParticipantsMany(rows, viewerId = null) {
   return attachParticipantsBatch(pool, rows, viewerId, sanitizeUrl);
+}
+
+/**
+ * Diffuse les métadonnées d'une conversation à tous ses membres.
+ *
+ * La charge OMET délibérément les champs par-utilisateur — `unreadCount`,
+ * `isPinned`, `isArchived`, `lastMessage*` — pour deux raisons :
+ *
+ * - ils diffèrent d'un membre à l'autre, et une émission unique ne peut pas
+ *   porter la valeur de chacun ;
+ * - le client écrit un companion PARTIEL à la réception. Si la trame les
+ *   portait, une trame tardive réécrirait un `unreadCount` périmé et ferait
+ *   réapparaître un badge fantôme sur une conversation déjà lue.
+ *
+ * `updatedAt` accompagne la charge : le client s'en sert comme garde
+ * anti-réordonnancement (il ignore une trame plus ancienne que son état local).
+ */
+async function emitConversationUpdated(io, conversID) {
+  if (!io) return;
+  try {
+    const [rows] = await pool.execute(
+      'SELECT * FROM conversation WHERE conversID = ?',
+      [conversID],
+    );
+    if (rows.length === 0) return;
+
+    const enriched = await attachParticipants(rows[0], null);
+    const payload = { ...enriched };
+    delete payload.unreadCount;
+    delete payload.isPinned;
+    delete payload.isArchived;
+    delete payload.lastMessage;
+    delete payload.lastMessageAt;
+    delete payload.lastMessageSenderID;
+    delete payload.lastMessageType;
+    delete payload.lastMessageStatus;
+
+    const [members] = await pool.execute(
+      'SELECT alanyaID FROM conv_participants WHERE conversID = ?',
+      [conversID],
+    );
+    for (const m of members) {
+      io.to(`user_${Number(m.alanyaID)}`).emit('conversation:updated', payload);
+    }
+  } catch (error) {
+    console.error('[Conversation] emitConversationUpdated:', error.message);
+  }
 }
 
 // `scoreDirectConversation` et `dedupeDirectConversations` vivent désormais dans
@@ -249,6 +297,16 @@ const createGroup = async (req, res) => {
       }
     }
 
+    // Première ligne du fil. Émise après `conversation:created` : les clients
+    // doivent connaître la conversation avant d'en recevoir un message.
+    await postSystemMessage({
+      conversationID: conversID,
+      actorID: alanyaID,
+      event: 'group_created',
+      payload: { value: groupName || 'Groupe' },
+      io,
+    });
+
     res.json(enriched);
   } catch (error) {
     throw error;
@@ -395,6 +453,21 @@ const addParticipants = async (req, res) => {
       }
     }
 
+    // Trace dans le fil — seulement si quelqu'un a réellement été ajouté :
+    // `addParticipants` est idempotent, et un rejeu ne doit pas empiler des
+    // « X a ajouté » vides. Émis APRÈS la réponse socket pour ne pas retarder
+    // l'affichage de la conversation chez les nouveaux membres.
+    if (toAdd.length > 0) {
+      const targets = await loadUserNames(toAdd);
+      await postSystemMessage({
+        conversationID: Number(id),
+        actorID: alanyaID,
+        event: 'member_added',
+        payload: { ids: targets.ids, names: targets.names },
+        io,
+      });
+    }
+
     res.json(enriched);
   } catch (error) {
     throw error;
@@ -406,6 +479,24 @@ const leaveGroup = async (req, res) => {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
 
+    // Lu AVANT le DELETE : après, on ne saurait plus si l'appelant était
+    // propriétaire, ni qui reste pour lui succéder.
+    const [before] = await pool.execute(
+      `SELECT cp.alanyaID, cp.role, cp.joinedAt, cp.id, c.isGroup
+         FROM conv_participants cp
+         JOIN conversation c ON c.conversID = cp.conversID
+        WHERE cp.conversID = ?
+        ORDER BY cp.role DESC, cp.joinedAt ASC, cp.id ASC`,
+      [id],
+    );
+    const me = before.find((r) => Number(r.alanyaID) === Number(alanyaID));
+    if (!me) {
+      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée' });
+    }
+    const isGroup = !!me.isGroup;
+    const wasOwner = Number(me.role) === 2;
+    const membersBefore = before.map((r) => Number(r.alanyaID));
+
     await pool.execute('DELETE FROM conv_participants WHERE conversID = ? AND alanyaID = ?', [id, alanyaID]);
 
     const [remaining] = await pool.execute('SELECT * FROM conv_participants WHERE conversID = ?', [id]);
@@ -413,6 +504,69 @@ const leaveGroup = async (req, res) => {
     if (remaining.length === 0) {
       await pool.execute('DELETE FROM message WHERE conversationID = ?', [id]);
       await pool.execute('DELETE FROM conversation WHERE conversID = ?', [id]);
+      return res.json({ message: 'Left group' });
+    }
+
+    const io = req.app.get('io');
+
+    // Succession : un groupe ne doit jamais se retrouver sans propriétaire,
+    // sinon plus personne ne peut promouvoir ni rétrograder. On prend l'admin
+    // restant le plus ancien, à défaut le membre le plus ancien — `before` est
+    // déjà trié par rôle décroissant puis ancienneté.
+    let successor = null;
+    if (isGroup && wasOwner) {
+      const candidates = before.filter(
+        (r) => Number(r.alanyaID) !== Number(alanyaID),
+      );
+      successor = candidates[0] || null;
+      if (successor) {
+        await pool.execute(
+          'UPDATE conv_participants SET role = 2 WHERE conversID = ? AND alanyaID = ?',
+          [id, successor.alanyaID],
+        );
+        await pool.execute(
+          'UPDATE conversation SET createdBy = ? WHERE conversID = ?',
+          [successor.alanyaID, id],
+        );
+      }
+    }
+
+    if (isGroup) {
+      await postSystemMessage({
+        conversationID: Number(id),
+        actorID: alanyaID,
+        event: 'member_left',
+        io,
+        // Le partant n'est plus dans conv_participants : sans ce rappel, son
+        // propre appareil n'afficherait jamais la trace de son départ.
+        notifyExtra: [alanyaID],
+      });
+
+      if (successor) {
+        const names = await loadUserNames([successor.alanyaID]);
+        await postSystemMessage({
+          conversationID: Number(id),
+          actorID: alanyaID,
+          event: 'role_changed',
+          payload: { ids: names.ids, names: names.names, role: 2 },
+          io,
+        });
+      }
+
+      if (io) {
+        const payload = {
+          conversID: Number(id),
+          alanyaID: Number(alanyaID),
+          removedBy: Number(alanyaID),
+          reason: 'left',
+        };
+        // Diffusé au snapshot PRIS AVANT le DELETE : le partant doit être
+        // prévenu, or il ne fait plus partie des destinataires courants.
+        for (const memberId of membersBefore) {
+          io.to(`user_${memberId}`).emit('group:participant:removed', payload);
+        }
+        await emitConversationUpdated(io, Number(id));
+      }
     }
 
     res.json({ message: 'Left group' });

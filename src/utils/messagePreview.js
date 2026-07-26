@@ -66,6 +66,64 @@ function contactPreviewFromContent(content) {
   }
 }
 
+/**
+ * Aperçu d'un message système de groupe (`type = 6`).
+ *
+ * Le `content` est un payload JSON machine-lisible : ne JAMAIS l'exposer brut
+ * dans `conversation.lastMessage`.
+ *
+ * Le libellé produit ici est en français en dur, et c'est assumé : le serveur
+ * n'a pas de contexte de locale, et cette valeur n'est qu'une **amorce** pour
+ * la liste de conversations. Le client re-dérive un aperçu localisé dès qu'il
+ * possède le message (ConversationSummaryReducer + SystemEventPayload.label).
+ * Même compromis que la sentinelle `ConversationMerge.deletedPreview`.
+ *
+ * Les libellés restent volontairement courts et sans les noms des cibles : une
+ * ligne d'aperçu est tronquée, et le fil porte déjà la phrase complète.
+ */
+function systemPreviewFromContent(content) {
+  if (!content || typeof content !== 'string') return null;
+  let data;
+  try {
+    data = JSON.parse(content);
+  } catch (_) {
+    return null;
+  }
+  if (data == null || typeof data !== 'object') return null;
+
+  const actor = typeof data.byName === 'string' ? data.byName.trim() : '';
+  const value = typeof data.value === 'string' ? data.value.trim() : '';
+  const who = actor !== '' ? actor : 'Quelqu\'un';
+
+  switch (data.e) {
+    case 'group_created':
+      return value !== '' ? `${who} a créé « ${value} »` : `${who} a créé le groupe`;
+    case 'member_added':
+      return `${who} a ajouté des membres`;
+    case 'member_removed':
+      return `${who} a retiré un membre`;
+    case 'member_left':
+      return `${who} a quitté le groupe`;
+    case 'group_renamed':
+      return value !== ''
+        ? `${who} a renommé le groupe en « ${value} »`
+        : `${who} a renommé le groupe`;
+    case 'group_photo_changed':
+      return `${who} a changé la photo du groupe`;
+    case 'group_description_changed':
+      return `${who} a modifié la description`;
+    case 'role_changed':
+      return Number(data.role) >= 1
+        ? `${who} a nommé un administrateur`
+        : `${who} a retiré des droits d'administrateur`;
+    case 'settings_changed':
+      return `${who} a modifié les réglages du groupe`;
+    default:
+      // Événement inconnu : un libellé neutre vaut mieux que du JSON brut.
+      return 'Le groupe a été mis à jour';
+  }
+}
+
 // Extensions traitées comme de la musique. Miroir de la liste de
 // lib/core/utils/audio_message_kind.dart côté Talky — garder les deux alignées.
 const MUSIC_EXTENSIONS = new Set([
@@ -142,6 +200,12 @@ function messagePreview({
     return contact || mediaTypeLabel(7);
   }
 
+  // type=6 : événement de groupe, JSON lui aussi. Le court-circuit doit rester
+  // AVANT le traitement générique, qui renverrait le payload brut.
+  if (t === 6) {
+    return systemPreviewFromContent(content) || 'Le groupe a été mis à jour';
+  }
+
   if (!viewOnce) {
     const album = albumPreviewFromContent(content);
     if (album) return album;
@@ -155,4 +219,9 @@ function messagePreview({
   return mediaTypeLabel(type, { isViewOnce: viewOnce, mediaName });
 }
 
-module.exports = { albumPreviewFromContent, mediaTypeLabel, messagePreview };
+module.exports = {
+  albumPreviewFromContent,
+  mediaTypeLabel,
+  messagePreview,
+  systemPreviewFromContent,
+};
