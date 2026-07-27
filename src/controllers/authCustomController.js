@@ -60,30 +60,40 @@ const _osFromUserAgent = (ua) => {
 // Génération d'un alanyaPhone unique à 8 chiffres
 const generateAlanyaPhone = async () => generateUniquePhone(8);
 
-// Création de compte 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const normalizeEmail = (value) => {
+  if (value == null) return null;
+  const trimmed = String(value).trim().toLowerCase();
+  return trimmed === '' ? null : trimmed;
+};
+
+// Création de compte — email optionnel (uniquement utile à la récupération MDP)
 const register = async (req, res) => {
   try {
     const { email, password, nom, pseudo, idPays, fcm_token, device_ID, device_model, os_system } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email et mot de passe requis' });
+    if (!password) {
+      return res.status(400).json({ error: 'Mot de passe requis' });
     }
 
     if (password.length < 6) {
       return res.status(400).json({ error: 'Le mot de passe doit faire au moins 6 caractères' });
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: 'Email invalide' });
-    }
+    const cleanEmail = normalizeEmail(email);
+    if (cleanEmail) {
+      if (!EMAIL_REGEX.test(cleanEmail)) {
+        return res.status(400).json({ error: 'Email invalide' });
+      }
 
-    const [existingEmail] = await pool.execute(
-      'SELECT alanyaID FROM users WHERE email = ?',
-      [email.toLowerCase().trim()]
-    );
-    if (existingEmail.length > 0) {
-      return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée' });
+      const [existingEmail] = await pool.execute(
+        'SELECT alanyaID FROM users WHERE email = ?',
+        [cleanEmail]
+      );
+      if (existingEmail.length > 0) {
+        return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée' });
+      }
     }
 
     const alanyaPhone = await generateAlanyaPhone();
@@ -103,7 +113,7 @@ const register = async (req, res) => {
         nom        || 'Utilisateur',
         pseudo     || nom || 'AlanyaUser',
         alanyaPhone,
-        email.toLowerCase().trim(),
+        cleanEmail,
         hashedPassword,
         resolvedIdPays,
         'NON DEFINI',
@@ -112,7 +122,7 @@ const register = async (req, res) => {
       ]
     );
 
-    const tokenPayload  = { alanyaID: result.insertId, email: email.toLowerCase().trim() };
+    const tokenPayload  = { alanyaID: result.insertId, email: cleanEmail };
     const accessToken   = generateAccessToken(tokenPayload);
     const refreshToken  = generateRefreshToken(tokenPayload);
 
@@ -239,24 +249,30 @@ const refreshToken = async (req, res) => {
   }
 };
 
-// Génération d'un OTP à 6 chiffres (mot de passe oublié)
+// Génération d'un OTP à 6 chiffres (mot de passe oublié / changement email)
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// Envoi de l'OTP par email pour la réinitialisation du mot de passe
-const sendPasswordResetOTP = async (email, otp) => {
-  const fromEmail =process.env.SMTP_FROM ;
+/** Envoi OTP via le template HTML unique — seul le contenu varie. */
+const sendOtpEmail = async ({
+  to,
+  subject,
+  heading,
+  intro,
+  otp,
+  preheader,
+  footerNote,
+}) => {
+  const fromEmail = process.env.SMTP_FROM;
   const fromName = process.env.MAIL_FROM_NAME || 'Alanya';
   const appName = process.env.APP_NAME || 'Alanya';
   const supportEmail = process.env.SUPPORT_EMAIL || process.env.SMTP_FROM || 'support@example.com';
   const expiryMin = Number(process.env.OTP_EXPIRY_MIN || 10);
 
-  const subject = `Réinitialisation de votre mot de passe ${appName}`;
-
   const text = `Bonjour,\n\n` +
-    `Nous avons reçu une demande de réinitialisation du mot de passe pour le compte associé à ${email}.\n\n` +
-    `Votre code de réinitialisation : ${otp}\n` +
+    `${intro}\n\n` +
+    `Votre code : ${otp}\n` +
     `Ce code est valable pendant ${expiryMin} minutes.\n\n` +
     `Si vous n'êtes pas à l'origine de cette demande, ignorez ce message ou contactez le support : ${supportEmail}.\n\n` +
     `Ne partagez jamais ce code avec qui que ce soit.\n\n` +
@@ -264,36 +280,61 @@ const sendPasswordResetOTP = async (email, otp) => {
 
   const html = renderHtmlEmail({
     title: subject,
-    preheader: `Votre code de réinitialisation est ${otp}`,
+    preheader: preheader || `Votre code est ${otp}`,
     eyebrow: appName,
-    heading: 'Réinitialisation de votre mot de passe',
-    intro: `Nous avons reçu une demande de réinitialisation du mot de passe pour le compte lié à ${escapeHtml(email)}.`,
+    heading,
+    intro: escapeHtml(intro),
     bodyHtml: `
       <p style="text-align:center;margin:8px 0 22px 0;">
         <span class="code">${escapeHtml(otp)}</span>
       </p>
       <p style="margin-top:0;">Ce code expire dans ${expiryMin} minutes.</p>
-      <p>Si vous n'avez pas demandé cette réinitialisation, ignorez ce courriel ou contactez-nous à <a href="mailto:${escapeHtml(supportEmail)}" style="color:#1f2937;font-weight:700;">${escapeHtml(supportEmail)}</a>.</p>
+      <p>Si vous n'avez pas demandé cette opération, ignorez ce courriel ou contactez-nous à <a href="mailto:${escapeHtml(supportEmail)}" style="color:#1f2937;font-weight:700;">${escapeHtml(supportEmail)}</a>.</p>
       <p>Ne partagez jamais ce code avec qui que ce soit.</p>`,
     accent: '#1f2937',
-    footerNote: 'Si vous n\'êtes pas à l\'origine de cette demande, ignorez ce message ou contactez le support.',
+    footerNote: footerNote ||
+      'Si vous n\'êtes pas à l\'origine de cette demande, ignorez ce message ou contactez le support.',
     supportEmail,
   });
 
   if (!fromEmail) {
-    throw new Error("L'adresse email d\'envoi est requise (SMTP_FROM dans .env)");
+    throw new Error("L'adresse email d'envoi est requise (SMTP_FROM dans .env)");
   }
 
   if (!process.env.SMTP_HOST) {
     throw new Error("Le service email n'est pas configuré");
   }
-  // Delegate to mailService
+
   await sendMail({
     from: `"${fromName}" <${fromEmail}>`,
-    to: email,
+    to,
     subject,
     text,
     html,
+  });
+};
+
+const sendPasswordResetOTP = async (email, otp) => {
+  const appName = process.env.APP_NAME || 'Alanya';
+  await sendOtpEmail({
+    to: email,
+    subject: `Réinitialisation de votre mot de passe ${appName}`,
+    heading: 'Réinitialisation de votre mot de passe',
+    intro: `Nous avons reçu une demande de réinitialisation du mot de passe pour le compte lié à ${email}.`,
+    otp,
+    preheader: `Votre code de réinitialisation est ${otp}`,
+  });
+};
+
+const sendEmailChangeOTP = async (email, otp) => {
+  const appName = process.env.APP_NAME || 'Alanya';
+  await sendOtpEmail({
+    to: email,
+    subject: `Vérification de votre adresse email ${appName}`,
+    heading: 'Vérification de votre adresse email',
+    intro: `Nous avons reçu une demande pour associer l'adresse ${email} à votre compte ${appName}.`,
+    otp,
+    preheader: `Votre code de vérification est ${otp}`,
   });
 };
 
@@ -545,6 +586,169 @@ const updateMe = async (req, res) => {
   }
 };
 
+// Demande d'OTP pour ajouter / remplacer l'email du compte connecté
+const requestEmailChangeOtp = async (req, res) => {
+  try {
+    const cleanEmail = normalizeEmail(req.body.email);
+    if (!cleanEmail) {
+      return res.status(400).json({ error: 'Email requis' });
+    }
+    if (!EMAIL_REGEX.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Email invalide' });
+    }
+
+    const [meRows] = await pool.execute(
+      'SELECT email FROM users WHERE alanyaID = ? AND exclus = 0',
+      [req.user.alanyaID]
+    );
+    if (meRows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    }
+
+    const current = meRows[0].email ? String(meRows[0].email).toLowerCase() : null;
+    if (current && current === cleanEmail) {
+      return res.status(400).json({ error: 'Cet email est déjà associé à votre compte' });
+    }
+
+    const [taken] = await pool.execute(
+      'SELECT alanyaID FROM users WHERE email = ? AND alanyaID != ?',
+      [cleanEmail, req.user.alanyaID]
+    );
+    if (taken.length > 0) {
+      return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée' });
+    }
+
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await pool.execute(
+      `UPDATE users
+       SET pending_email = ?, email_change_otp = ?, email_change_otp_expires_at = ?
+       WHERE alanyaID = ?`,
+      [cleanEmail, otp, expiresAt, req.user.alanyaID]
+    );
+
+    await sendEmailChangeOTP(cleanEmail, otp);
+
+    res.json({ message: 'Vérifiez votre email pour le code de confirmation' });
+  } catch (error) {
+    console.error('[RequestEmailChangeOtp] ERROR:', error);
+    res.status(500).json({ error: error.message || 'Request failed' });
+  }
+};
+
+// Confirme l'OTP et applique le nouvel email
+const confirmEmailChange = async (req, res) => {
+  try {
+    const cleanEmail = normalizeEmail(req.body.email);
+    const otp = req.body.otp != null ? String(req.body.otp).trim() : '';
+
+    if (!cleanEmail || !otp) {
+      return res.status(400).json({ error: 'Email et OTP requis' });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT pending_email, email_change_otp, email_change_otp_expires_at
+       FROM users WHERE alanyaID = ? AND exclus = 0`,
+      [req.user.alanyaID]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    }
+
+    const user = rows[0];
+    if (!user.pending_email || !user.email_change_otp) {
+      return res.status(400).json({ error: 'Aucune demande de changement d\'email en cours' });
+    }
+
+    if (String(user.pending_email).toLowerCase() !== cleanEmail) {
+      return res.status(400).json({ error: 'Email ne correspond pas à la demande en cours' });
+    }
+
+    if (user.email_change_otp !== otp) {
+      return res.status(401).json({ error: 'OTP invalide' });
+    }
+
+    if (new Date() > new Date(user.email_change_otp_expires_at)) {
+      return res.status(401).json({ error: 'OTP expiré' });
+    }
+
+    // Re-vérifier l'unicité au moment de la confirmation
+    const [taken] = await pool.execute(
+      'SELECT alanyaID FROM users WHERE email = ? AND alanyaID != ?',
+      [cleanEmail, req.user.alanyaID]
+    );
+    if (taken.length > 0) {
+      return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée' });
+    }
+
+    await pool.execute(
+      `UPDATE users
+       SET email = ?,
+           pending_email = NULL,
+           email_change_otp = NULL,
+           email_change_otp_expires_at = NULL
+       WHERE alanyaID = ?`,
+      [cleanEmail, req.user.alanyaID]
+    );
+
+    const [updated] = await pool.execute(_selectUserWithPays, [req.user.alanyaID]);
+    res.json({ message: 'Email mis à jour', user: updated[0] });
+  } catch (error) {
+    console.error('[ConfirmEmailChange] ERROR:', error);
+    res.status(500).json({ error: error.message || 'Confirmation failed' });
+  }
+};
+
+// Changement de mot de passe authentifié (mot de passe actuel requis)
+const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        error: 'Mot de passe actuel et nouveau mot de passe requis',
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        error: 'Le nouveau mot de passe doit contenir au moins 6 caractères',
+      });
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({
+        error: 'Le nouveau mot de passe doit être différent de l\'actuel',
+      });
+    }
+
+    const [rows] = await pool.execute(
+      'SELECT password FROM users WHERE alanyaID = ? AND exclus = 0',
+      [req.user.alanyaID]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    }
+
+    const valid = await bcrypt.compare(currentPassword, rows[0].password);
+    if (!valid) {
+      return res.status(401).json({ error: 'Mot de passe actuel incorrect' });
+    }
+
+    const hashed = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await pool.execute(
+      'UPDATE users SET password = ? WHERE alanyaID = ?',
+      [hashed, req.user.alanyaID]
+    );
+
+    res.json({ message: 'Mot de passe modifié avec succès' });
+  } catch (error) {
+    console.error('[ChangePassword] ERROR:', error);
+    res.status(500).json({ error: error.message || 'Échec du changement de mot de passe' });
+  }
+};
+
 module.exports = {
   register,
   login,
@@ -556,5 +760,8 @@ module.exports = {
   getMe,
   updateMe,
   updateFcmToken,
+  requestEmailChangeOtp,
+  confirmEmailChange,
+  changePassword,
   authCustom: require('../middleware/authCustom').authCustom,
 };

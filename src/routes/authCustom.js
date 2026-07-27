@@ -1,6 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const { authCustom } = require('../middleware/authCustom');
+const { authLimiter } = require('../middleware/rateLimiter');
 const {
   register,
   login,
@@ -12,6 +13,9 @@ const {
   getMe,
   updateMe,
   updateFcmToken,
+  requestEmailChangeOtp,
+  confirmEmailChange,
+  changePassword,
 } = require('../controllers/authCustomController');
 const {
   registerPushDevice,
@@ -27,7 +31,7 @@ const {
  * @swagger
  * /api/auth/register:
  *   post:
- *     summary: Inscription par email/mot de passe
+ *     summary: Inscription (email optionnel, mot de passe requis)
  *     tags: [Auth Custom]
  *     requestBody:
  *       required: true
@@ -36,12 +40,12 @@ const {
  *           schema:
  *             type: object
  *             required:
- *               - email
  *               - password
  *             properties:
  *               email:
  *                 type: string
  *                 format: email
+ *                 description: Optionnel — uniquement pour la récupération de mot de passe
  *               password:
  *                 type: string
  *                 minLength: 6
@@ -66,13 +70,13 @@ const {
  *                 refreshToken:
  *                   type: string
  */
-router.post('/register',                  register);
+router.post('/register', authLimiter, register);
 
 /**
  * @swagger
  * /api/auth/login:
  *   post:
- *     summary: Connexion par email/mot de passe
+ *     summary: Connexion par numéro Alanya / mot de passe
  *     tags: [Auth Custom]
  *     requestBody:
  *       required: true
@@ -100,7 +104,7 @@ router.post('/register',                  register);
  *       200:
  *         description: Connexion réussie
  */
-router.post('/login',                     login);
+router.post('/login', authLimiter, login);
 
 /**
  * @swagger
@@ -171,7 +175,7 @@ router.post('/reset-password',            resetPassword);
  *       200:
  *         description: OTP envoyé si l'email existe
  */
-router.post('/forgot-password',           requestPasswordReset);
+router.post('/forgot-password', authLimiter, requestPasswordReset);
 
 /**
  * @swagger
@@ -277,6 +281,90 @@ router.post('/reset-password-confirm',    completePasswordReset);
  */
 router.get('/me',         authCustom, getMe);
 router.put('/me',         authCustom, updateMe);
+
+/**
+ * @swagger
+ * /api/auth/me/email/request-otp:
+ *   post:
+ *     summary: Demande un OTP pour ajouter ou remplacer l'email du compte
+ *     tags: [Auth Custom]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *     responses:
+ *       200:
+ *         description: OTP envoyé à la nouvelle adresse
+ */
+router.post('/me/email/request-otp', authCustom, authLimiter, requestEmailChangeOtp);
+
+/**
+ * @swagger
+ * /api/auth/me/email/confirm:
+ *   post:
+ *     summary: Confirme l'OTP et applique le nouvel email
+ *     tags: [Auth Custom]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - otp
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               otp:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Email mis à jour
+ */
+router.post('/me/email/confirm', authCustom, confirmEmailChange);
+
+/**
+ * @swagger
+ * /api/auth/me/password:
+ *   put:
+ *     summary: Change le mot de passe (authentifié, mot de passe actuel requis)
+ *     tags: [Auth Custom]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - currentPassword
+ *               - newPassword
+ *             properties:
+ *               currentPassword:
+ *                 type: string
+ *               newPassword:
+ *                 type: string
+ *                 minLength: 6
+ *     responses:
+ *       200:
+ *         description: Mot de passe modifié
+ */
+router.put('/me/password', authCustom, changePassword);
 
 /**
  * @swagger
