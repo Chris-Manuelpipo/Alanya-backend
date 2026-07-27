@@ -251,7 +251,14 @@ const createConversation = async (req, res) => {
 
 const createGroup = async (req, res, next) => {
   try {
-    const { participantIDs, groupName, groupPhoto, description } = req.body;
+    const {
+      participantIDs,
+      groupName,
+      groupPhoto,
+      description,
+      onlyAdminsCanSend,
+      onlyAdminsCanEditInfo,
+    } = req.body;
     const alanyaID = req.user.alanyaID;
 
     if (!participantIDs || !Array.isArray(participantIDs) || participantIDs.length === 0) {
@@ -263,11 +270,23 @@ const createGroup = async (req, res, next) => {
         ? description.trim().slice(0, 512)
         : null;
 
+    const asFlag = (v) => (v === 1 || v === true || v === '1' ? 1 : 0);
+    const sendFlag = onlyAdminsCanSend !== undefined ? asFlag(onlyAdminsCanSend) : 0;
+    const editFlag = onlyAdminsCanEditInfo !== undefined ? asFlag(onlyAdminsCanEditInfo) : 0;
+
     const [result] = await pool.execute(
       `INSERT INTO conversation
-         (isGroup, GroupName, groupPhoto, description, createdBy, lastMessageAt)
-       VALUES (1, ?, ?, ?, ?, NOW())`,
-      [groupName || 'Groupe', groupPhoto || null, cleanDescription, alanyaID]
+         (isGroup, GroupName, groupPhoto, description, createdBy, lastMessageAt,
+          onlyAdminsCanSend, onlyAdminsCanEditInfo)
+       VALUES (1, ?, ?, ?, ?, NOW(), ?, ?)`,
+      [
+        groupName || 'Groupe',
+        groupPhoto || null,
+        cleanDescription,
+        alanyaID,
+        sendFlag,
+        editFlag,
+      ]
     );
     const conversID = result.insertId;
 
