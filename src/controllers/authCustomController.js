@@ -5,6 +5,8 @@ const { sendMail, renderHtmlEmail, escapeHtml } = require('../services/mailServi
 const { generateAccessToken, generateRefreshToken, JWT_REFRESH_SECRET } = require('../middleware/authCustom');
 const { normalize } = require('../utils/alanyaPhone');
 const { generateUniquePhone } = require('../services/alanyaPhoneService');
+const deviceSessionService = require('../services/deviceSessionService');
+const { emitToUser } = require('../utils/userSocketRegistry');
 
 const SALT_ROUNDS = 10;
 
@@ -24,16 +26,18 @@ const countryExists = async (idPays) => {
   return rows.length > 0;
 };
 
+const _clientIp = (req) =>
+  req.ip ||
+  req.headers['x-forwarded-for'] ||
+  req.connection?.remoteAddress ||
+  'INDEFINI';
+
 // Journalise une connexion (login, inscription, refresh) dans userAccess.
 // Best-effort : ne fait jamais échouer la requête appelante.
 // `device` doit être un libellé lisible (marque + modèle, ex. "Samsung SM-A715F").
 const logUserAccess = async (req, alanyaID, { device, osSystem } = {}) => {
   try {
-    const ipAdress =
-      req.ip ||
-      req.headers['x-forwarded-for'] ||
-      req.connection?.remoteAddress ||
-      'INDEFINI';
+    const ipAdress = _clientIp(req);
     const ua = req.headers['user-agent'] || '';
     const os = osSystem || _osFromUserAgent(ua) || 'INDEFINI';
     await pool.execute(
@@ -71,7 +75,7 @@ const normalizeEmail = (value) => {
 // Création de compte — email optionnel (uniquement utile à la récupération MDP)
 const register = async (req, res) => {
   try {
-    const { email, password, nom, pseudo, idPays, fcm_token, device_ID, device_model, os_system } = req.body;
+    const { email, password, nom, pseudo, idPays, fcm_token, device_ID, hardware_id, device_model, os_system } = req.body;
 
     if (!password) {
       return res.status(400).json({ error: 'Mot de passe requis' });
@@ -79,6 +83,15 @@ const register = async (req, res) => {
 
     if (password.length < 6) {
       return res.status(400).json({ error: 'Le mot de passe doit faire au moins 6 caractères' });
+    }
+
+    // Voir login() : sans identifiant d'appareil, la session serait irrévocable.
+    const appareilKey = String(hardware_id || device_ID || '').trim();
+    if (!appareilKey || appareilKey === 'INDEFINI') {
+      return res.status(400).json({
+        error: 'Identifiant d\'appareil requis',
+        code: 'DEVICE_ID_REQUIRED',
+      });
     }
 
     const cleanEmail = normalizeEmail(email);
@@ -122,7 +135,21 @@ const register = async (req, res) => {
       ]
     );
 
-    const tokenPayload  = { alanyaID: result.insertId, email: cleanEmail };
+    const appareilId = await deviceSessionService.recordLogin({
+      alanyaID: result.insertId,
+      deviceId: appareilKey,
+      deviceName: device_model,
+      platform: os_system,
+      ipAddress: _clientIp(req),
+      loginMethod: 'register',
+    });
+
+    if (!appareilId) {
+      console.error('[Register] recordLogin a échoué — token non émis (session serait irrévocable)');
+      return res.status(503).json({ error: 'Service temporairement indisponible' });
+    }
+
+    const tokenPayload = { alanyaID: result.insertId, email: cleanEmail, appareilId };
     const accessToken   = generateAccessToken(tokenPayload);
     const refreshToken  = generateRefreshToken(tokenPayload);
 
@@ -147,10 +174,21 @@ const register = async (req, res) => {
 // Connexion
 const login = async (req, res) => {
   try {
-    const { alanyaPhone, password, fcm_token, device_ID, device_model, os_system } = req.body;
+    const { alanyaPhone, password, fcm_token, device_ID, hardware_id, device_model, os_system } = req.body;
 
     if (!alanyaPhone || !password) {
       return res.status(400).json({ error: 'Alanya phone et mot de passe requis' });
+    }
+
+    // Sans identifiant d'appareil, aucune ligne `appareils` n'est créée : la
+    // session serait invisible dans « Appareils connectés » et donc à jamais
+    // irrévocable. On refuse plutôt que d'émettre un token intraçable.
+    const appareilKey = String(hardware_id || device_ID || '').trim();
+    if (!appareilKey || appareilKey === 'INDEFINI') {
+      return res.status(400).json({
+        error: 'Identifiant d\'appareil requis',
+        code: 'DEVICE_ID_REQUIRED',
+      });
     }
 
     const phoneCanonical = normalize(alanyaPhone);
@@ -185,7 +223,21 @@ const login = async (req, res) => {
       await pool.execute(`UPDATE users SET ${updates.join(', ')} WHERE alanyaID = ?`, values);
     }
 
-    const tokenPayload = { alanyaID: user.alanyaID, email: user.email };
+    const appareilId = await deviceSessionService.recordLogin({
+      alanyaID: user.alanyaID,
+      deviceId: appareilKey,
+      deviceName: device_model,
+      platform: os_system,
+      ipAddress: _clientIp(req),
+      loginMethod: 'password',
+    });
+
+    if (!appareilId) {
+      console.error('[Login] recordLogin a échoué — token non émis (session serait irrévocable)');
+      return res.status(503).json({ error: 'Service temporairement indisponible' });
+    }
+
+    const tokenPayload = { alanyaID: user.alanyaID, email: user.email, appareilId };
     const accessToken  = generateAccessToken(tokenPayload);
     const refreshToken = generateRefreshToken(tokenPayload);
 
@@ -196,6 +248,15 @@ const login = async (req, res) => {
     logUserAccess(req, user.alanyaID, {
       device: device_model || device_ID,
       osSystem: os_system,
+    });
+
+    // Signale aux autres appareils déjà connectés qu'une nouvelle connexion
+    // vient d'avoir lieu sur ce compte (mot de passe, inscription ou QR).
+    emitToUser(req.app.get('io'), user.alanyaID, 'auth:conflict', {
+      deviceName: device_model || 'INDEFINI',
+      platform: os_system || 'INDEFINI',
+      loginMethod: 'password',
+      at: new Date().toISOString(),
     });
 
     res.json({ user, accessToken, refreshToken });
@@ -238,7 +299,20 @@ const refreshToken = async (req, res) => {
       return res.status(401).json({ error: 'Utilisateur non trouvé ou banni' });
     }
 
-    const tokenPayload    = { alanyaID: rows[0].alanyaID, email: rows[0].email };
+    // Un appareil révoqué ne doit pas pouvoir renouveler indéfiniment son
+    // access token — les tokens pré-migration (sans appareilId) passent.
+    if (decoded.appareilId != null) {
+      const [appareilRows] = await pool.execute(
+        'SELECT id FROM appareils WHERE id = ? AND alanyaID = ? AND revoked_at IS NULL',
+        [decoded.appareilId, rows[0].alanyaID]
+      );
+      if (appareilRows.length === 0) {
+        return res.status(401).json({ error: 'Appareil déconnecté', code: 'DEVICE_REVOKED' });
+      }
+      deviceSessionService.touchLastActive(decoded.appareilId);
+    }
+
+    const tokenPayload    = { alanyaID: rows[0].alanyaID, email: rows[0].email, appareilId: decoded.appareilId ?? null };
     const newAccessToken  = generateAccessToken(tokenPayload);
     const newRefreshToken = generateRefreshToken(tokenPayload);
 

@@ -18,6 +18,14 @@ const {
   changePassword,
 } = require('../controllers/authCustomController');
 const {
+  createQrSession,
+  getQrSessionStatus,
+  approveQrSession,
+  denyQrSession,
+  listDeviceSessions,
+  revokeDeviceSession,
+} = require('../controllers/qrAuthController');
+const {
   registerPushDevice,
   updatePushDeviceState,
   deletePushDevice,
@@ -390,6 +398,226 @@ router.put('/me/password', authCustom, changePassword);
  *         description: Token FCM mis à jour
  */
 router.put('/fcm-token',  authCustom, updateFcmToken);
+
+/**
+ * @swagger
+ * /api/auth/qr-session:
+ *   post:
+ *     summary: Ouvre une session de connexion par QR (appareil non connecté)
+ *     description: >
+ *       Sans authentification — c'est l'appareil qui n'est pas encore connecté
+ *       qui appelle. Le `pollToken` retourné ici n'est jamais dans le QR : il
+ *       est le seul moyen d'interroger la session et de récupérer les tokens.
+ *     tags: [Auth Custom]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - deviceId
+ *             properties:
+ *               deviceId:
+ *                 type: string
+ *                 description: Identifiant matériel de l'appareil demandeur
+ *               deviceName:
+ *                 type: string
+ *               platform:
+ *                 type: string
+ *                 enum: [android, ios, web, unknown]
+ *     responses:
+ *       200:
+ *         description: Session créée
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 sessionId:
+ *                   type: string
+ *                 scanSecret:
+ *                   type: string
+ *                 pollToken:
+ *                   type: string
+ *                 payload:
+ *                   type: string
+ *                   description: URL à encoder dans le QR
+ *                 expiresAt:
+ *                   type: string
+ *                   format: date-time
+ */
+router.post('/qr-session', authLimiter, createQrSession);
+
+/**
+ * @swagger
+ * /api/auth/qr-session/{sessionId}:
+ *   get:
+ *     summary: Statut d'une session de connexion par QR
+ *     description: >
+ *       Sans authentification. Les tokens ne sont livrés qu'une seule fois :
+ *       le premier appel retournant `approved` détruit la session.
+ *     tags: [Auth Custom]
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: pollToken
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Statut (pending, scanned, approved, denied, expired)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 user:
+ *                   type: object
+ *                 accessToken:
+ *                   type: string
+ *                 refreshToken:
+ *                   type: string
+ *       404:
+ *         description: Session inconnue ou pollToken invalide
+ */
+router.get('/qr-session/:sessionId', getQrSessionStatus);
+
+/**
+ * @swagger
+ * /api/auth/qr-session/{sessionId}/approve:
+ *   post:
+ *     summary: Approuve une connexion par QR (appareil déjà connecté)
+ *     description: >
+ *       Seul point d'approbation — appelé après confirmation explicite de
+ *       l'utilisateur sur un écran dédié, jamais depuis /api/qr/resolve.
+ *     tags: [Auth Custom]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - scanSecret
+ *             properties:
+ *               scanSecret:
+ *                 type: string
+ *                 description: Secret lu dans le QR scanné
+ *     responses:
+ *       200:
+ *         description: Connexion approuvée
+ *       404:
+ *         description: Session inconnue, expirée ou scanSecret invalide
+ *       409:
+ *         description: Session déjà traitée
+ */
+router.post('/qr-session/:sessionId/approve', authCustom, approveQrSession);
+
+/**
+ * @swagger
+ * /api/auth/qr-session/{sessionId}/deny:
+ *   post:
+ *     summary: Refuse une connexion par QR (appareil déjà connecté)
+ *     tags: [Auth Custom]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - scanSecret
+ *             properties:
+ *               scanSecret:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Connexion refusée
+ */
+router.post('/qr-session/:sessionId/deny', authCustom, denyQrSession);
+
+/**
+ * @swagger
+ * /api/auth/device-sessions:
+ *   get:
+ *     summary: Liste les appareils connectés au compte
+ *     tags: [Auth Custom]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Appareils actifs, le plus récemment actif en premier
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   id:
+ *                     type: integer
+ *                   deviceName:
+ *                     type: string
+ *                   platform:
+ *                     type: string
+ *                   loginMethod:
+ *                     type: string
+ *                   createdAt:
+ *                     type: string
+ *                     format: date-time
+ *                   lastActiveAt:
+ *                     type: string
+ *                     format: date-time
+ *                   current:
+ *                     type: boolean
+ */
+router.get('/device-sessions', authCustom, listDeviceSessions);
+
+/**
+ * @swagger
+ * /api/auth/device-sessions/{id}:
+ *   delete:
+ *     summary: Déconnecte un appareil (révocation immédiate de ses tokens)
+ *     tags: [Auth Custom]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Appareil déconnecté
+ *       404:
+ *         description: Appareil introuvable
+ */
+router.delete('/device-sessions/:id', authCustom, revokeDeviceSession);
 
 router.post('/push-devices/register', authCustom, registerPushDevice);
 router.post('/push-devices/state', authCustom, updatePushDeviceState);

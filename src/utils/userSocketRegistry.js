@@ -67,6 +67,36 @@ function hasForegroundSocket(io, alanyaID) {
   return false;
 }
 
+/**
+ * Ferme les sockets d'un appareil précis, à sa révocation.
+ *
+ * L'event `auth:device_revoked` demande au client de se déconnecter lui-même ;
+ * ceci ne dépend pas de sa coopération. Sans cette fermeture, un appareil
+ * révoqué continuerait de recevoir messages, appels et présence en temps réel
+ * tant qu'il garde sa socket ouverte — la révocation ne mordrait que sur REST.
+ *
+ * La clé est `appareilId` (porté par le JWT), pas `device_id` : les sockets
+ * s'authentifient avec l'UUID applicatif du client, distinct de l'identifiant
+ * matériel stocké dans `appareils.device_id`.
+ *
+ * @returns {number} nombre de sockets fermées
+ */
+function disconnectAppareilSockets(io, alanyaID, appareilId) {
+  if (!io?.sockets?.adapter?.rooms || appareilId == null) return 0;
+  const room = io.sockets.adapter.rooms.get(`user_${Number(alanyaID)}`);
+  if (!room) return 0;
+  let closed = 0;
+  // Copie : `disconnect` retire la socket de la room pendant l'itération.
+  for (const sid of [...room]) {
+    const s = io.sockets.sockets.get(sid);
+    if (s && s.appareilId != null && Number(s.appareilId) === Number(appareilId)) {
+      s.disconnect(true);
+      closed++;
+    }
+  }
+  return closed;
+}
+
 /** device_id des sockets authentifiés dans user_{alanyaID}. */
 function getConnectedDeviceIds(io, alanyaID) {
   const ids = new Set();
@@ -90,4 +120,5 @@ module.exports = {
   emitToUser,
   isUserOnline,
   getConnectedDeviceIds,
+  disconnectAppareilSockets,
 };

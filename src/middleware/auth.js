@@ -27,19 +27,27 @@ const auth = async (req, res, next) => {
       return res.status(401).json({ error: 'Type de token invalide' });
     }
 
+    // Les tokens émis avant la migration 026 (sans appareilId) restent valides
+    // — sinon le déploiement déconnecterait tout le monde d'un coup. La
+    // révocation (bouton « Déconnecter » sur un appareil) n'est donc réelle
+    // que pour les sessions ouvertes après cette migration.
     const [rows] = await pool.execute(
-      'SELECT alanyaID, alanyaPhone, email FROM users WHERE alanyaID = ? AND exclus = 0',
-      [decoded.alanyaID]
+      `SELECT u.alanyaID, u.alanyaPhone, u.email
+       FROM users u
+       LEFT JOIN appareils a ON a.id = ? AND a.alanyaID = u.alanyaID
+       WHERE u.alanyaID = ? AND u.exclus = 0 AND (a.id IS NULL OR a.revoked_at IS NULL)`,
+      [decoded.appareilId ?? null, decoded.alanyaID]
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Utilisateur non trouvé ou banni' });
+      return res.status(401).json({ error: 'Utilisateur non trouvé, banni ou appareil déconnecté' });
     }
 
     req.user = {
       alanyaID: rows[0].alanyaID,
       phone: rows[0].alanyaPhone,
       email: rows[0].email,
+      appareilId: decoded.appareilId ?? null,
     };
     next();
   } catch (error) {

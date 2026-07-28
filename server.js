@@ -28,11 +28,13 @@ const meetingRoutes      = require('./src/routes/meetings');
 const notifyRoutes       = require('./src/routes/notify');
 const uploadRoutes       = require('./src/routes/upload');
 const contactRoutes      = require('./src/routes/contacts');
+const qrRoutes           = require('./src/routes/qr');
 const turnRoutes         = require('./src/routes/turn');
 const adminRoutes        = require('./src/routes/admin');
 
 // ── Socket handlers ───────────────────────────────────────────────────
 const socketAuth = require('./src/socket/handlers/auth');
+const qrLoginSocket = require('./src/socket/handlers/qrLogin');
 const {
   joinConversation, messageSend, typingStart, typingStop,
   messageDelivered, messageRead,
@@ -90,6 +92,7 @@ app.use('/api/calls',         callRoutes);
 app.use('/api/meetings',      meetingRoutes);
 app.use('/api/upload',        uploadRoutes);
 app.use('/api/contacts',      contactRoutes);
+app.use('/api/qr',            qrRoutes);
 app.use('/api/turn',          turnRoutes);
 app.use('/api/admin',         adminRoutes);
 app.use('/notify',            notifyRoutes);
@@ -105,6 +108,7 @@ io.on('connection', (socket) => {
   socket.authenticated = false;
 
   socketAuth(io, socket, userSockets);
+  qrLoginSocket(io, socket, userSockets);
   presenceOnline(io, socket, userSockets);
   presenceOffline(io, socket, userSockets);
   joinConversation(io, socket, userSockets);

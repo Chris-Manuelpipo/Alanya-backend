@@ -1,14 +1,6 @@
 const pool = require('../config/db');
 const { maskPresenceIfBlocked } = require('../utils/blockUtils');
-
-const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
-const sanitizeUrl = (url) => {
-  if (!url) return null;
-  const trimmed = url.trim();
-  if (_INVALID_URL_VALUES.includes(trimmed)) return null;
-  if (!trimmed.startsWith('http')) return null;
-  return trimmed;
-};
+const { sanitizeUrl, addContactByFriendId } = require('../services/contactService');
 
 // Contacts préférés : liste, ajout, suppression, vérification
 const getPreferredContacts = async (req, res) => {
@@ -75,51 +67,20 @@ const addPreferredContact = async (req, res) => {
       return res.status(400).json({ error: 'Invalid user ID' });
     }
 
-    if (friendID === alanyaID) {
-      return res.status(400).json({ error: 'Cannot add yourself as contact' });
+    const result = await addContactByFriendId(alanyaID, friendID);
+
+    switch (result.reason) {
+      case 'self':
+        return res.status(400).json({ error: 'Cannot add yourself as contact' });
+      case 'not_found':
+        return res.status(404).json({ error: 'User not found' });
+      case 'blocked':
+        return res.status(403).json({ error: 'Cannot add blocked user' });
+      case 'already':
+        return res.status(409).json({ error: 'Already a preferred contact' });
+      default:
+        return res.status(201).json(result.contact);
     }
-
-    // Vérifier que l'ami existe
-    const [userCheck] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, avatar_url, is_online FROM users WHERE alanyaID = ? AND exclus = 0',
-      [friendID]
-    );
-    if (userCheck.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    // Vérifier que l'utilisateur n'est pas bloqué
-    const [blockCheck] = await pool.execute(
-      'SELECT idBlock FROM blocked WHERE (alanyaID = ? AND idCallerBlock = ?) OR (alanyaID = ? AND idCallerBlock = ?)',
-      [alanyaID, friendID, friendID, alanyaID]
-    );
-    if (blockCheck.length > 0) {
-      return res.status(403).json({ error: 'Cannot add blocked user' });
-    }
-
-    // Vérifier si déjà contact préféré
-    const [existing] = await pool.execute(
-      'SELECT idPrefContact FROM preferredContact WHERE alanyaID = ? AND idFriend = ?',
-      [alanyaID, friendID]
-    );
-    if (existing.length > 0) {
-      return res.status(409).json({ error: 'Already a preferred contact' });
-    }
-
-    const [result] = await pool.execute(
-      'INSERT INTO preferredContact (alanyaID, idFriend, created_at) VALUES (?, ?, NOW())',
-      [alanyaID, friendID]
-    );
-
-    res.status(201).json({
-      idPrefContact: result.insertId,
-      alanyaID:      userCheck[0].alanyaID,
-      nom:           userCheck[0].nom,
-      pseudo:        userCheck[0].pseudo,
-      alanyaPhone:   userCheck[0].alanyaPhone,
-      avatar_url:    sanitizeUrl(userCheck[0].avatar_url),
-      is_online:     userCheck[0].is_online,
-    });
   } catch (error) {
     console.error('[addPreferredContact] ERROR:', error);
     res.status(500).json({ error: error.message });

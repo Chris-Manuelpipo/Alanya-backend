@@ -30,13 +30,21 @@ const socketAuth = (io, socket, userSockets) => {
         return socket.emit('auth:error', { message: 'Type de token invalide' });
       }
 
+      // Même garde que le middleware HTTP (migration 026) : sans elle, un
+      // appareil révoqué verrait toutes ses requêtes REST en 401 mais garderait
+      // une socket authentifiée, donc les messages et les appels en temps réel,
+      // jusqu'à l'expiration de son access token. Les tokens antérieurs à la
+      // migration (sans appareilId) restent acceptés.
       const [rows] = await pool.execute(
-        'SELECT alanyaID, alanyaPhone FROM users WHERE alanyaID = ? AND exclus = 0',
-        [decoded.alanyaID]
+        `SELECT u.alanyaID, u.alanyaPhone
+         FROM users u
+         LEFT JOIN appareils a ON a.id = ? AND a.alanyaID = u.alanyaID
+         WHERE u.alanyaID = ? AND u.exclus = 0 AND (a.id IS NULL OR a.revoked_at IS NULL)`,
+        [decoded.appareilId ?? null, decoded.alanyaID]
       );
 
       if (rows.length === 0) {
-        return socket.emit('auth:error', { message: 'Utilisateur introuvable ou banni' });
+        return socket.emit('auth:error', { message: 'Utilisateur introuvable, banni ou appareil déconnecté' });
       }
 
       const alanyaID = rows[0].alanyaID;
@@ -44,6 +52,11 @@ const socketAuth = (io, socket, userSockets) => {
       if (rawDevice && String(rawDevice).trim()) {
         socket.deviceId = String(rawDevice).trim().slice(0, 128);
       }
+      // Clé de la déconnexion forcée à la révocation : `socket.deviceId` est
+      // l'UUID applicatif du client, pas l'identifiant matériel de
+      // `appareils.device_id` — seul `appareilId` désigne la même ligne des
+      // deux côtés.
+      socket.appareilId = decoded.appareilId ?? null;
       _registerSocket(socket, alanyaID, userSockets, io);
       console.log(`[Socket] Authentifié: User ${alanyaID} (socket ${socket.id})`);
 
