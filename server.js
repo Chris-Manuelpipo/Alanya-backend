@@ -31,6 +31,7 @@ const contactRoutes      = require('./src/routes/contacts');
 const qrRoutes           = require('./src/routes/qr');
 const turnRoutes         = require('./src/routes/turn');
 const adminRoutes        = require('./src/routes/admin');
+const qrLandingRoutes    = require('./src/routes/qrLanding');
 
 // ── Socket handlers ───────────────────────────────────────────────────
 const socketAuth = require('./src/socket/handlers/auth');
@@ -96,6 +97,11 @@ app.use('/api/qr',            qrRoutes);
 app.use('/api/turn',          turnRoutes);
 app.use('/api/admin',         adminRoutes);
 app.use('/notify',            notifyRoutes);
+
+// Routes publiques du volet QR (page d'accueil d'un code, fichiers
+// d'association des liens universels) — à la racine du domaine, hors /api :
+// c'est cette URL qui est encodée dans les QR d'identité et partagée.
+app.use('/', qrLandingRoutes);
 
 app.get('/health', (_, res) => res.json({ status: 'Serveur ok', timestamp: new Date().toISOString() }));
 
