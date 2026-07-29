@@ -502,6 +502,37 @@ async function processRejectCall({ io, userSockets, callerID, receiverID, callId
     return { ok: false, reason: 'invalid_ids' };
   }
 
+  // Garde anti-fratricide : un refus qui désigne explicitement un AUTRE appel
+  // que celui en cours entre ces deux utilisateurs est un refus tardif (ex.
+  // nettoyage cold-start d'une notification CallKit résiduelle côté client).
+  // Dans ce cas on marque le vieil appel refusé en DB, mais on ne touche ni à
+  // pendingCalls ni à callState — sinon un débris local tuerait l'appel qui
+  // sonne réellement.
+  const hintID = toInt(callIdHint);
+  if (hintID) {
+    const receiverEntry = callState.getEntry(toInt(receiverID));
+    const currentPairCallID =
+      receiverEntry && String(receiverEntry.peerId) === String(callerID)
+        ? toInt(receiverEntry.callId)
+        : null;
+    if (currentPairCallID && currentPairCallID !== hintID) {
+      try {
+        // `status = 0` uniquement : ne pas réécrire un appel déjà classé
+        // (répondu/refusé/manqué) par le flux normal.
+        await pool.execute(
+          'UPDATE callHistory SET status = 2 WHERE IDcall = ? AND status = 0',
+          [hintID],
+        );
+      } catch (dbErr) {
+        console.warn('[processRejectCall] stale DB update failed:', dbErr.message);
+      }
+      console.log(
+        `[processRejectCall] refus tardif ignoré: hint=${hintID} ≠ courant=${currentPairCallID} (receiver=${receiverID})`,
+      );
+      return { ok: true, callId: hintID, stale: true };
+    }
+  }
+
   // Appel refusé : ne pas le rejouer au destinataire.
   pendingCalls.clear(receiverID);
 

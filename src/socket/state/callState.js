@@ -11,6 +11,8 @@
 //                   lastAnswer, isVideo, ringingSince }
 
 const DISCONNECT_GRACE_MS = 45 * 1000;
+// Grâce courte quand une socket tombe pendant la sonnerie (reconnexion cold-start).
+const RINGING_DISCONNECT_GRACE_MS = 10 * 1000;
 // Marge au-delà du timer no-answer (45 s) pour purger un état « ringing » fantôme.
 const STALE_RINGING_MS = 50 * 1000;
 
@@ -174,6 +176,23 @@ function scheduleDisconnectGrace(userId, onExpire) {
   }, DISCONNECT_GRACE_MS);
 }
 
+// Grâce courte pour une déconnexion socket PENDANT la sonnerie : le destinataire
+// qui démarre à froid (accept depuis notification, app tuée) peut perdre sa
+// première socket avant que l'appel soit répondu. Terminer l'appel immédiatement
+// rendait l'accept cold-start impossible ; le timer no-answer (45 s) reste le
+// filet si personne ne se reconnecte. Annulée par `auth:login`
+// (cancelDisconnectGrace) et par toute transition d'état (_clearTimers).
+function scheduleRingingDisconnectGrace(userId, onExpire) {
+  if (userId == null || typeof onExpire !== 'function') return;
+  const entry = getEntry(userId);
+  if (!entry || entry.status !== 'ringing') return;
+  cancelDisconnectGrace(userId);
+  entry.disconnectTimer = setTimeout(() => {
+    entry.disconnectTimer = null;
+    onExpire();
+  }, RINGING_DISCONNECT_GRACE_MS);
+}
+
 module.exports = {
   get,
   isBusy,
@@ -186,6 +205,8 @@ module.exports = {
   clear,
   cancelDisconnectGrace,
   scheduleDisconnectGrace,
+  scheduleRingingDisconnectGrace,
   DISCONNECT_GRACE_MS,
+  RINGING_DISCONNECT_GRACE_MS,
   STALE_RINGING_MS,
 };

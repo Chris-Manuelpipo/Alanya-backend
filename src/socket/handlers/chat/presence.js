@@ -105,7 +105,18 @@ const handleDisconnect = async (io, socket, userSockets) => {
         });
         console.log(`[Socket disconnect] Grace period armée user=${userID} callId=${entry.callId ?? 'none'}`);
       } else {
-        await endActiveCallForUser(io, userSockets, userID, 'disconnect');
+        // Sonnerie : grâce courte plutôt que fin immédiate. Le destinataire qui
+        // accepte depuis une notification app tuée démarre à froid et sa
+        // première socket peut tomber avant `answer_call` — terminer ici rendait
+        // l'accept cold-start irrécupérable. Le timer no-answer reste le filet.
+        callState.scheduleRingingDisconnectGrace(userID, async () => {
+          try {
+            await endActiveCallForUser(io, userSockets, userID, 'ringing_disconnect_grace_expired');
+          } catch (e) {
+            console.warn('[Socket disconnect] ringing grace endActiveCallForUser failed:', e.message);
+          }
+        });
+        console.log(`[Socket disconnect] Grâce sonnerie armée user=${userID} callId=${entry.callId ?? 'none'}`);
       }
     } catch (e) {
       console.warn('[Socket disconnect] endActiveCallForUser failed:', e.message);

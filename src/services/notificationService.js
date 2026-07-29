@@ -78,7 +78,9 @@ const _buildApnsConfig = (data) => {
 // déclencher CallKit via le handler Dart.
 const VISIBLE_TYPES = ['message', 'meeting_invite', 'meeting_reminder', 'status_view'];
 const CALL_TYPES = ['call', 'group_call'];
-const CALL_TTL_MS = 60_000;
+// Aligné sur NO_ANSWER_MS (45 s, calls.js) : un push d'appel délivré après le
+// timeout serveur ferait sonner un appel déjà classé « sans réponse ».
+const CALL_TTL_MS = 45_000;
 
 const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
   if (!fcmToken || fcmToken === 'INDEFINI') return;
@@ -159,10 +161,15 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
     });
   } catch (error) {
     const code = error?.code || error?.errorInfo?.code || '';
+    // `mismatched-credential` / SenderId mismatch : token émis par un autre
+    // projet Firebase (ex. installation antérieure au renommage du paquet
+    // Android). Aussi définitif qu'un token désenregistré → même purge.
     const staleToken =
       code === 'messaging/registration-token-not-registered' ||
       code === 'messaging/invalid-registration-token' ||
-      error.message?.includes('Requested entity was not found');
+      code === 'messaging/mismatched-credential' ||
+      error.message?.includes('Requested entity was not found') ||
+      error.message?.includes('SenderId mismatch');
     if (staleToken) {
       logTokenStale({
         type: data.type,
@@ -173,13 +180,28 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       });
       try {
         const pool = require('../config/db');
+        // Les deux couches : `resolveCallPushTargets` lit user_push_devices en
+        // priorité — un token mort qui n'y serait pas purgé resterait ciblé à
+        // chaque appel, en échec silencieux, sans jamais retomber sur le legacy.
         await pool.execute(
           'UPDATE users SET fcm_token = "INDEFINI" WHERE fcm_token = ?',
+          [fcmToken],
+        );
+        await pool.execute(
+          'UPDATE user_push_devices SET fcmToken = "INDEFINI" WHERE fcmToken = ?',
           [fcmToken],
         );
       } catch (cleanupErr) {
         console.warn('[FCM] Token cleanup failed:', cleanupErr.message);
       }
+    }
+    // Un push d'appel raté = destinataire qui ne sonne pas : contrairement aux
+    // messages (rattrapés à la reconnexion), c'est une perte fonctionnelle
+    // immédiate → visible en console avec le code d'erreur exact.
+    if (CALL_TYPES.includes(data.type) || data.type === 'call_ended') {
+      console.error(
+        `[FCM][CALL] échec envoi type=${data.type} callId=${data.callId || '?'} code=${code || 'n/a'}: ${error.message}`,
+      );
     }
     // Ne pas faire crasher le serveur pour une notif ratée
     logFailed({
@@ -187,7 +209,7 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       eventId: data.eventId,
       msgID: data.msgID,
       conversationId: data.conversationId,
-      reason: error.message,
+      reason: code ? `${code}: ${error.message}` : error.message,
     });
   }
 };
