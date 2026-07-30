@@ -6,6 +6,7 @@ const {
   addPreferredContact,
   removePreferredContact,
   checkIsContact,
+  setContactNote,
 } = require('../controllers/preferredContactController');
 
 /**
@@ -83,6 +84,38 @@ router.get('/check/:id', auth, checkIsContact);
  *         description: Contact supprimé
  */
 router.post('/:id',      auth, addPreferredContact);
+
+/**
+ * @swagger
+ * /api/contacts/{id}/note:
+ *   put:
+ *     summary: Pose ou remplace la note contextuelle d'un contact préféré
+ *     tags: [Contacts]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               note:
+ *                 type: string
+ *                 maxLength: 200
+ *                 description: Vide ou absente pour effacer
+ *     responses:
+ *       200:
+ *         description: Note enregistrée
+ *       404:
+ *         description: Pas un contact préféré
+ */
+router.put('/:id/note',  auth, setContactNote);
 router.delete('/:id',    auth, removePreferredContact);
 
 module.exports = router;

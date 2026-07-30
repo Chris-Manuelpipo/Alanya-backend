@@ -19,7 +19,7 @@ const sanitizeUrl = (url) => {
   return trimmed;
 };
 
-const _contactBody = (idPrefContact, user, addedVia, addedAt) => ({
+const _contactBody = (idPrefContact, user, addedVia, addedAt, addedNote = null) => ({
   idPrefContact,
   alanyaID:    user.alanyaID,
   nom:         user.nom,
@@ -29,6 +29,7 @@ const _contactBody = (idPrefContact, user, addedVia, addedAt) => ({
   is_online:   user.is_online,
   addedVia,
   addedAt,
+  addedNote,
 });
 
 /**
@@ -63,7 +64,7 @@ const addContactByFriendId = async (alanyaID, friendID, { addedVia = 'search' } 
 
   // Vérifier si déjà contact préféré
   const [existing] = await pool.execute(
-    'SELECT idPrefContact, added_via, created_at FROM preferredContact WHERE alanyaID = ? AND idFriend = ?',
+    'SELECT idPrefContact, added_via, added_note, created_at FROM preferredContact WHERE alanyaID = ? AND idFriend = ?',
     [alanyaID, friendID]
   );
   if (existing.length > 0) {
@@ -74,7 +75,7 @@ const addContactByFriendId = async (alanyaID, friendID, { addedVia = 'search' } 
       reason: 'already',
       contact: _contactBody(
         existing[0].idPrefContact, userCheck[0],
-        existing[0].added_via, existing[0].created_at,
+        existing[0].added_via, existing[0].created_at, existing[0].added_note,
       ),
     };
   }

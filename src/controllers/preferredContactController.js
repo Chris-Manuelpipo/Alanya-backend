@@ -12,6 +12,7 @@ const getPreferredContacts = async (req, res) => {
          pc.idPrefContact,
          pc.created_at,
          pc.added_via,
+         pc.added_note,
          u.alanyaID,
          u.nom,
          u.pseudo,
@@ -39,6 +40,7 @@ const getPreferredContacts = async (req, res) => {
         idPrefContact: r.idPrefContact,
         addedAt:       r.created_at,
         addedVia:      r.added_via,
+        addedNote:     r.added_note,
         alanyaID:      r.alanyaID,
         nom:           r.nom,
         pseudo:        r.pseudo,
@@ -95,6 +97,35 @@ const addPreferredContact = async (req, res) => {
   }
 };
 
+// Note contextuelle d'un contact préféré — saisie juste après un scan pour se
+// souvenir de la rencontre. Vide ou absente = effacement. Elle appartient à la
+// RELATION (mon lien vers lui), jamais au profil de l'autre.
+const setContactNote = async (req, res) => {
+  try {
+    const alanyaID = req.user.alanyaID;
+    const friendID = parseInt(req.params.id, 10);
+    if (!friendID || isNaN(friendID)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    const brute = req.body?.note;
+    const note = brute == null ? '' : String(brute).trim().slice(0, 200);
+
+    const [result] = await pool.execute(
+      'UPDATE preferredContact SET added_note = ? WHERE alanyaID = ? AND idFriend = ?',
+      [note === '' ? null : note, alanyaID, friendID]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Not a preferred contact' });
+    }
+
+    res.json({ ok: true, addedNote: note === '' ? null : note });
+  } catch (error) {
+    console.error('[setContactNote] ERROR:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 // Supprimer un contact préféré 
 const removePreferredContact = async (req, res) => {
   try {
@@ -144,4 +175,5 @@ module.exports = {
   addPreferredContact,
   removePreferredContact,
   checkIsContact,
+  setContactNote,
 };
