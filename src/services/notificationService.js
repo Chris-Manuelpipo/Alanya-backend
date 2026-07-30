@@ -571,11 +571,20 @@ const notifyStatusView = async (statusOwnerID, viewerName) => {
  * plan — sinon le dialogue in-app (événement `qr:contact_scanned`) suffit, et
  * la notification ferait doublon.
  */
-const notifyQrContactScanned = async (ownerID, scannerName) => {
+const notifyQrContactScanned = async (ownerID, scanner, alreadyMutual) => {
+  const scannerName = (scanner.nom || '').trim() || (scanner.pseudo || '').trim();
   await sendToUser(ownerID, {
     type:  'qr_contact_scanned',
     title: 'Nouveau contact',
     body:  `${scannerName || 'Quelqu\'un'} vous a ajouté avec votre code QR. Ajoutez-le en retour ?`,
+    // L'identité voyage dans la data : au tap, l'app reconstruit l'invitation
+    // « ajouter en retour » — l'événement socket émis au moment du scan est
+    // perdu si l'app était fermée.
+    byAlanyaID: String(scanner.alanyaID),
+    byNom: scanner.nom || '',
+    byPseudo: scanner.pseudo || '',
+    byAvatar: scanner.avatar_url || '',
+    alreadyMutual: alreadyMutual ? '1' : '0',
   });
 };
 

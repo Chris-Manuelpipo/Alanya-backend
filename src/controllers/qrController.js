@@ -247,24 +247,30 @@ const _prevenirProprietaire = async (req, ownerID, scannerID) => {
     );
 
     const avatar = String(rows[0].avatar_url ?? '').trim();
-    const scannerName = (rows[0].nom || '').trim() || (rows[0].pseudo || '').trim();
+    const scanner = {
+      alanyaID: rows[0].alanyaID,
+      nom: rows[0].nom,
+      pseudo: rows[0].pseudo,
+      avatar_url: avatar.startsWith('http') ? avatar : null,
+    };
+    const alreadyMutual = mutual.length > 0;
 
     const io = req.app.get('io');
     emitToUser(io, ownerID, 'qr:contact_scanned', {
-      by: {
-        alanyaID: rows[0].alanyaID,
-        nom: rows[0].nom,
-        pseudo: rows[0].pseudo,
-        avatar_url: avatar.startsWith('http') ? avatar : null,
-      },
-      alreadyMutual: mutual.length > 0,
+      by: scanner,
+      alreadyMutual,
       at: new Date().toISOString(),
     });
+    console.log(
+      `[QrContact] scan notifié owner=${ownerID} par=${scannerID}` +
+      ` mutual=${alreadyMutual} push=${!hasForegroundSocket(io, ownerID)}`,
+    );
 
-    // App fermée ou en arrière-plan : le push prend le relais. Le dialogue
-    // d'ajout en retour s'affichera à l'ouverture.
+    // App fermée ou en arrière-plan : le push prend le relais — et transporte
+    // l'identité du scanneur, pour que le tap rejoue le dialogue d'ajout en
+    // retour que l'événement socket ne peut plus livrer.
     if (!hasForegroundSocket(io, ownerID)) {
-      await notifyQrContactScanned(ownerID, scannerName);
+      await notifyQrContactScanned(ownerID, scanner, alreadyMutual);
     }
   } catch (error) {
     console.warn('[qr:contact_scanned] émission échouée:', error.message);
