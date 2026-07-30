@@ -4,7 +4,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { showIdentityLanding } = require('../controllers/qrLandingController');
+const { showIdentityLanding, showContactLanding } = require('../controllers/qrLandingController');
 
 const ANDROID_PACKAGE = process.env.QR_ANDROID_PACKAGE || 'com.alanya237.alanya';
 const IOS_BUNDLE_ID = process.env.QR_IOS_BUNDLE_ID || 'com.alanya237.alanya';
@@ -21,7 +21,10 @@ const ANDROID_SHA256 = (process.env.QR_ANDROID_SHA256 || '')
 // Team ID Apple (préfixe de l'App ID). Même logique que ci-dessus.
 const IOS_TEAM_ID = process.env.QR_IOS_TEAM_ID || '';
 
-/** Page d'accueil d'un code d'identité — cible des QR `…/q/u/<jeton>`. */
+/** Code contact éphémère (comptes personnels) — cible des QR `…/q/c/<jeton>`. */
+router.get('/q/c/:token', showContactLanding);
+
+/** Code permanent (futurs comptes business) — cible des QR `…/q/u/<jeton>`. */
 router.get('/q/u/:token', showIdentityLanding);
 
 /** Android App Links. */
@@ -52,7 +55,7 @@ router.get('/.well-known/apple-app-site-association', (_req, res) => {
       details: [
         {
           appID: `${IOS_TEAM_ID}.${IOS_BUNDLE_ID}`,
-          paths: ['/q/u/*'],
+          paths: ['/q/u/*', '/q/c/*'],
         },
       ],
     },

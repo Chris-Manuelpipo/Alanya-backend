@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 
-/** @typedef {'message'|'message_read_sync'|'call'|'group_call'|'call_ended'|'meeting_invite'|'meeting_reminder'|'status_view'} NotificationType */
+/** @typedef {'message'|'message_read_sync'|'call'|'group_call'|'call_ended'|'meeting_invite'|'meeting_reminder'|'status_view'|'qr_contact_scanned'} NotificationType */
 
 const SCHEMA_VERSION = '2';
 
@@ -13,6 +13,7 @@ const NOTIFICATION_TYPES = Object.freeze([
   'meeting_invite',
   'meeting_reminder',
   'status_view',
+  'qr_contact_scanned',
 ]);
 
 /**

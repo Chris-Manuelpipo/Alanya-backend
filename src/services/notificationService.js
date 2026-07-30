@@ -565,6 +565,20 @@ const notifyStatusView = async (statusOwnerID, viewerName) => {
   });
 };
 
+/**
+ * Le code QR éphémère du propriétaire vient d'être scanné : on l'invite à
+ * ajouter le scanneur en retour. N'est envoyé que si aucun socket au premier
+ * plan — sinon le dialogue in-app (événement `qr:contact_scanned`) suffit, et
+ * la notification ferait doublon.
+ */
+const notifyQrContactScanned = async (ownerID, scannerName) => {
+  await sendToUser(ownerID, {
+    type:  'qr_contact_scanned',
+    title: 'Nouveau contact',
+    body:  `${scannerName || 'Quelqu\'un'} vous a ajouté avec votre code QR. Ajoutez-le en retour ?`,
+  });
+};
+
 const notifyMeetingInvite = async (participantId, organiserName, meetingTitle, meetingTime, meetingId) => {
   await sendToUser(participantId, {
     type:          'meeting_invite',
@@ -638,6 +652,7 @@ module.exports = {
   notifyIncomingCall,
   notifyGroupCall,
   notifyStatusView,
+  notifyQrContactScanned,
   notifyMeetingInvite,
   notifyMeetingReminder,
   notifyCallEnded,

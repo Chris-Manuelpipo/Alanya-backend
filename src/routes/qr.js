@@ -2,13 +2,47 @@ const express = require('express');
 const router  = express.Router();
 const { authCustom } = require('../middleware/authCustom');
 const { qrResolveLimiter } = require('../middleware/rateLimiter');
-const { getMyQr, regenerateQr, resolveQr } = require('../controllers/qrController');
+const {
+  createContactToken, getMyQr, regenerateQr, resolveQr,
+} = require('../controllers/qrController');
+
+/**
+ * @swagger
+ * /api/qr/contact-token:
+ *   post:
+ *     summary: Génère un code d'ajout de contact éphémère (10 min, usage unique)
+ *     description: >
+ *       Le régime des comptes personnels. Un seul code actif par utilisateur :
+ *       en générer un nouveau invalide le précédent. Le serveur ne fournit que
+ *       la donnée, le rendu du QR est côté client.
+ *     tags: [QR]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Jeton, payload à encoder, durée de vie
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 token:
+ *                   type: string
+ *                 payload:
+ *                   type: string
+ *                 ttlMs:
+ *                   type: integer
+ *                 expiresAt:
+ *                   type: string
+ *                   format: date-time
+ */
+router.post('/contact-token', authCustom, createContactToken);
 
 /**
  * @swagger
  * /api/qr/me:
  *   get:
- *     summary: Mon code QR d'identité (créé au premier appel)
+ *     summary: Mon code QR d'identité permanent (réservé aux comptes business)
  *     tags: [QR]
  *     security:
  *       - bearerAuth: []

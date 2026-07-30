@@ -11,6 +11,7 @@ const getPreferredContacts = async (req, res) => {
       `SELECT
          pc.idPrefContact,
          pc.created_at,
+         pc.added_via,
          u.alanyaID,
          u.nom,
          u.pseudo,
@@ -37,6 +38,7 @@ const getPreferredContacts = async (req, res) => {
       contacts.push({
         idPrefContact: r.idPrefContact,
         addedAt:       r.created_at,
+        addedVia:      r.added_via,
         alanyaID:      r.alanyaID,
         nom:           r.nom,
         pseudo:        r.pseudo,
@@ -67,7 +69,13 @@ const addPreferredContact = async (req, res) => {
       return res.status(400).json({ error: 'Invalid user ID' });
     }
 
-    const result = await addContactByFriendId(alanyaID, friendID);
+    // Liste blanche : 'qr' sert à l'ajout EN RETOUR après un scan (les deux
+    // directions du lien portent alors la même origine). Toute autre valeur
+    // retombe sur 'search' — cette métadonnée est cosmétique, pas de la
+    // sécurité, mais on ne laisse pas le client inventer des origines.
+    const addedVia = req.body?.addedVia === 'qr' ? 'qr' : 'search';
+
+    const result = await addContactByFriendId(alanyaID, friendID, { addedVia });
 
     switch (result.reason) {
       case 'self':

@@ -1,13 +1,32 @@
 const pool = require('../config/db');
-const { generateOpaqueToken, identityPayload, secretMatches } = require('../utils/qrToken');
+const {
+  generateOpaqueToken, identityPayload, contactPayload, secretMatches,
+} = require('../utils/qrToken');
 const { addContactByFriendId } = require('../services/contactService');
+const { emitToUser, hasForegroundSocket } = require('../utils/userSocketRegistry');
+const { notifyQrContactScanned } = require('../services/notificationService');
 const qrLoginSessions = require('../socket/state/qrLoginSessions');
+const qrContactTokens = require('../socket/state/qrContactTokens');
 
 // Le QR n'encode jamais une donnée brute (alanyaID énumérable, alanyaPhone qui
 // sert aussi à se connecter) : uniquement une URL portant un jeton opaque.
 // La base d'URL est partagée avec qrAuthController via utils/qrToken.
+//
+// Trois familles de jetons :
+//   /q/c/<token>          contact ÉPHÉMÈRE (10 min, usage unique) — comptes personnels
+//   /q/u/<qr_public_id>   contact PERMANENT — réservé aux futurs comptes business
+//   /q/l/<id>.<secret>    session de connexion d'un nouvel appareil
 
-const _QR_PATH_RE = /^\/q\/(u|l)\/([^/]+)$/;
+const _QR_PATH_RE = /^\/q\/(u|l|c)\/([^/]+)$/;
+
+/**
+ * Le code permanent est réservé aux comptes business — qui n'existent pas
+ * encore : `users.type_compte` est un RÔLE ADMIN (0 utilisateur, 1 admin,
+ * 2 super-admin), pas un type de compte métier. Le volet 1 (socle de compte)
+ * apportera `account_type` ; ce garde s'y branchera alors. D'ici là, il refuse
+ * tout le monde et les comptes personnels vivent sur les jetons éphémères.
+ */
+const _qrPermanentAutorise = (_alanyaID) => false;
 
 /**
  * Le parsing du payload est la responsabilité du serveur : le client envoie la
@@ -29,6 +48,10 @@ const _parsePayload = (raw) => {
 
   const match = _QR_PATH_RE.exec(pathname);
   if (!match) return null;
+
+  if (match[1] === 'c') {
+    return { type: 'contact_ephemere', token: match[2] };
+  }
 
   if (match[1] === 'u') {
     return { type: 'contact', qrPublicId: match[2] };
@@ -89,10 +112,37 @@ const _ensureQrPublicId = async (alanyaID) => {
   throw new Error('Impossible de générer un qr_public_id unique');
 };
 
-// Mon code QR d'identité (créé au premier appel)
+// Jeton d'ajout de contact éphémère : 10 minutes, consommé au premier scan.
+// C'est le code que l'écran « Mon code » affiche pour un compte personnel. Le
+// serveur ne fournit que la donnée — le rendu du QR est entièrement client.
+const createContactToken = async (req, res) => {
+  try {
+    const entry = qrContactTokens.create(req.user.alanyaID);
+    res.json({
+      token: entry.token,
+      payload: contactPayload(entry.token),
+      // Durée et non seulement date de fin : le client décompte depuis
+      // l'instant de réception, sans comparer son horloge à la nôtre.
+      ttlMs: qrContactTokens.TTL_MS,
+      expiresAt: new Date(entry.expiresAt).toISOString(),
+    });
+  } catch (error) {
+    console.error('[createContactToken] ERROR:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Mon code QR d'identité PERMANENT (créé au premier appel) — comptes business
 const getMyQr = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
+
+    if (!_qrPermanentAutorise(alanyaID)) {
+      return res.status(403).json({
+        error: 'Le code permanent est réservé aux comptes business',
+        code: 'BUSINESS_ONLY',
+      });
+    }
 
     const qrPublicId = await _ensureQrPublicId(alanyaID);
     if (!qrPublicId) {
@@ -106,10 +156,17 @@ const getMyQr = async (req, res) => {
   }
 };
 
-// Régénère le code : les QR déjà partagés cessent immédiatement de résoudre
+// Régénère le code permanent : les QR déjà partagés cessent de résoudre
 const regenerateQr = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
+
+    if (!_qrPermanentAutorise(alanyaID)) {
+      return res.status(403).json({
+        error: 'Le code permanent est réservé aux comptes business',
+        code: 'BUSINESS_ONLY',
+      });
+    }
 
     for (let attempt = 0; attempt < 5; attempt++) {
       const qrPublicId = generateOpaqueToken();
@@ -139,7 +196,9 @@ const _resolveContact = async (req, res, alanyaID, qrPublicId) => {
     'SELECT alanyaID FROM users WHERE qr_public_id = ? AND exclus = 0',
     [qrPublicId]
   );
-  if (rows.length === 0) {
+  // Propriétaire non-business : son code permanent ne résout pas, même si la
+  // colonne est renseignée (comptes d'essai antérieurs au verrouillage).
+  if (rows.length === 0 || !_qrPermanentAutorise(rows[0].alanyaID)) {
     return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
   }
 
@@ -161,6 +220,93 @@ const _resolveContact = async (req, res, alanyaID, qrPublicId) => {
       return res.json({
         type: 'contact', added: true, alreadyContact: false, contact: result.contact,
       });
+  }
+};
+
+/**
+ * Prévient le propriétaire que son code vient d'être utilisé, et l'invite à
+ * ajouter le scanneur en retour. Deux canaux : l'événement socket (dialogue
+ * in-app immédiat) et, si aucun socket au premier plan, une notification push
+ * — sans quoi un code partagé par lien serait consommé sans que son
+ * propriétaire ne l'apprenne. Best-effort : ne fait jamais échouer l'ajout.
+ */
+const _prevenirProprietaire = async (req, ownerID, scannerID) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT alanyaID, nom, pseudo, avatar_url FROM users WHERE alanyaID = ?',
+      [scannerID]
+    );
+    if (rows.length === 0) return;
+
+    // Le propriétaire a-t-il DÉJÀ le scanneur en contact ? Si oui, l'inviter
+    // à « l'ajouter en retour » n'aurait aucun sens — le client affichera une
+    // simple information au lieu du dialogue oui/non.
+    const [mutual] = await pool.execute(
+      'SELECT idPrefContact FROM preferredContact WHERE alanyaID = ? AND idFriend = ?',
+      [ownerID, scannerID]
+    );
+
+    const avatar = String(rows[0].avatar_url ?? '').trim();
+    const scannerName = (rows[0].nom || '').trim() || (rows[0].pseudo || '').trim();
+
+    const io = req.app.get('io');
+    emitToUser(io, ownerID, 'qr:contact_scanned', {
+      by: {
+        alanyaID: rows[0].alanyaID,
+        nom: rows[0].nom,
+        pseudo: rows[0].pseudo,
+        avatar_url: avatar.startsWith('http') ? avatar : null,
+      },
+      alreadyMutual: mutual.length > 0,
+      at: new Date().toISOString(),
+    });
+
+    // App fermée ou en arrière-plan : le push prend le relais. Le dialogue
+    // d'ajout en retour s'affichera à l'ouverture.
+    if (!hasForegroundSocket(io, ownerID)) {
+      await notifyQrContactScanned(ownerID, scannerName);
+    }
+  } catch (error) {
+    console.warn('[qr:contact_scanned] émission échouée:', error.message);
+  }
+};
+
+/**
+ * Branche « contact éphémère » — le régime des comptes personnels. Le jeton est
+ * consommé dès qu'il a rempli son office (contact ajouté, ou déjà présent) :
+ * usage unique du contrat produit. Il survit en revanche à un scan de son
+ * propre code et à un scan par un compte bloqué — ni l'un ni l'autre ne doit
+ * pouvoir tuer le code d'autrui.
+ */
+const _resolveContactEphemere = async (req, res, alanyaID, token) => {
+  const entry = qrContactTokens.get(token);
+  if (!entry) {
+    return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
+  }
+
+  if (entry.alanyaID === alanyaID) {
+    return res.json({ type: 'contact', self: true });
+  }
+
+  const result = await addContactByFriendId(alanyaID, entry.alanyaID, { addedVia: 'qr' });
+
+  switch (result.reason) {
+    case 'self':
+      return res.json({ type: 'contact', self: true });
+    case 'not_found':
+      return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
+    case 'blocked':
+      return res.status(403).json({ error: 'Impossible d\'ajouter cet utilisateur' });
+    case 'already':
+    case 'added':
+    default: {
+      const added = result.reason !== 'already';
+      qrContactTokens.consume(token);
+      _prevenirProprietaire(req, entry.alanyaID, alanyaID);
+      return res.json({
+        type: 'contact', added, alreadyContact: !added, contact: result.contact,
+      });
+    }
   }
 };
 
@@ -207,6 +353,9 @@ const resolveQr = async (req, res) => {
       return res.status(400).json({ error: 'Code QR illisible' });
     }
 
+    if (parsed.type === 'contact_ephemere') {
+      return await _resolveContactEphemere(req, res, alanyaID, parsed.token);
+    }
     if (parsed.type === 'contact') {
       return await _resolveContact(req, res, alanyaID, parsed.qrPublicId);
     }
@@ -218,8 +367,12 @@ const resolveQr = async (req, res) => {
 };
 
 module.exports = {
+  createContactToken,
   getMyQr,
   regenerateQr,
   resolveQr,
   identityPayload,
+  // Partagé avec qrLandingController : la page publique d'un code permanent
+  // doit suivre exactement le même verrou que sa résolution.
+  qrPermanentAutorise: _qrPermanentAutorise,
 };

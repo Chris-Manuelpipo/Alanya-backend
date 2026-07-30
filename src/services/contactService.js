@@ -19,7 +19,7 @@ const sanitizeUrl = (url) => {
   return trimmed;
 };
 
-const _contactBody = (idPrefContact, user) => ({
+const _contactBody = (idPrefContact, user, addedVia, addedAt) => ({
   idPrefContact,
   alanyaID:    user.alanyaID,
   nom:         user.nom,
@@ -27,14 +27,18 @@ const _contactBody = (idPrefContact, user) => ({
   alanyaPhone: user.alanyaPhone,
   avatar_url:  sanitizeUrl(user.avatar_url),
   is_online:   user.is_online,
+  addedVia,
+  addedAt,
 });
 
 /**
  * Ajoute `friendID` aux contacts préférés de `alanyaID`.
+ * @param {{addedVia?: string}} [options] origine de l'ajout : 'search'
+ *   (recherche manuelle, défaut) ou 'qr' (scan ou lien d'un code).
  * @returns {Promise<{ok: boolean, reason: string, contact?: object}>}
  *   reason ∈ 'added' | 'self' | 'not_found' | 'blocked' | 'already'
  */
-const addContactByFriendId = async (alanyaID, friendID) => {
+const addContactByFriendId = async (alanyaID, friendID, { addedVia = 'search' } = {}) => {
   if (friendID === alanyaID) {
     return { ok: false, reason: 'self' };
   }
@@ -59,26 +63,31 @@ const addContactByFriendId = async (alanyaID, friendID) => {
 
   // Vérifier si déjà contact préféré
   const [existing] = await pool.execute(
-    'SELECT idPrefContact FROM preferredContact WHERE alanyaID = ? AND idFriend = ?',
+    'SELECT idPrefContact, added_via, created_at FROM preferredContact WHERE alanyaID = ? AND idFriend = ?',
     [alanyaID, friendID]
   );
   if (existing.length > 0) {
+    // L'origine restituée est celle de l'ajout INITIAL : rescanner quelqu'un
+    // qu'on avait ajouté par recherche ne réécrit pas l'histoire.
     return {
       ok: false,
       reason: 'already',
-      contact: _contactBody(existing[0].idPrefContact, userCheck[0]),
+      contact: _contactBody(
+        existing[0].idPrefContact, userCheck[0],
+        existing[0].added_via, existing[0].created_at,
+      ),
     };
   }
 
   const [result] = await pool.execute(
-    'INSERT INTO preferredContact (alanyaID, idFriend, created_at) VALUES (?, ?, NOW())',
-    [alanyaID, friendID]
+    'INSERT INTO preferredContact (alanyaID, idFriend, added_via, created_at) VALUES (?, ?, ?, NOW())',
+    [alanyaID, friendID, addedVia]
   );
 
   return {
     ok: true,
     reason: 'added',
-    contact: _contactBody(result.insertId, userCheck[0]),
+    contact: _contactBody(result.insertId, userCheck[0], addedVia, new Date()),
   };
 };
 

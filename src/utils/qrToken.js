@@ -21,6 +21,9 @@ const identityPayload = (qrPublicId) => `${QR_BASE_URL}/q/u/${qrPublicId}`;
 // l'alphabet ne contient pas le point.
 const loginPayload = (sessionId, scanSecret) => `${QR_BASE_URL}/q/l/${sessionId}.${scanSecret}`;
 
+/** URL d'un jeton d'ajout de contact ÉPHÉMÈRE (10 min, usage unique). */
+const contactPayload = (token) => `${QR_BASE_URL}/q/c/${token}`;
+
 // Comparaison à temps constant des secrets de QR (scanSecret, pollToken), qui
 // sont l'unique preuve de possession du code. Symétrique, donc insensible à
 // l'ordre des arguments — c'est justement pourquoi elle vit ici : elle était
@@ -35,5 +38,6 @@ const secretMatches = (a, b) => {
 };
 
 module.exports = {
-  generateOpaqueToken, QR_BASE_URL, identityPayload, loginPayload, secretMatches,
+  generateOpaqueToken, QR_BASE_URL, identityPayload, loginPayload, contactPayload,
+  secretMatches,
 };
