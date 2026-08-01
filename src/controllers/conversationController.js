@@ -329,9 +329,12 @@ const createGroup = async (req, res, next) => {
     }
 
     for (const pid of membres) {
+      // Invités à la création : même règle d'historique que addParticipants.
+      // Le créateur reste sans cutoff (INSERT séparé ci-dessus).
       await pool.execute(
-        'INSERT INTO conv_participants (conversID, alanyaID, role) VALUES (?, ?, 0)',
-        [conversID, pid]
+        `INSERT INTO conv_participants (conversID, alanyaID, role, historyCutoffAt)
+         VALUES (?, ?, 0, ${historyFlag ? 'NOW()' : 'NULL'})`,
+        [conversID, pid],
       );
     }
 
@@ -359,6 +362,19 @@ const createGroup = async (req, res, next) => {
       payload: { value: groupName || 'Groupe' },
       io,
     });
+
+    // Invités à la création : même bannière Rester/Quitter qu'un addParticipants.
+    if (membres.length > 0) {
+      const targets = await loadUserNames(membres);
+      const sysMsg = await postSystemMessage({
+        conversationID: conversID,
+        actorID: alanyaID,
+        event: 'member_added',
+        payload: { ids: targets.ids, names: targets.names },
+        io,
+      });
+      await setPendingJoinAndNotify(conversID, membres, sysMsg?.msgID, io);
+    }
 
     res.json(enriched);
   } catch (error) {
@@ -620,34 +636,7 @@ const addParticipants = async (req, res, next) => {
       });
 
       // Bannière « Rester / Quitter » : pendingJoinMsgID = msg système.
-      // Émis APRÈS conversation:created (qui portait encore null pour le
-      // nouvel arrivant) via conversation:updated personnalisé.
-      if (sysMsg?.msgID) {
-        const ph = toAdd.map(() => '?').join(',');
-        await pool.execute(
-          `UPDATE conv_participants
-              SET pendingJoinMsgID = ?
-            WHERE conversID = ? AND alanyaID IN (${ph})`,
-          [sysMsg.msgID, id, ...toAdd],
-        );
-        if (io) {
-          for (const pid of toAdd) {
-            const forNew = await loadEnrichedConversation(Number(id), pid);
-            if (forNew) {
-              const payload = { ...forNew };
-              delete payload.unreadCount;
-              delete payload.isPinned;
-              delete payload.isArchived;
-              delete payload.lastMessage;
-              delete payload.lastMessageAt;
-              delete payload.lastMessageSenderID;
-              delete payload.lastMessageType;
-              delete payload.lastMessageStatus;
-              io.to(`user_${pid}`).emit('conversation:updated', payload);
-            }
-          }
-        }
-      }
+      await setPendingJoinAndNotify(Number(id), toAdd, sysMsg?.msgID, io);
     }
 
     res.json(enriched);
@@ -658,6 +647,46 @@ const addParticipants = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Pose pendingJoinMsgID sur les nouveaux membres et diffuse conversation:updated
+ * personnalisé (myPendingJoinMsgID, myRole, cutoff…).
+ *
+ * Émis APRÈS conversation:created qui portait encore la vue de l'acteur.
+ */
+async function setPendingJoinAndNotify(conversID, memberIds, msgID, io) {
+  if (msgID == null || !Array.isArray(memberIds) || memberIds.length === 0) {
+    return;
+  }
+  const ids = memberIds
+    .map((p) => parseInt(p, 10))
+    .filter((p) => Number.isInteger(p) && p > 0);
+  if (ids.length === 0) return;
+
+  const ph = ids.map(() => '?').join(',');
+  await pool.execute(
+    `UPDATE conv_participants
+        SET pendingJoinMsgID = ?
+      WHERE conversID = ? AND alanyaID IN (${ph})`,
+    [msgID, conversID, ...ids],
+  );
+
+  if (!io) return;
+  for (const pid of ids) {
+    const forNew = await loadEnrichedConversation(conversID, pid);
+    if (!forNew) continue;
+    const payload = { ...forNew };
+    delete payload.unreadCount;
+    delete payload.isPinned;
+    delete payload.isArchived;
+    delete payload.lastMessage;
+    delete payload.lastMessageAt;
+    delete payload.lastMessageSenderID;
+    delete payload.lastMessageType;
+    delete payload.lastMessageStatus;
+    io.to(`user_${pid}`).emit('conversation:updated', payload);
+  }
+}
 
 /** Conversation enrichie telle que la renvoie GET /:id (rôle inclus). */
 async function loadEnrichedConversation(conversID, alanyaID) {
