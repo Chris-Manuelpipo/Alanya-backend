@@ -24,6 +24,7 @@ const {
   removeParticipant,
   setParticipantRole,
   updateConversationMute,
+  ackGroupJoin,
 } = require('../controllers/conversationController');
 
 /**
@@ -248,6 +249,9 @@ router.post('/:id/leave', auth, leaveGroup);
 // RÉINTÉGRER immédiatement la personne qu'un admin venait d'exclure — le
 // retrait, lui, est réservé aux admins. L'exclusion n'était donc pas tenable.
 router.post('/:id/participants', auth, requireParticipant, requireGroup, addParticipants);
+
+/** Nouvel ajouté : « Rester » → clear pendingJoinMsgID (sync multi-appareil). */
+router.post('/:id/ack-join', auth, requireParticipant, requireGroup, ackGroupJoin);
 
 /**
  * @swagger

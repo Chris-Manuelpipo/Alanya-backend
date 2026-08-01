@@ -13,7 +13,16 @@ const {
   isSelfChatRow,
   dedupeDirectConversations,
 } = require('../utils/directConversation');
+const { evaluateJoinAckMessage } = require('../utils/groupJoinAck');
 const MAX_BATCH_CONVERSATIONS = 50;
+
+/** Champs par-utilisateur jointés sur cp — inclut consentement / historique (028). */
+const CP_VIEWER_FIELDS = `cp.unreadCount, cp.isPinned, cp.isArchived,
+              cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly,
+              cp.pendingJoinMsgID AS myPendingJoinMsgID,
+              cp.historyCutoffAt AS myHistoryCutoffAt`;
+
+const asFlag = (v) => (v === 1 || v === true || v === '1' ? 1 : 0);
 
 // Nettoyer les URL d'avatar pour éviter les valeurs indésirables et les problèmes de sécurité
 const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
@@ -132,8 +141,7 @@ const getConversations = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
     const [rows] = await pool.execute(
-      `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived,
-              cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly,
+      `SELECT c.*, ${CP_VIEWER_FIELDS},
               COALESCE(mc.cnt, 0) AS messageCount
        FROM conversation c
        JOIN conv_participants cp ON c.conversID = cp.conversID
@@ -160,8 +168,7 @@ const getConversationById = async (req, res) => {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
     const [rows] = await pool.execute(
-      `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived,
-              cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly
+      `SELECT c.*, ${CP_VIEWER_FIELDS}
        FROM conversation c
        JOIN conv_participants cp ON c.conversID = cp.conversID
        WHERE c.conversID = ? AND cp.alanyaID = ?`,
@@ -225,7 +232,7 @@ const createConversation = async (req, res) => {
     await conn.commit();
 
     const [rows] = await pool.execute(
-      'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived, cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
+      `SELECT c.*, ${CP_VIEWER_FIELDS} FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?`,
       [conversID, alanyaID]
     );
     const enriched = await attachParticipants(rows[0], alanyaID);
@@ -258,6 +265,7 @@ const createGroup = async (req, res, next) => {
       description,
       onlyAdminsCanSend,
       onlyAdminsCanEditInfo,
+      hideHistoryForNewMembers,
     } = req.body;
     const alanyaID = req.user.alanyaID;
 
@@ -270,15 +278,18 @@ const createGroup = async (req, res, next) => {
         ? description.trim().slice(0, 512)
         : null;
 
-    const asFlag = (v) => (v === 1 || v === true || v === '1' ? 1 : 0);
     const sendFlag = onlyAdminsCanSend !== undefined ? asFlag(onlyAdminsCanSend) : 0;
     const editFlag = onlyAdminsCanEditInfo !== undefined ? asFlag(onlyAdminsCanEditInfo) : 0;
+    // Défaut OFF : les membres initiaux voient tout l'historique (cutoff NULL).
+    const historyFlag = hideHistoryForNewMembers !== undefined
+      ? asFlag(hideHistoryForNewMembers)
+      : 0;
 
     const [result] = await pool.execute(
       `INSERT INTO conversation
          (isGroup, GroupName, groupPhoto, description, createdBy, lastMessageAt,
-          onlyAdminsCanSend, onlyAdminsCanEditInfo)
-       VALUES (1, ?, ?, ?, ?, NOW(), ?, ?)`,
+          onlyAdminsCanSend, onlyAdminsCanEditInfo, hideHistoryForNewMembers)
+       VALUES (1, ?, ?, ?, ?, NOW(), ?, ?, ?)`,
       [
         groupName || 'Groupe',
         groupPhoto || null,
@@ -286,13 +297,14 @@ const createGroup = async (req, res, next) => {
         alanyaID,
         sendFlag,
         editFlag,
+        historyFlag,
       ]
     );
     const conversID = result.insertId;
 
     // Le créateur est propriétaire (role = 2). Il reste inséré en premier :
     // le backfill de la 024 s'appuie sur MIN(cp.id) pour retrouver le
-    // propriétaire des groupes antérieurs.
+    // propriétaire des groupes antérieurs. Pas de pendingJoin / cutoff.
     await pool.execute(
       'INSERT INTO conv_participants (conversID, alanyaID, role) VALUES (?, ?, 2)',
       [conversID, alanyaID]
@@ -324,7 +336,7 @@ const createGroup = async (req, res, next) => {
     }
 
     const [rows] = await pool.execute(
-      'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived, cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
+      `SELECT c.*, ${CP_VIEWER_FIELDS} FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?`,
       [conversID, alanyaID]
     );
     const enriched = await attachParticipants(rows[0], alanyaID);
@@ -386,7 +398,7 @@ const updateConversation = async (req, res, next) => {
     }
 
     const [rows] = await pool.execute(
-      'SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived, cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?',
+      `SELECT c.*, ${CP_VIEWER_FIELDS} FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID WHERE c.conversID = ? AND cp.alanyaID = ?`,
       [id, alanyaID]
     );
     const enriched = await attachParticipants(rows[0], alanyaID);
@@ -518,9 +530,9 @@ const addParticipants = async (req, res, next) => {
       });
     }
 
-    // Vérifier que la conv est bien un groupe et que l'appelant est membre.
+    // Vérifier que la conv est bien un groupe et lire le réglage historique.
     const [convRows] = await pool.execute(
-      `SELECT c.isGroup FROM conversation c
+      `SELECT c.isGroup, c.hideHistoryForNewMembers FROM conversation c
        JOIN conv_participants cp ON cp.conversID = c.conversID AND cp.alanyaID = ?
        WHERE c.conversID = ?`,
       [alanyaID, id]
@@ -531,6 +543,12 @@ const addParticipants = async (req, res, next) => {
     if (!convRows[0].isGroup) {
       return res.status(400).json({ error: 'Pas un groupe' });
     }
+
+    // Override optionnel (tests) ; l'app n'expose pas le paramètre — le défaut
+    // vient du réglage groupe, défini dans les paramètres de la fiche.
+    const hideHistory = req.body.hideHistory !== undefined
+      ? asFlag(req.body.hideHistory) === 1
+      : !!convRows[0].hideHistoryForNewMembers;
 
     // IDs déjà présents → on les filtre pour ne pas violer la PK.
     const [existing] = await pool.execute(
@@ -559,8 +577,11 @@ const addParticipants = async (req, res, next) => {
     })();
 
     for (const pid of toAdd) {
+      // historyCutoffAt = NOW() si masquage actif : getMessages n'expose que
+      // sendAt >= cutoff (le member_added de cet ajout reste visible).
       await pool.execute(
-        'INSERT INTO conv_participants (conversID, alanyaID) VALUES (?, ?)',
+        `INSERT INTO conv_participants (conversID, alanyaID, historyCutoffAt)
+         VALUES (?, ?, ${hideHistory ? 'NOW()' : 'NULL'})`,
         [id, pid]
       );
     }
@@ -569,8 +590,7 @@ const addParticipants = async (req, res, next) => {
     // (existants + nouveaux). Les clients upsertent et voient la liste des
     // participants mise à jour.
     const [rows] = await pool.execute(
-      `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived,
-              cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly
+      `SELECT c.*, ${CP_VIEWER_FIELDS}
        FROM conversation c JOIN conv_participants cp ON c.conversID = cp.conversID
        WHERE c.conversID = ? AND cp.alanyaID = ?`,
       [id, alanyaID]
@@ -591,13 +611,43 @@ const addParticipants = async (req, res, next) => {
     // l'affichage de la conversation chez les nouveaux membres.
     if (toAdd.length > 0) {
       const targets = await loadUserNames(toAdd);
-      await postSystemMessage({
+      const sysMsg = await postSystemMessage({
         conversationID: Number(id),
         actorID: alanyaID,
         event: 'member_added',
         payload: { ids: targets.ids, names: targets.names },
         io,
       });
+
+      // Bannière « Rester / Quitter » : pendingJoinMsgID = msg système.
+      // Émis APRÈS conversation:created (qui portait encore null pour le
+      // nouvel arrivant) via conversation:updated personnalisé.
+      if (sysMsg?.msgID) {
+        const ph = toAdd.map(() => '?').join(',');
+        await pool.execute(
+          `UPDATE conv_participants
+              SET pendingJoinMsgID = ?
+            WHERE conversID = ? AND alanyaID IN (${ph})`,
+          [sysMsg.msgID, id, ...toAdd],
+        );
+        if (io) {
+          for (const pid of toAdd) {
+            const forNew = await loadEnrichedConversation(Number(id), pid);
+            if (forNew) {
+              const payload = { ...forNew };
+              delete payload.unreadCount;
+              delete payload.isPinned;
+              delete payload.isArchived;
+              delete payload.lastMessage;
+              delete payload.lastMessageAt;
+              delete payload.lastMessageSenderID;
+              delete payload.lastMessageType;
+              delete payload.lastMessageStatus;
+              io.to(`user_${pid}`).emit('conversation:updated', payload);
+            }
+          }
+        }
+      }
     }
 
     res.json(enriched);
@@ -612,8 +662,7 @@ const addParticipants = async (req, res, next) => {
 /** Conversation enrichie telle que la renvoie GET /:id (rôle inclus). */
 async function loadEnrichedConversation(conversID, alanyaID) {
   const [rows] = await pool.execute(
-    `SELECT c.*, cp.unreadCount, cp.isPinned, cp.isArchived,
-            cp.role AS myRole, cp.mutedUntil, cp.muteForever, cp.mentionsOnly
+    `SELECT c.*, ${CP_VIEWER_FIELDS}
        FROM conversation c
        JOIN conv_participants cp ON c.conversID = cp.conversID
       WHERE c.conversID = ? AND cp.alanyaID = ?`,
@@ -713,15 +762,17 @@ const updateGroupInfo = async (req, res, next) => {
   }
 };
 
-// PATCH /conversations/:id/settings — les deux verrous de permission.
+// PATCH /conversations/:id/settings — verrous de permission + historique.
 // Toujours réservé aux admins, contrairement à /group qui est déverrouillable.
 const updateGroupSettings = async (req, res, next) => {
   try {
     const conversID = req.membership.conversID;
     const alanyaID = req.user.alanyaID;
-    const { onlyAdminsCanSend, onlyAdminsCanEditInfo } = req.body;
-
-    const asFlag = (v) => (v === 1 || v === true || v === '1' ? 1 : 0);
+    const {
+      onlyAdminsCanSend,
+      onlyAdminsCanEditInfo,
+      hideHistoryForNewMembers,
+    } = req.body;
 
     const updates = [];
     const values = [];
@@ -744,6 +795,15 @@ const updateGroupSettings = async (req, res, next) => {
         updates.push('onlyAdminsCanEditInfo = ?');
         values.push(next);
         events.push({ lock: 'edit', on: next });
+      }
+    }
+
+    if (hideHistoryForNewMembers !== undefined) {
+      const next = asFlag(hideHistoryForNewMembers);
+      if (next !== (req.membership.hideHistoryForNewMembers ? 1 : 0)) {
+        updates.push('hideHistoryForNewMembers = ?');
+        values.push(next);
+        events.push({ lock: 'history', on: next });
       }
     }
 
@@ -776,6 +836,89 @@ const updateGroupSettings = async (req, res, next) => {
     // `next` et non `throw` : Express 4 ne capture pas le rejet d'un handler
     // `async`. L'erreur remontait en unhandled rejection et tuait le PROCESS
     // sans jamais atteindre `errorHandler` — une seule requête suffisait.
+    next(error);
+  }
+};
+
+// POST /conversations/:id/ack-join — le nouvel ajouté choisit « Rester ».
+// Sync multi-appareil : pendingJoinMsgID est serveur, pas local-only.
+const ackGroupJoin = async (req, res, next) => {
+  try {
+    const conversID = req.membership.conversID;
+    const alanyaID = req.user.alanyaID;
+    const bodyMsgID = req.body?.msgID != null ? parseInt(req.body.msgID, 10) : null;
+
+    const [rows] = await pool.execute(
+      `SELECT pendingJoinMsgID FROM conv_participants
+        WHERE conversID = ? AND alanyaID = ?`,
+      [conversID, alanyaID],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée' });
+    }
+
+    const pending = rows[0].pendingJoinMsgID != null
+      ? Number(rows[0].pendingJoinMsgID)
+      : null;
+
+    // Idempotent : déjà ack → 200 avec l'état courant.
+    if (pending == null) {
+      const enriched = await loadEnrichedConversation(conversID, alanyaID);
+      return res.json(enriched);
+    }
+
+    if (bodyMsgID != null && Number.isInteger(bodyMsgID) && bodyMsgID !== pending) {
+      return res.status(400).json({
+        error: 'msgID ne correspond pas au consentement en attente',
+        code: 'JOIN_ACK_MISMATCH',
+      });
+    }
+
+    // Vérifie que le message est bien un member_added où je figure dans ids.
+    const [msgRows] = await pool.execute(
+      `SELECT content, type FROM message WHERE msgID = ? AND conversationID = ?`,
+      [pending, conversID],
+    );
+    const verdict = msgRows.length === 0
+      ? 'missing'
+      : evaluateJoinAckMessage({
+          type: msgRows[0].type,
+          content: msgRows[0].content,
+          viewerId: alanyaID,
+        });
+    if (verdict === 'invalid') {
+      return res.status(400).json({
+        error: 'Consentement invalide pour cet utilisateur',
+        code: 'JOIN_ACK_INVALID',
+      });
+    }
+    // missing (message disparu / type inattendu) ou ok : clear pour ne pas
+    // bloquer la bannière indéfiniment.
+    await pool.execute(
+      `UPDATE conv_participants SET pendingJoinMsgID = NULL
+        WHERE conversID = ? AND alanyaID = ?`,
+      [conversID, alanyaID],
+    );
+
+    const enriched = await loadEnrichedConversation(conversID, alanyaID);
+    const io = req.app.get('io');
+    // Personnalisé : seuls les appareils de CET utilisateur doivent retirer
+    // la bannière. Les autres membres n'ont jamais de pendingJoinMsgID.
+    if (io && enriched) {
+      const payload = { ...enriched };
+      delete payload.unreadCount;
+      delete payload.isPinned;
+      delete payload.isArchived;
+      delete payload.lastMessage;
+      delete payload.lastMessageAt;
+      delete payload.lastMessageSenderID;
+      delete payload.lastMessageType;
+      delete payload.lastMessageStatus;
+      io.to(`user_${alanyaID}`).emit('conversation:updated', payload);
+    }
+
+    res.json(enriched);
+  } catch (error) {
     next(error);
   }
 };
@@ -1268,6 +1411,7 @@ module.exports = {
   updateConversationMute,
   updateGroupInfo,
   updateGroupSettings,
+  ackGroupJoin,
   removeParticipant,
   setParticipantRole,
 };

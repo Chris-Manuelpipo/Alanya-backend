@@ -17,10 +17,11 @@ const pool = require('../config/db');
  */
 
 /** Charge l'appartenance de l'appelant, ou null s'il n'est pas membre. */
-async function loadMembership(conversID, alanyaID) {
+  async function loadMembership(conversID, alanyaID) {
   const [rows] = await pool.execute(
     `SELECT c.conversID, c.isGroup, c.createdBy,
             c.onlyAdminsCanSend, c.onlyAdminsCanEditInfo,
+            c.hideHistoryForNewMembers,
             cp.role
        FROM conversation c
        JOIN conv_participants cp
@@ -35,6 +36,7 @@ async function loadMembership(conversID, alanyaID) {
     createdBy: rows[0].createdBy != null ? Number(rows[0].createdBy) : null,
     onlyAdminsCanSend: !!rows[0].onlyAdminsCanSend,
     onlyAdminsCanEditInfo: !!rows[0].onlyAdminsCanEditInfo,
+    hideHistoryForNewMembers: !!rows[0].hideHistoryForNewMembers,
     role: Number(rows[0].role) || 0,
   };
 }

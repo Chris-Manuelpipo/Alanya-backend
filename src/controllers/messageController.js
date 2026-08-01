@@ -8,6 +8,7 @@ const { sanitizeMentions, serializeMentionsColumn } = require('../utils/mentions
 const { markConversationDeliveredBy } = require('../utils/deliveryReceiptUtils');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
+const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
 const MAX_BATCH_DELETE = 50;
@@ -40,6 +41,8 @@ const getMessages = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const { limit = 50, before, after } = req.query;
 
+    // Membership d'abord : un JOIN seul renverrait [] pour un non-membre, ce
+    // qui confirmerait l'existence de la conversation. 404 comme avant.
     const [membership] = await pool.execute(
       'SELECT 1 FROM conv_participants WHERE conversID = ? AND alanyaID = ? LIMIT 1',
       [id, alanyaID],
@@ -48,6 +51,8 @@ const getMessages = async (req, res) => {
       return res.status(404).json({ error: 'Conversation not found' });
     }
 
+    // Jointure cp : filtre historyCutoffAt (migration 028). Sans elle, un
+    // nouvel arrivant avec historique masqué récupérerait tout le fil.
     let query = `
       SELECT m.*,
              u.nom        AS sender_nom,
@@ -57,11 +62,14 @@ const getMessages = async (req, res) => {
              p.decalageHoraire AS messageTzOffset,
              (m.viewedAt IS NOT NULL) AS viewedByMe
       FROM message m
+      JOIN conv_participants cp
+        ON cp.conversID = m.conversationID AND cp.alanyaID = ?
       JOIN users u ON m.senderID = u.alanyaID
       LEFT JOIN pays p ON u.idPays = p.idPays
       WHERE m.conversationID = ?
         AND m.isDeleted = 0
         AND (m.deletedForID IS NULL OR m.deletedForID != ?)
+        AND ${HISTORY_CUTOFF_SQL}
         AND NOT EXISTS (
           SELECT 1 FROM blocked b
           WHERE b.alanyaID = ?
@@ -70,7 +78,7 @@ const getMessages = async (req, res) => {
             AND m.sendAt >= b.dateBlock
         )
     `;
-    const params = [id, alanyaID, alanyaID, alanyaID];
+    const params = [alanyaID, id, alanyaID, alanyaID, alanyaID];
 
     if (before) {
       query += ' AND m.msgID < ?';
@@ -1038,6 +1046,7 @@ const getMessagesSince = async (req, res) => {
       LEFT JOIN pays p ON u.idPays = p.idPays
       WHERE m.isDeleted = 0
         AND (m.deletedForID IS NULL OR m.deletedForID != ?)
+        AND ${HISTORY_CUTOFF_SQL}
         AND NOT EXISTS (
           SELECT 1 FROM blocked b
           WHERE b.alanyaID = ?
