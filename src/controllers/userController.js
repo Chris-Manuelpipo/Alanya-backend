@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { getBlockPair } = require('../utils/blockUtils');
+const { canViewProfileField } = require('../services/privacyPrefsService');
 const { normalize, isNumericQuery } = require('../utils/alanyaPhone');
 
 const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
@@ -9,6 +10,26 @@ const sanitizeUrl = (url) => {
   if (_INVALID_URL_VALUES.includes(trimmed)) return null;
   if (!trimmed.startsWith('http')) return null;
   return trimmed;
+};
+
+const _maskProfileFields = async (viewerId, targetId, row) => {
+  const base = { ...row };
+  if (viewerId == null || Number(viewerId) === Number(targetId)) {
+    return { ...base, avatar_url: sanitizeUrl(base.avatar_url) };
+  }
+
+  const [showAvatar, showOnline, showLastSeen] = await Promise.all([
+    canViewProfileField(viewerId, targetId, 'avatar_url'),
+    canViewProfileField(viewerId, targetId, 'is_online'),
+    canViewProfileField(viewerId, targetId, 'last_seen'),
+  ]);
+
+  return {
+    ...base,
+    avatar_url: showAvatar ? sanitizeUrl(base.avatar_url) : null,
+    is_online: showOnline ? base.is_online : 0,
+    last_seen: showLastSeen ? base.last_seen : null,
+  };
 };
 
 const getUserById = async (req, res) => {
@@ -31,16 +52,16 @@ const getUserById = async (req, res) => {
     }
 
     const pair = await getBlockPair(viewerId, targetId);
-    const base = { ...rows[0], avatar_url: sanitizeUrl(rows[0].avatar_url) };
+    const masked = await _maskProfileFields(viewerId, targetId, rows[0]);
     if (pair.theyBlockedMe) {
       return res.json({
-        ...base,
+        ...masked,
         avatar_url: null,
         is_online: 0,
         last_seen: null,
       });
     }
-    res.json(base);
+    res.json(masked);
   } catch (error) {
     throw error;
   }

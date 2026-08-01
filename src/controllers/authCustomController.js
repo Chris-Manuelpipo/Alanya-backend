@@ -12,7 +12,7 @@ const SALT_ROUNDS = 10;
 
 const _selectUserWithPays = `
   SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.idPays,
-         u.avatar_url, u.type_compte, u.is_online, u.last_seen,
+         u.avatar_url, u.bio, u.type_compte, u.is_online, u.last_seen,
          p.libelle AS pays_libelle, p.prefix AS pays_prefix
   FROM users u
   LEFT JOIN pays p ON u.idPays = p.idPays
@@ -540,37 +540,10 @@ const completePasswordReset = async (req, res) => {
 
 // 
 const resetPassword = async (req, res) => {
-  try {
-    const { email, newPassword } = req.body;
-
-    if (!email || !newPassword) {
-      return res.status(400).json({ error: 'Email et nouveau mot de passe requis' });
-    }
-
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères' });
-    }
-
-    const [rows] = await pool.execute(
-      'SELECT alanyaID FROM users WHERE email = ?',
-      [email.toLowerCase().trim()]
-    );
-
-    if (rows.length === 0) { 
-      return res.json({ message: 'Si cet email existe, le mot de passe a été réinitialisé' });
-    }
-
-    const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
-    await pool.execute(
-      'UPDATE users SET password = ? WHERE alanyaID = ?',
-      [hashedPassword, rows[0].alanyaID]
-    );
-
-    res.json({ message: 'Mot de passe mis à jour avec succès' });
-  } catch (error) {
-    console.error('[ResetPassword] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec de la réinitialisation du mot de passe' });
-  }
+  console.warn('[ResetPassword] Deprecated endpoint called');
+  return res.status(410).json({
+    error: 'Cet endpoint est obsolète. Utilisez POST /auth/forgot-password puis POST /auth/reset-password-confirm.',
+  });
 };
 
 // Profil de l'utilisateur connecté
@@ -617,15 +590,23 @@ const updateFcmToken = async (req, res) => {
   }
 };
 
-// Met à jour les infos de l'utilisateur (nom, pseudo, avatar_url, fcm_token, device_ID, is_online)
+// Met à jour les infos de l'utilisateur (nom, pseudo, bio, avatar_url, fcm_token, device_ID, is_online)
 const updateMe = async (req, res) => {
   try {
-    const { nom, pseudo, avatar_url, fcm_token, device_ID, is_online, idPays } = req.body;
+    const { nom, pseudo, bio, avatar_url, fcm_token, device_ID, is_online, idPays } = req.body;
     const updates = [];
     const values  = [];
 
     if (nom)       { updates.push('nom = ?');        values.push(nom); }
     if (pseudo)    { updates.push('pseudo = ?');     values.push(pseudo); }
+    if (bio !== undefined) {
+      const trimmedBio = typeof bio === 'string' ? bio.trim() : '';
+      if (trimmedBio.length > 500) {
+        return res.status(400).json({ error: 'La bio ne peut pas dépasser 500 caractères' });
+      }
+      updates.push('bio = ?');
+      values.push(trimmedBio === '' ? null : trimmedBio);
+    }
     if (avatar_url){ updates.push('avatar_url = ?'); values.push(avatar_url); }
     if (fcm_token) { updates.push('fcm_token = ?');  values.push(fcm_token); }
     if (device_ID) { updates.push('device_ID = ?');  values.push(device_ID); }

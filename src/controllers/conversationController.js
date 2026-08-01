@@ -14,6 +14,7 @@ const {
   dedupeDirectConversations,
 } = require('../utils/directConversation');
 const { evaluateJoinAckMessage } = require('../utils/groupJoinAck');
+const { canAddUser } = require('../services/privacyPrefsService');
 const MAX_BATCH_CONVERSATIONS = 50;
 
 /** Champs par-utilisateur jointés sur cp — inclut consentement / historique (028). */
@@ -199,6 +200,16 @@ const createConversation = async (req, res) => {
     // GroupName. Voir utils/directConversation.js.
     const isSelf = peerID === alanyaID;
 
+    if (!isSelf) {
+      const allowed = await canAddUser(alanyaID, peerID);
+      if (!allowed) {
+        return res.status(403).json({
+          error: 'Cet utilisateur n\'accepte pas d\'être ajouté aux conversations',
+          code: 'ADD_ME_POLICY_DENIED',
+        });
+      }
+    }
+
     const lookup = buildDirectConversationLookup({ meId: alanyaID, peerId: peerID });
     const [existing] = await pool.execute(lookup.sql, lookup.params);
 
@@ -290,6 +301,30 @@ const createGroup = async (req, res, next) => {
       ? asFlag(onlyAdminsCanAddMembers)
       : 0;
 
+    const demandes = [...new Set(participantIDs
+      .map((p) => parseInt(p, 10))
+      .filter((p) => Number.isInteger(p) && p > 0 && p <= 2147483647
+                     && p !== Number(alanyaID)))];
+    let membres = [];
+    if (demandes.length > 0) {
+      const ph = demandes.map(() => '?').join(',');
+      const [validRows] = await pool.execute(
+        `SELECT alanyaID FROM users WHERE alanyaID IN (${ph}) AND exclus = 0`,
+        demandes,
+      );
+      const valides = new Set(validRows.map((r) => Number(r.alanyaID)));
+      membres = demandes.filter((p) => valides.has(p));
+    }
+
+    for (const pid of membres) {
+      if (!(await canAddUser(alanyaID, pid))) {
+        return res.status(403).json({
+          error: 'Un ou plusieurs participants n\'acceptent pas d\'être ajoutés aux groupes',
+          code: 'ADD_ME_POLICY_DENIED',
+        });
+      }
+    }
+
     const [result] = await pool.execute(
       `INSERT INTO conversation
          (isGroup, GroupName, groupPhoto, description, createdBy, lastMessageAt,
@@ -316,24 +351,6 @@ const createGroup = async (req, res, next) => {
       'INSERT INTO conv_participants (conversID, alanyaID, role) VALUES (?, ?, 2)',
       [conversID, alanyaID]
     );
-
-    // Mêmes garde-fous qu'addParticipants : un id inconnu violerait fk_cp_user
-    // et l'erreur tuerait le process, en laissant au passage un groupe à demi
-    // créé (il n'y a pas de transaction ici).
-    const demandes = [...new Set(participantIDs
-      .map((p) => parseInt(p, 10))
-      .filter((p) => Number.isInteger(p) && p > 0 && p <= 2147483647
-                     && p !== Number(alanyaID)))];
-    let membres = [];
-    if (demandes.length > 0) {
-      const ph = demandes.map(() => '?').join(',');
-      const [rows] = await pool.execute(
-        `SELECT alanyaID FROM users WHERE alanyaID IN (${ph}) AND exclus = 0`,
-        demandes,
-      );
-      const valides = new Set(rows.map((r) => Number(r.alanyaID)));
-      membres = demandes.filter((p) => valides.has(p));
-    }
 
     for (const pid of membres) {
       // Invités à la création : même règle d'historique que addParticipants.
@@ -598,6 +615,15 @@ const addParticipants = async (req, res, next) => {
       const valides = new Set(rows.map((r) => Number(r.alanyaID)));
       return demandes.filter((p) => valides.has(p));
     })();
+
+    for (const pid of toAdd) {
+      if (!(await canAddUser(alanyaID, pid))) {
+        return res.status(403).json({
+          error: 'Un ou plusieurs participants n\'acceptent pas d\'être ajoutés aux groupes',
+          code: 'ADD_ME_POLICY_DENIED',
+        });
+      }
+    }
 
     for (const pid of toAdd) {
       // historyCutoffAt = NOW() si masquage actif : getMessages n'expose que

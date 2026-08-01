@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { loadUserPrivacyPrefs, _passesVisibility } = require('../services/privacyPrefsService');
 const { isSelfChatRow } = require('./directConversation');
 
 /** true si blockerId a bloqué targetId */
@@ -137,16 +138,58 @@ const maskPresenceIfBlocked = async (viewerId, subjectId, isOnline, lastSeen) =>
 
 /** Ne pas notifier la présence aux utilisateurs bloqués par subjectUserId */
 const emitPresenceUpdate = async (io, subjectUserId, payload) => {
+  const uid = Number(subjectUserId);
+  const prefs = await loadUserPrivacyPrefs(uid);
+
   const [blocked] = await pool.execute(
     'SELECT idCallerBlock FROM blocked WHERE alanyaID = ?',
-    [subjectUserId],
+    [uid],
   );
-  const exceptRooms = blocked.map((r) => `user_${r.idCallerBlock}`);
-  if (exceptRooms.length > 0) {
-    io.except(exceptRooms).emit('presence:updated', payload);
-  } else {
-    io.emit('presence:updated', payload);
+  const blockedSet = new Set(blocked.map((r) => Number(r.idCallerBlock)));
+  const blockedRooms = [...blockedSet].map((id) => `user_${id}`);
+
+  const needsOnlineMask = prefs.onlineVisibility !== 'everyone';
+  const needsLastSeenMask = prefs.lastSeenVisibility !== 'everyone';
+
+  if (!needsOnlineMask && !needsLastSeenMask) {
+    if (blockedRooms.length > 0) {
+      io.except(blockedRooms).emit('presence:updated', payload);
+    } else {
+      io.emit('presence:updated', payload);
+    }
+    return;
   }
+
+  let contactIds = [];
+  if (prefs.onlineVisibility === 'contacts' || prefs.lastSeenVisibility === 'contacts') {
+    const [rows] = await pool.execute(
+      'SELECT idFriend FROM preferredContact WHERE alanyaID = ?',
+      [uid],
+    );
+    contactIds = rows
+      .map((r) => Number(r.idFriend))
+      .filter((id) => !blockedSet.has(id));
+  }
+  const contactRooms = contactIds.map((id) => `user_${id}`);
+
+  const payloadFor = (isSelf, isContact) => ({
+    userID: payload.userID,
+    online: _passesVisibility(prefs.onlineVisibility, isSelf, isContact)
+      ? payload.online
+      : false,
+    lastSeen: _passesVisibility(prefs.lastSeenVisibility, isSelf, isContact)
+      ? payload.lastSeen
+      : null,
+  });
+
+  io.to(`user_${uid}`).emit('presence:updated', payloadFor(true, false));
+
+  for (const cid of contactIds) {
+    io.to(`user_${cid}`).emit('presence:updated', payloadFor(false, true));
+  }
+
+  const except = [`user_${uid}`, ...contactRooms, ...blockedRooms];
+  io.except(except).emit('presence:updated', payloadFor(false, false));
 };
 
 module.exports = {

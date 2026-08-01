@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { notifyMessageStatus } = require('./notifyMessageStatus');
+const { loadUserPrivacyPrefs } = require('../services/privacyPrefsService');
 
 /**
  * Marque les messages entrants comme lus, remet unreadCount à 0 pour le lecteur,
@@ -11,22 +12,28 @@ const markConversationReadBy = async ({
   io = null,
 }) => {
   await pool.execute(
-    `UPDATE message SET status = 3, readAt = NOW(),
-            deliveredAt = COALESCE(deliveredAt, NOW())
-     WHERE conversationID = ? AND senderID != ? AND status < 3`,
-    [conversationID, readerID],
-  );
-  await pool.execute(
     'UPDATE conv_participants SET unreadCount = 0 WHERE conversID = ? AND alanyaID = ?',
     [conversationID, readerID],
   );
-  await pool.execute(
-    `UPDATE conversation SET lastMessageStatus = 3
-     WHERE conversID = ? AND lastMessageSenderID <> ? AND lastMessageStatus < 3`,
-    [conversationID, readerID],
-  );
 
-  await notifyMessageStatus(io, conversationID, 3, readerID);
+  const prefs = await loadUserPrivacyPrefs(readerID);
+  const sendReceipts = !!prefs.readReceiptsEnabled;
+
+  if (sendReceipts) {
+    await pool.execute(
+      `UPDATE message SET status = 3, readAt = NOW(),
+              deliveredAt = COALESCE(deliveredAt, NOW())
+       WHERE conversationID = ? AND senderID != ? AND status < 3`,
+      [conversationID, readerID],
+    );
+    await pool.execute(
+      `UPDATE conversation SET lastMessageStatus = 3
+       WHERE conversID = ? AND lastMessageSenderID <> ? AND lastMessageStatus < 3`,
+      [conversationID, readerID],
+    );
+
+    await notifyMessageStatus(io, conversationID, 3, readerID);
+  }
 
   if (io) {
     io.to(`user_${readerID}`).emit('inbox:sync', {
@@ -35,6 +42,8 @@ const markConversationReadBy = async ({
       reason: 'read',
     });
   }
+
+  if (!sendReceipts) return;
 
   // Sync de lecture vers les AUTRES appareils du lecteur, pour qu'ils retirent
   // leur notification. `inbox:sync` ci-dessus ne touche que les appareils

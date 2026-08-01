@@ -34,6 +34,23 @@ const {
   getNotificationPrefs,
   patchNotificationPrefs,
 } = require('../controllers/notificationPrefsController');
+const {
+  getPrivacyPrefs,
+  patchPrivacyPrefs,
+} = require('../controllers/privacyPrefsController');
+const {
+  getAppSettings,
+  patchAppSettings,
+} = require('../controllers/appSettingsController');
+const {
+  getDndSchedule,
+  patchDndSchedule,
+} = require('../controllers/dndScheduleController');
+const {
+  deleteAccount,
+  exportAccountData,
+  downloadExportJob,
+} = require('../controllers/accountLifecycleController');
 
 /**
  * @swagger
@@ -625,5 +642,18 @@ router.delete('/push-devices/:deviceId', authCustom, deletePushDevice);
 
 router.get('/notification-prefs', authCustom, getNotificationPrefs);
 router.patch('/notification-prefs', authCustom, patchNotificationPrefs);
+
+router.get('/privacy-prefs', authCustom, getPrivacyPrefs);
+router.patch('/privacy-prefs', authCustom, patchPrivacyPrefs);
+
+router.get('/app-settings', authCustom, getAppSettings);
+router.patch('/app-settings', authCustom, patchAppSettings);
+
+router.get('/dnd-schedule', authCustom, getDndSchedule);
+router.patch('/dnd-schedule', authCustom, patchDndSchedule);
+
+router.delete('/me', authCustom, deleteAccount);
+router.post('/me/export', authCustom, exportAccountData);
+router.get('/me/export/:jobId', authCustom, downloadExportJob);
 
 module.exports = router;

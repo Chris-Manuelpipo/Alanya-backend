@@ -1,8 +1,11 @@
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+const pool = require('../config/db');
+
+const _toBool = (v) => v === true || v === 1 || v === '1' || v === 'true';
 
 // Héberge une image (avatar profil, photo de groupe, etc.) et retourne son URL.
-// Ne modifie aucune entité en base : la liaison se fait via PUT /auth/me (profil)
-// ou POST/PUT /conversations (groupe).
+// Par défaut ne modifie aucune entité en base ; avec applyToProfile=true, met
+// à jour avatar_url de l'utilisateur connecté en une seule requête.
 const uploadAvatar = async (req, res) => {
   try {
     if (!req.file) {
@@ -11,8 +14,23 @@ const uploadAvatar = async (req, res) => {
 
     const filename = req.file.filename;
     const url      = `${BASE_URL}/uploads/images/${filename}`;
+    const applyToProfile = _toBool(req.body?.applyToProfile ?? req.query?.applyToProfile);
 
-    res.json({ url, filename });
+    if (applyToProfile) {
+      if (!req.user?.alanyaID) {
+        return res.status(401).json({ error: 'Authentification requise pour applyToProfile' });
+      }
+      await pool.execute(
+        'UPDATE users SET avatar_url = ? WHERE alanyaID = ?',
+        [url, req.user.alanyaID],
+      );
+    }
+
+    res.json({
+      url,
+      filename,
+      ...(applyToProfile ? { appliedToProfile: true } : {}),
+    });
   } catch (error) {
     console.error('[Upload avatar] ERROR:', error);
     res.status(500).json({ error: error.message });

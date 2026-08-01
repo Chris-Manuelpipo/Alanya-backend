@@ -4,6 +4,7 @@ const {
   isConversationMuted,
   applyPreviewPolicy,
 } = require('./notificationPrefs');
+const { loadUserDndSchedule, isDndActive } = require('../services/dndScheduleService');
 
 /**
  * @returns {Promise<{allowed:boolean, reason?:string, payload?:object}>}
@@ -15,6 +16,7 @@ const evaluateMessagePush = async (
   { isGroup = false, isMentioned = false } = {},
 ) => {
   const prefs = await loadUserNotificationPrefs(alanyaID);
+  const dnd = await loadUserDndSchedule(alanyaID);
 
   // Notifications coupées ou conversation en sourdine : on n'affiche rien, mais
   // on envoie quand même une push SILENCIEUSE (data-only, sans alerte ni son).
@@ -29,6 +31,9 @@ const evaluateMessagePush = async (
 
   if (!prefs.messagesEnabled) {
     return silence('messages_disabled');
+  }
+  if (isDndActive(dnd)) {
+    return silence('dnd_active');
   }
   if (isGroup && !prefs.groupMessagesEnabled) {
     return silence('group_messages_disabled');
@@ -73,6 +78,10 @@ const evaluateMessagePush = async (
 
 const evaluateTypePush = async (alanyaID, type) => {
   const prefs = await loadUserNotificationPrefs(alanyaID);
+  const dnd = await loadUserDndSchedule(alanyaID);
+  if (isDndActive(dnd)) {
+    return { allowed: false, reason: 'dnd_active' };
+  }
   switch (type) {
     case 'status_view':
       return prefs.statusViewEnabled
