@@ -20,6 +20,7 @@ const getAllGroups = async (req, res) => {
               c.createdBy,
               c.onlyAdminsCanSend,
               c.onlyAdminsCanEditInfo,
+              c.onlyAdminsCanAddMembers,
               (SELECT COUNT(*) FROM conv_participants cp WHERE cp.conversID = c.conversID) AS members
        FROM conversation c
        WHERE ${where.join(' AND ')}
@@ -42,7 +43,7 @@ const getGroupById = async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT conversID, isGroup, GroupName, groupPhoto, description,
               lastMessage, lastMessageAt, createdAt, createdBy,
-              onlyAdminsCanSend, onlyAdminsCanEditInfo
+              onlyAdminsCanSend, onlyAdminsCanEditInfo, onlyAdminsCanAddMembers
        FROM conversation WHERE conversID = ?`,
       [id]
     );
@@ -79,6 +80,7 @@ const getGroupById = async (req, res) => {
       createdBy: g.createdBy,
       onlyAdminsCanSend: g.onlyAdminsCanSend ? 1 : 0,
       onlyAdminsCanEditInfo: g.onlyAdminsCanEditInfo ? 1 : 0,
+      onlyAdminsCanAddMembers: g.onlyAdminsCanAddMembers ? 1 : 0,
       members: members.map((m) => ({
         alanyaID: m.alanyaID,
         nom: m.nom,

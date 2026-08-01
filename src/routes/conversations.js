@@ -245,7 +245,7 @@ router.post('/:id/leave', auth, leaveGroup);
  *         description: Participants ajoutés
  */
 // requireParticipant + requireGroup : le contrôleur applique ensuite le verrou
-// onlyAdminsCanEditInfo. Sans règle de rôle, un simple membre pouvait
+// onlyAdminsCanAddMembers. Sans règle de rôle, un simple membre pouvait
 // RÉINTÉGRER immédiatement la personne qu'un admin venait d'exclure — le
 // retrait, lui, est réservé aux admins. L'exclusion n'était donc pas tenable.
 router.post('/:id/participants', auth, requireParticipant, requireGroup, addParticipants);
@@ -306,6 +306,8 @@ router.patch('/:id/group', auth, requireParticipant, requireGroup, updateGroupIn
  *             properties:
  *               onlyAdminsCanSend: { type: integer, enum: [0, 1] }
  *               onlyAdminsCanEditInfo: { type: integer, enum: [0, 1] }
+ *               hideHistoryForNewMembers: { type: integer, enum: [0, 1] }
+ *               onlyAdminsCanAddMembers: { type: integer, enum: [0, 1] }
  *     responses:
  *       200: { description: Conversation enrichie }
  *       403: { description: GROUP_ADMIN_REQUIRED }

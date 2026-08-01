@@ -21,7 +21,7 @@ const pool = require('../config/db');
   const [rows] = await pool.execute(
     `SELECT c.conversID, c.isGroup, c.createdBy,
             c.onlyAdminsCanSend, c.onlyAdminsCanEditInfo,
-            c.hideHistoryForNewMembers,
+            c.hideHistoryForNewMembers, c.onlyAdminsCanAddMembers,
             cp.role
        FROM conversation c
        JOIN conv_participants cp
@@ -37,6 +37,7 @@ const pool = require('../config/db');
     onlyAdminsCanSend: !!rows[0].onlyAdminsCanSend,
     onlyAdminsCanEditInfo: !!rows[0].onlyAdminsCanEditInfo,
     hideHistoryForNewMembers: !!rows[0].hideHistoryForNewMembers,
+    onlyAdminsCanAddMembers: !!rows[0].onlyAdminsCanAddMembers,
     role: Number(rows[0].role) || 0,
   };
 }

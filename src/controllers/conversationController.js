@@ -266,6 +266,7 @@ const createGroup = async (req, res, next) => {
       onlyAdminsCanSend,
       onlyAdminsCanEditInfo,
       hideHistoryForNewMembers,
+      onlyAdminsCanAddMembers,
     } = req.body;
     const alanyaID = req.user.alanyaID;
 
@@ -284,12 +285,17 @@ const createGroup = async (req, res, next) => {
     const historyFlag = hideHistoryForNewMembers !== undefined
       ? asFlag(hideHistoryForNewMembers)
       : 0;
+    // Défaut OFF : tout le monde peut ajouter des membres.
+    const addMembersFlag = onlyAdminsCanAddMembers !== undefined
+      ? asFlag(onlyAdminsCanAddMembers)
+      : 0;
 
     const [result] = await pool.execute(
       `INSERT INTO conversation
          (isGroup, GroupName, groupPhoto, description, createdBy, lastMessageAt,
-          onlyAdminsCanSend, onlyAdminsCanEditInfo, hideHistoryForNewMembers)
-       VALUES (1, ?, ?, ?, ?, NOW(), ?, ?, ?)`,
+          onlyAdminsCanSend, onlyAdminsCanEditInfo, hideHistoryForNewMembers,
+          onlyAdminsCanAddMembers)
+       VALUES (1, ?, ?, ?, ?, NOW(), ?, ?, ?, ?)`,
       [
         groupName || 'Groupe',
         groupPhoto || null,
@@ -298,6 +304,7 @@ const createGroup = async (req, res, next) => {
         sendFlag,
         editFlag,
         historyFlag,
+        addMembersFlag,
       ]
     );
     const conversID = result.insertId;
@@ -537,12 +544,12 @@ const addParticipants = async (req, res, next) => {
       return res.status(400).json({ error: 'participantIDs required as array' });
     }
 
-    // Même verrou que l'édition des infos : inviter, c'est modifier le groupe.
-    // Sans ça, un membre ordinaire annulait le retrait décidé par un admin.
-    if (req.membership.onlyAdminsCanEditInfo && req.membership.role < 1) {
+    // Verrou dédié (découplé de onlyAdminsCanEditInfo) : un membre peut
+    // inviter sans pouvoir renommer le groupe, et inversement.
+    if (req.membership.onlyAdminsCanAddMembers && req.membership.role < 1) {
       return res.status(403).json({
         error: 'Seuls les administrateurs peuvent ajouter des participants',
-        code: 'GROUP_INFO_LOCKED',
+        code: 'GROUP_ADD_MEMBERS_LOCKED',
       });
     }
 
@@ -801,6 +808,7 @@ const updateGroupSettings = async (req, res, next) => {
       onlyAdminsCanSend,
       onlyAdminsCanEditInfo,
       hideHistoryForNewMembers,
+      onlyAdminsCanAddMembers,
     } = req.body;
 
     const updates = [];
@@ -833,6 +841,15 @@ const updateGroupSettings = async (req, res, next) => {
         updates.push('hideHistoryForNewMembers = ?');
         values.push(next);
         events.push({ lock: 'history', on: next });
+      }
+    }
+
+    if (onlyAdminsCanAddMembers !== undefined) {
+      const next = asFlag(onlyAdminsCanAddMembers);
+      if (next !== (req.membership.onlyAdminsCanAddMembers ? 1 : 0)) {
+        updates.push('onlyAdminsCanAddMembers = ?');
+        values.push(next);
+        events.push({ lock: 'add', on: next });
       }
     }
 
