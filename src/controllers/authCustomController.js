@@ -194,7 +194,7 @@ const login = async (req, res) => {
     const phoneCanonical = normalize(alanyaPhone);
 
     const [rows] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, email, password, avatar_url, is_online, exclus FROM users WHERE alanyaPhone = ?',
+      'SELECT alanyaID, nom, pseudo, alanyaPhone, email, password, avatar_url, is_online, exclus, exclude_reason, delete_scheduled_at FROM users WHERE alanyaPhone = ?',
       [phoneCanonical]
     );
 
@@ -205,6 +205,17 @@ const login = async (req, res) => {
     const user = rows[0];
 
     if (user.exclus === 1) {
+      if (
+        user.exclude_reason === 'self_delete_pending'
+        && user.delete_scheduled_at
+        && new Date(user.delete_scheduled_at).getTime() > Date.now()
+      ) {
+        return res.status(403).json({
+          error: 'Suppression du compte en cours',
+          code: 'ACCOUNT_DELETION_PENDING',
+          scheduledAt: user.delete_scheduled_at,
+        });
+      }
       return res.status(403).json({ error: 'Compte banni' });
     }
 

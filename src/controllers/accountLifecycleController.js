@@ -11,6 +11,13 @@ const {
   EXPORT_JOB_STATUS,
   exportStatusFromDb,
 } = require('../constants/profilePrefs');
+const {
+  GRACE_DAYS,
+  scheduleAccountDeletion,
+  cancelAccountDeletion,
+  purgeExpiredAccounts,
+  startDeletionPurgeScheduler,
+} = require('../services/accountDeletionService');
 
 const EXPORT_DIR = path.join(__dirname, '../../uploads/exports');
 const EXPORT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -209,7 +216,7 @@ const deleteAccount = async (req, res) => {
 
     const alanyaID = req.user.alanyaID;
     const [rows] = await pool.execute(
-      'SELECT password FROM users WHERE alanyaID = ? AND exclus = 0',
+      'SELECT password, delete_scheduled_at FROM users WHERE alanyaID = ? AND exclus = 0',
       [alanyaID],
     );
     if (rows.length === 0) {
@@ -222,38 +229,90 @@ const deleteAccount = async (req, res) => {
     }
 
     const io = req.app.get('io');
+    const scheduledAt = await scheduleAccountDeletion(alanyaID);
 
     const [devices] = await pool.execute(
-      'SELECT id, device_id FROM appareils WHERE alanyaID = ? AND revoked_at IS NULL',
-      [alanyaID],
+      'SELECT id, device_id FROM appareils WHERE alanyaID = ? AND revoked_at IS NULL AND id <> ?',
+      [alanyaID, req.user.appareilId ?? 0],
     );
-    await pool.execute(
-      'UPDATE appareils SET revoked_at = NOW() WHERE alanyaID = ? AND revoked_at IS NULL',
-      [alanyaID],
-    );
-
-    for (const d of devices) {
-      emitToUser(io, alanyaID, 'auth:device_revoked', {
-        appareilId: d.id,
-        deviceId: d.device_id,
-        reason: 'account_deleted',
-      });
+    if (devices.length > 0) {
+      await pool.execute(
+        'UPDATE appareils SET revoked_at = NOW() WHERE alanyaID = ? AND revoked_at IS NULL AND id <> ?',
+        [alanyaID, req.user.appareilId ?? 0],
+      );
+      for (const d of devices) {
+        emitToUser(io, alanyaID, 'auth:device_revoked', {
+          appareilId: d.id,
+          deviceId: d.device_id,
+          reason: 'account_deletion_scheduled',
+        });
+      }
     }
-    _disconnectAllUserSockets(io, alanyaID);
 
-    // blocked n'a pas ON DELETE CASCADE sur users
-    await pool.execute(
-      'DELETE FROM blocked WHERE alanyaID = ? OR idCallerBlock = ?',
-      [alanyaID, alanyaID],
-    );
+    emitToUser(io, alanyaID, 'account:deletion_scheduled', {
+      scheduledAt: scheduledAt.toISOString(),
+      graceDays: GRACE_DAYS,
+    });
 
-    await pool.execute('DELETE FROM users WHERE alanyaID = ?', [alanyaID]);
-
-    res.json({ message: 'Compte supprimé' });
+    res.json({
+      message: 'Suppression planifiée',
+      scheduledAt: scheduledAt.toISOString(),
+      graceDays: GRACE_DAYS,
+    });
   } catch (error) {
     console.error('[DeleteAccount] ERROR:', error);
     res.status(500).json({ error: error.message || 'Échec de la suppression du compte' });
   }
+};
+
+const cancelAccountDeletionHandler = async (req, res) => {
+  try {
+    const ok = await cancelAccountDeletion(req.user.alanyaID);
+    if (!ok) {
+      return res.status(400).json({ error: 'Aucune suppression en cours à annuler' });
+    }
+    const io = req.app.get('io');
+    emitToUser(io, req.user.alanyaID, 'account:deletion_cancelled', {});
+    res.json({ message: 'Suppression annulée' });
+  } catch (error) {
+    console.error('[CancelDeletion] ERROR:', error);
+    res.status(500).json({ error: error.message || 'Échec annulation suppression' });
+  }
+};
+
+const cleanupExpiredExports = async () => {
+  try {
+    const [jobs] = await pool.execute(
+      `SELECT id, filePath FROM user_export_jobs
+        WHERE expiresAt IS NOT NULL AND expiresAt < NOW() AND filePath IS NOT NULL`,
+    );
+    for (const job of jobs) {
+      try {
+        await fs.unlink(path.join(EXPORT_DIR, path.basename(job.filePath)));
+      } catch (_) {}
+    }
+    await pool.execute(
+      `DELETE FROM user_export_jobs
+        WHERE expiresAt IS NOT NULL AND expiresAt < NOW()`,
+    );
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') {
+      console.error('[ExportCleanup] ERROR:', e.message);
+    }
+  }
+};
+
+const startAccountLifecycleSchedulers = () => {
+  const tick = () => {
+    purgeExpiredAccounts().catch((e) =>
+      console.error('[AccountDeletion] purge error:', e.message),
+    );
+    cleanupExpiredExports().catch((e) =>
+      console.error('[ExportCleanup] error:', e.message),
+    );
+  };
+  tick();
+  return setInterval(tick, 60 * 60 * 1000);
 };
 
 const exportAccountData = async (req, res) => {
@@ -351,6 +410,8 @@ const downloadExportJob = async (req, res) => {
 
 module.exports = {
   deleteAccount,
+  cancelAccountDeletionHandler,
   exportAccountData,
   downloadExportJob,
+  startAccountLifecycleSchedulers,
 };

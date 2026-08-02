@@ -48,9 +48,12 @@ const {
 } = require('../controllers/dndScheduleController');
 const {
   deleteAccount,
+  cancelAccountDeletionHandler,
   exportAccountData,
   downloadExportJob,
+  startAccountLifecycleSchedulers,
 } = require('../controllers/accountLifecycleController');
+const { getMyMedia } = require('../controllers/profileMediaController');
 
 /**
  * @swagger
@@ -653,6 +656,8 @@ router.get('/dnd-schedule', authCustom, getDndSchedule);
 router.patch('/dnd-schedule', authCustom, patchDndSchedule);
 
 router.delete('/me', authCustom, deleteAccount);
+router.post('/me/cancel-deletion', authCustom, cancelAccountDeletionHandler);
+router.get('/me/media', authCustom, getMyMedia);
 router.post('/me/export', authCustom, exportAccountData);
 router.get('/me/export/:jobId', authCustom, downloadExportJob);
 

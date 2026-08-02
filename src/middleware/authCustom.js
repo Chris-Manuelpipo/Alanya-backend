@@ -43,10 +43,20 @@ const authCustom = async (req, res, next) => {
     // révocation (bouton « Déconnecter » sur un appareil) n'est donc réelle
     // que pour les sessions ouvertes après cette migration.
     const [rows] = await pool.execute(
-      `SELECT u.alanyaID, u.alanyaPhone, u.email
+      `SELECT u.alanyaID, u.alanyaPhone, u.email, u.exclus, u.exclude_reason, u.delete_scheduled_at
        FROM users u
        LEFT JOIN appareils a ON a.id = ? AND a.alanyaID = u.alanyaID
-       WHERE u.alanyaID = ? AND u.exclus = 0 AND (a.id IS NULL OR a.revoked_at IS NULL)`,
+       WHERE u.alanyaID = ?
+         AND (
+           u.exclus = 0
+           OR (
+             u.exclus = 1
+             AND u.exclude_reason = 'self_delete_pending'
+             AND u.delete_scheduled_at IS NOT NULL
+             AND u.delete_scheduled_at > NOW()
+           )
+         )
+         AND (a.id IS NULL OR a.revoked_at IS NULL)`,
       [decoded.appareilId ?? null, decoded.alanyaID]
     );
 
@@ -59,6 +69,8 @@ const authCustom = async (req, res, next) => {
       phone: rows[0].alanyaPhone,
       email: rows[0].email,
       appareilId: decoded.appareilId ?? null,
+      deletionPending: rows[0].exclus === 1,
+      deleteScheduledAt: rows[0].delete_scheduled_at,
     };
     next();
   } catch (error) {

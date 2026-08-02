@@ -58,6 +58,9 @@ const {
 } = require('./src/socket/handlers/meetings');
 
 const { startMeetingScheduler, stopMeetingScheduler } = require('./src/services/meetingScheduler');
+const { startAccountLifecycleSchedulers } = require('./src/controllers/accountLifecycleController');
+
+let stopAccountLifecycleSchedulers = () => {};
 
 // ── App ───────────────────────────────────────────────────────────────
 const app    = express();
@@ -186,6 +189,7 @@ server.listen(PORT, () => {
   console.log(`Serveur en marche sur le port ${PORT}`);
   resetStalePresence();
   startMeetingScheduler();
+  stopAccountLifecycleSchedulers = startAccountLifecycleSchedulers();
 });
 
 // Filet de dernier recours. Express 4 ne capture PAS le rejet d'un handler
@@ -210,6 +214,7 @@ process.on('uncaughtException', (err) => {
 process.on('SIGINT', () => {
   console.log('Arrêt du serveur...');
   stopMeetingScheduler();
+  stopAccountLifecycleSchedulers();
   process.exit(0);
 });
 
