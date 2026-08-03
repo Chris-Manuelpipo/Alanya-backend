@@ -158,6 +158,23 @@ function clear(userId) {
   _states.delete(userId);
 }
 
+/**
+ * Réaffecte le correspondant d'un utilisateur déjà engagé, SANS toucher aux
+ * timers en cours — contrairement à setInCall, qui les remet à zéro.
+ *
+ * Sert quand un participant quitte une session à trois : les deux restants se
+ * retrouvent face à face et doivent se désigner mutuellement, sans que la grâce
+ * de reconnexion éventuellement armée sur l'un d'eux soit annulée au passage.
+ *
+ * @returns {boolean} false si l'utilisateur n'a aucun état courant.
+ */
+function setPeer(userId, peerId) {
+  const entry = getEntry(userId);
+  if (!entry) return false;
+  entry.peerId = peerId != null ? peerId : null;
+  return true;
+}
+
 function cancelDisconnectGrace(userId) {
   const entry = getEntry(userId);
   if (!entry?.disconnectTimer) return;
@@ -202,6 +219,7 @@ module.exports = {
   getEntry,
   setRinging,
   setInCall,
+  setPeer,
   clear,
   cancelDisconnectGrace,
   scheduleDisconnectGrace,

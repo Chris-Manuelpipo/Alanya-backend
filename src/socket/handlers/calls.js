@@ -6,6 +6,7 @@ const { getClientIp, parseCallMode } = require('../../utils/clientIp');
 const { buildDirectConversationLookup } = require('../../utils/directConversation');
 const pendingCalls = require('../state/pendingCalls');
 const callState = require('../state/callState');
+const callSessions = require('../state/callSessions');
 const { emitToUser, isUserOnline } = require('../../utils/userSocketRegistry');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,6 +37,31 @@ const { emitToUser, isUserOnline } = require('../../utils/userSocketRegistry');
 //  - reject/end/timeout/disconnect : les deux repassent « idle ».
 //  - Tous les états terminaux émettent le FCM call_ended (avec callId) nécessaire pour
 //    couper la sonnerie/CallKit du destinataire réveillé en arrière-plan.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONTRAT D'EVENTS — « Ajouter à l'appel » (transfert assisté, 3 participants max)
+//
+// Client → Serveur :
+//   call_add_participant { callId?, targetUserId }  — demande d'ajout, pose le verrou
+//   call_add_cancel      { }                        — annule l'invitation (son auteur seul)
+//   call_conf_join       { }                        — l'invité accepte
+//   call_conf_reject     { }                        — l'invité refuse
+//   end_call             { … }                      — vaut « je pars » quand une session existe
+//
+// Serveur → Client :
+//   call_add_pending  { sessionId, callId, invitee, byUserId }  — aux 2 présents
+//   call_conf_invite  { sessionId, callId, from, peers, isVideo } — à l'invité (+ FCM)
+//   call_conf_joined  { sessionId, user }           — aux présents : déclenche leur offre
+//   call_conf_peers   { sessionId, peers }          — à l'invité : qui va lui offrir
+//   call_conf_failed  { sessionId, userId, reason } — declined|busy|offline|no_answer|cancelled
+//   call_conf_left    { sessionId, userId, remaining } — aux restants
+//   call_add_rejected { code }                      — ADD_ALREADY_USED|TARGET_BUSY|
+//                                                     TARGET_BLOCKED|NOT_IN_CALL|TARGET_SELF
+//
+// Le droit d'ajout est porté par callSessions : pas de session = droit disponible.
+// Un appel 1-à-1 ordinaire n'ouvre aucune session — le chemin nominal est inchangé.
+// Le maillage média réutilise tel quel group_offer / group_answer / group_ice_candidate.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Délai serveur avant de déclarer un appel « sans réponse » (marge > sonnerie CallKit 30 s).
@@ -189,11 +215,129 @@ function createRoomState(isVideo, callerID, callerInfo) {
 }
 
 /**
+ * Clôt l'entrée callHistory d'un appel et rafraîchit l'aperçu de conversation.
+ * Mutualisé entre la fin d'appel 1-à-1 et la fin d'une session à trois.
+ */
+async function closeCallHistory(io, userSockets, callID) {
+  if (!callID) return;
+  try {
+    // status 3 = manqué / coupé sans réponse propre. La durée est recalculée
+    // si start_time existe.
+    await pool.execute(
+      `UPDATE callHistory
+       SET status = CASE WHEN status = 0 THEN 3 ELSE status END,
+           duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+       WHERE IDcall = ?`,
+      [callID],
+    );
+  } catch (dbErr) {
+    console.warn('[Socket closeCallHistory] DB update failed:', dbErr.message);
+  }
+  finalizeCallAndNotify(io, userSockets, callID)
+    .catch((err) => console.warn('[Socket closeCallHistory] finalize error:', err.message));
+}
+
+/**
+ * Retire [userID] de sa session à trois, si tant est qu'il en ait une.
+ *
+ * C'est le cœur de « raccrocher = partir » : tant qu'il reste deux personnes,
+ * l'appel continue sans celui qui s'en va, et les deux restants se retrouvent
+ * face à face. Ce n'est qu'en tombant à une seule personne que l'appel se
+ * termine réellement.
+ *
+ * Le cas de l'invité qui raccroche alors qu'il sonnait encore est traité comme
+ * un refus : les deux présents retrouvent leur appel 1-à-1 et leur droit d'ajout.
+ *
+ * @returns {Promise<boolean>} true si le départ a été absorbé par la session —
+ *          l'appelant ne doit alors PAS dérouler la fin d'appel 1-à-1.
+ */
+async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
+  const session = callSessions.getByUser(userID);
+  if (!session) return false;
+
+  const { sessionId, originCallId } = session;
+  const wasPending = callSessions.isPending(session, userID);
+  const { remaining } = callSessions.removeParticipant(sessionId, userID);
+
+  console.log(
+    `[Socket] leaveCallSession user=${userID} session=${sessionId} ` +
+    `pending=${wasPending} restants=[${remaining}] reason=${reason}`,
+  );
+
+  callState.cancelDisconnectGrace(userID);
+  pendingCalls.clear(userID);
+
+  // L'invité s'en va avant d'être entré : simple échec d'invitation. Les deux
+  // présents n'ont jamais quitté leur appel 1-à-1, on n'y touche pas.
+  if (wasPending) {
+    callState.clear(userID);
+    for (const uid of remaining) {
+      emitToUser(io, uid, 'call_conf_failed', {
+        sessionId,
+        userId: String(userID),
+        reason: reason === 'disconnect' ? 'offline' : 'declined',
+      });
+    }
+    return true;
+  }
+
+  callState.clear(userID);
+
+  // Ses lignes d'historique sont closes ; celles des autres restent ouvertes
+  // tant qu'ils se parlent.
+  await closeSessionHistoryFor(sessionId, userID);
+
+  // Deux personnes ou plus continuent : elles se désignent mutuellement pour
+  // que « occupé », la déconnexion et la fin d'appel restent cohérents.
+  if (remaining.length >= 2) {
+    const [first, second] = remaining;
+    callState.setPeer(first, second);
+    callState.setPeer(second, first);
+
+    for (const uid of remaining) {
+      emitToUser(io, uid, 'call_conf_left', {
+        sessionId,
+        userId: String(userID),
+        remaining: remaining.map(String),
+      });
+    }
+    return true;
+  }
+
+  // Il ne reste qu'une personne : plus d'appel du tout.
+  if (remaining.length === 1) {
+    const last = remaining[0];
+    const lastEntry = callState.getEntry(last);
+    const lastCallId = lastEntry?.callId ?? originCallId ?? null;
+
+    callState.cancelDisconnectGrace(last);
+    callState.clear(last);
+    pendingCalls.clear(last);
+
+    emitToUser(io, last, 'call_ended', {
+      callId: lastCallId != null ? String(lastCallId) : null,
+    });
+    notifyCallEnded(last, userID, 'Correspondant', lastCallId)
+      .catch((err) => console.warn('[Socket leaveCallSession] FCM error:', err.message));
+
+    await closeSessionHistoryFor(sessionId, last);
+    await closeCallHistory(io, userSockets, lastCallId);
+  }
+
+  return true;
+}
+
+/**
  * Termine l'appel 1-à-1 actif d'un utilisateur (disconnect / kill app).
  * Nettoie callState + pendingCalls, prévient le pair (socket + FCM call_ended).
  * @returns {Promise<boolean>} true si un appel a été terminé.
  */
 async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnect') {
+  // Session à trois : le départ n'emporte pas l'appel des autres.
+  if (await leaveCallSession(io, userSockets, userID, reason)) {
+    return true;
+  }
+
   callState.cancelDisconnectGrace(userID);
   const entry = callState.getEntry(userID);
   if (!entry || (entry.status !== 'ringing' && entry.status !== 'in_call')) {
@@ -215,23 +359,7 @@ async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnec
   callState.clear(userID);
   if (peerID) callState.clear(peerID);
 
-  if (callID) {
-    try {
-      // status 3 = manqué / coupé sans réponse propre (disconnect pendant sonnerie
-      // ou communication). La durée est recalculée si start_time existe.
-      await pool.execute(
-        `UPDATE callHistory
-         SET status = CASE WHEN status = 0 THEN 3 ELSE status END,
-             duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
-         WHERE IDcall = ?`,
-        [callID],
-      );
-    } catch (dbErr) {
-      console.warn('[Socket endActiveCallForUser] DB update failed:', dbErr.message);
-    }
-    finalizeCallAndNotify(io, userSockets, callID)
-      .catch((err) => console.warn('[Socket endActiveCallForUser] finalize error:', err.message));
-  }
+  await closeCallHistory(io, userSockets, callID);
 
   if (peerID) {
     emitToUser(io, peerID, 'call_ended', { callId: callIdStr });
@@ -597,6 +725,15 @@ const endCall = (io, socket, userSockets) => {
       const callerID = socket.alanyaID;
       const mode = parseCallMode(rawMode);
 
+      // Session à trois : raccrocher ne fait que retirer celui qui appuie.
+      // L'appel des autres continue — d'où la sortie anticipée, avant toute
+      // clôture d'historique ou notification de fin.
+      if (await leaveCallSession(io, userSockets, callerID, 'hangup')) {
+        socket.currentCallID     = null;
+        socket.currentCallTarget = null;
+        return;
+      }
+
       // Préférer le callId d'état (fiable) avant clear — évite un FCM call_ended
       // sans callId qui ne pourrait pas bloquer un FCM `call` tardif.
       const selfEntry = callState.getEntry(callerID);
@@ -665,7 +802,320 @@ const endCall = (io, socket, userSockets) => {
   });
 };
 
-//  APPELS DE GROUPE 
+//  AJOUT D'UN PARTICIPANT — « Ajouter à l'appel » (transfert assisté)
+
+/** Fiches d'affichage (nom, photo) d'un lot d'utilisateurs, indexées par id. */
+async function fetchUserCards(userIds = []) {
+  const ids = [...new Set(userIds.map(toInt).filter((v) => v != null))];
+  if (!ids.length) return new Map();
+  try {
+    const placeholders = ids.map(() => '?').join(',');
+    const [rows] = await pool.execute(
+      `SELECT alanyaID, nom, pseudo, avatar_url FROM users WHERE alanyaID IN (${placeholders})`,
+      ids,
+    );
+    return new Map(rows.map((r) => [
+      r.alanyaID,
+      {
+        id: String(r.alanyaID),
+        name: (r.nom || '').trim() || r.pseudo || '',
+        photo: r.avatar_url || null,
+      },
+    ]));
+  } catch (dbErr) {
+    console.warn('[Socket call_add] fetchUserCards failed:', dbErr.message);
+    return new Map();
+  }
+}
+
+/**
+ * Ouvre les lignes d'historique de l'invité, une par paire réellement connectée.
+ *
+ * callHistory reste binaire : l'appel à trois s'y écrit comme un faisceau de
+ * paires reliées par un même sessionID. L'appel d'origine est rattaché à la
+ * session au passage, pour que le journal puisse regrouper les trois lignes.
+ */
+async function openSessionHistory(session, inviteeID) {
+  const { sessionId, originCallId, isVideo } = session;
+  const present = callSessions.participantIds(session).filter((id) => id !== inviteeID);
+  try {
+    if (originCallId) {
+      await pool.execute('UPDATE callHistory SET sessionID = ? WHERE IDcall = ?', [
+        sessionId,
+        originCallId,
+      ]);
+    }
+    for (const uid of present) {
+      // status 1 = décroché : l'invité est effectivement entré.
+      await pool.execute(
+        `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, start_time, sessionID)
+         VALUES (?, ?, ?, 1, NOW(), NOW(), ?)`,
+        [uid, inviteeID, isVideo ? 1 : 0, sessionId],
+      );
+    }
+  } catch (dbErr) {
+    console.warn('[Socket call_add] openSessionHistory failed:', dbErr.message);
+  }
+}
+
+/**
+ * Clôt les lignes de session d'un participant qui s'en va.
+ *
+ * Seules les siennes : les deux autres continuent de parler et leur propre ligne
+ * doit rester ouverte jusqu'à ce qu'ils raccrochent à leur tour.
+ */
+async function closeSessionHistoryFor(sessionId, userID) {
+  if (!sessionId || !userID) return;
+  try {
+    await pool.execute(
+      `UPDATE callHistory
+       SET duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+       WHERE sessionID = ? AND (idCaller = ? OR idReceiver = ?) AND duree = 0`,
+      [sessionId, userID, userID],
+    );
+  } catch (dbErr) {
+    console.warn('[Socket call_add] closeSessionHistoryFor failed:', dbErr.message);
+  }
+}
+
+/**
+ * Solde une invitation en cours sur un échec.
+ *
+ * Détruit la session, ce qui rend mécaniquement le droit d'ajout aux deux
+ * présents, puis coupe la sonnerie de l'invité. Les présents n'ont jamais quitté
+ * leur appel 1-à-1 : il n'y a rien à y rétablir.
+ *
+ * @param {string} reason declined | busy | offline | no_answer | cancelled
+ */
+function failInvite(io, sessionId, reason) {
+  const session = callSessions.get(sessionId);
+  if (!session?.pending) return;
+
+  const inviteeID = session.pending.userId;
+  const present = callSessions.participantIds(session);
+
+  console.log(`[Socket call_add] ✖ invitation soldée session=${sessionId} invité=${inviteeID} raison=${reason}`);
+
+  callSessions.abortPending(sessionId);
+  callState.clear(inviteeID);
+  pendingCalls.clear(inviteeID);
+
+  for (const uid of present) {
+    emitToUser(io, uid, 'call_conf_failed', {
+      sessionId,
+      userId: String(inviteeID),
+      reason,
+    });
+  }
+
+  // L'invité qui a lui-même refusé n'a plus rien à couper. Dans tous les autres
+  // cas il faut éteindre son écran d'appel entrant — socket pour le premier plan,
+  // FCM pour l'app réveillée en arrière-plan.
+  if (reason !== 'declined') {
+    emitToUser(io, inviteeID, 'call_ended', { callId: sessionId });
+    notifyCallEnded(inviteeID, present[0] ?? null, 'Correspondant', sessionId)
+      .catch((err) => console.warn('[Socket call_add] FCM call_ended error:', err.message));
+  }
+}
+
+const addParticipant = (io, socket, userSockets) => {
+  socket.on('call_add_participant', async (data) => {
+    try {
+      if (!socket.authenticated) return;
+
+      const { targetUserId, callerName, callerPhoto } = data || {};
+      const inviteeID   = toInt(targetUserId);
+      const requesterID = socket.alanyaID;
+
+      const reject = (code) => socket.emit('call_add_rejected', { code });
+
+      if (!inviteeID || !requesterID) return reject('INVALID');
+      if (inviteeID === requesterID) return reject('TARGET_SELF');
+
+      // Le demandeur doit être en communication, et à deux seulement.
+      const entry = callState.getEntry(requesterID);
+      if (!entry || entry.status !== 'in_call' || entry.peerId == null) {
+        return reject('NOT_IN_CALL');
+      }
+      const peerID = toInt(entry.peerId);
+      if (!peerID) return reject('NOT_IN_CALL');
+      if (peerID === inviteeID) return reject('TARGET_ALREADY_IN_CALL');
+
+      // Disponibilité de l'invité, après purge d'un « occupé » fantôme.
+      reclaimStaleBusy(io, inviteeID);
+      if (callState.isBusyForNewCall(inviteeID, requesterID, pendingCalls)) {
+        console.log(`[Socket call_add] ⛔ invité occupé: ${inviteeID} (${callState.get(inviteeID)})`);
+        return reject('TARGET_BUSY');
+      }
+
+      // ── Verrou ──────────────────────────────────────────────────────────────
+      // Posé ICI, avant le moindre await : c'est ce qui arbitre deux appuis
+      // simultanés sur « Ajouter ». Les vérifications asynchrones qui suivent
+      // relâchent le verrou en cas d'échec (failInvite détruit la session).
+      const session = callSessions.openWithPending({
+        originCallId: entry.callId ?? null,
+        isVideo: !!entry.isVideo,
+        participants: [requesterID, peerID],
+        inviteeId: inviteeID,
+        byUserId: requesterID,
+      });
+      if (!session) {
+        console.log(`[Socket call_add] ⛔ droit déjà utilisé: demandeur=${requesterID}`);
+        return reject('ADD_ALREADY_USED');
+      }
+      const { sessionId } = session;
+
+      // Un ajout met en relation deux personnes qui ne se sont rien demandé :
+      // on vérifie le blocage sur LES DEUX paires, pas seulement celle de
+      // l'invitant. Un blocage est un refus de contact déjà exprimé.
+      const [blockedByRequester, blockedByPeer] = await Promise.all([
+        isBlockedEitherWay(requesterID, inviteeID),
+        isBlockedEitherWay(peerID, inviteeID),
+      ]);
+      if (blockedByRequester || blockedByPeer) {
+        console.log(`[Socket call_add] ⛔ blocage: invité=${inviteeID}`);
+        callSessions.abortPending(sessionId);
+        return reject('TARGET_BLOCKED');
+      }
+
+      // L'invité devient « occupé » : un quatrième appelant le trouvera pris.
+      callState.setRinging(inviteeID, {
+        callId: sessionId,
+        peerId: requesterID,
+        isVideo: !!entry.isVideo,
+      });
+
+      // Expiration alignée sur celle des appels ordinaires.
+      callSessions.setPendingTimer(
+        sessionId,
+        setTimeout(() => failInvite(io, sessionId, 'no_answer'), NO_ANSWER_MS),
+      );
+
+      const cards = await fetchUserCards([requesterID, peerID, inviteeID]);
+      const fallback = (uid) => ({ id: String(uid), name: '', photo: null });
+      const inviteeCard   = cards.get(inviteeID)   ?? fallback(inviteeID);
+      const requesterCard = cards.get(requesterID) ?? fallback(requesterID);
+      const peerCard      = cards.get(peerID)      ?? fallback(peerID);
+
+      // Le nom transmis par le client fait foi s'il est fourni (cohérent avec
+      // call_user), la base servant de repli.
+      if (callerName) requesterCard.name = callerName;
+      if (callerPhoto) requesterCard.photo = callerPhoto;
+
+      console.log(
+        `[Socket call_add] ➕ ${requesterID} ajoute ${inviteeID} à l'appel avec ${peerID} (session=${sessionId})`,
+      );
+
+      // Les deux présents affichent la tuile en sonnerie et perdent le bouton.
+      for (const uid of [requesterID, peerID]) {
+        emitToUser(io, uid, 'call_add_pending', {
+          sessionId,
+          callId: session.originCallId,
+          invitee: inviteeCard,
+          byUserId: String(requesterID),
+        });
+      }
+
+      // L'invité sonne comme pour un appel ordinaire, avec le motif explicite.
+      emitToUser(io, inviteeID, 'call_conf_invite', {
+        sessionId,
+        callId: session.originCallId,
+        from: requesterCard,
+        peers: [requesterCard, peerCard],
+        isVideo: !!entry.isVideo,
+      });
+
+      // App fermée / arrière-plan : réveil FCM, même chemin qu'un appel entrant.
+      notifyIncomingCall(
+        inviteeID,
+        requesterID,
+        requesterCard.name,
+        requesterCard.photo,
+        !!entry.isVideo,
+        sessionId,
+      ).catch((err) => console.warn('[Socket call_add] FCM invite error:', err.message));
+    } catch (error) {
+      console.error('[Socket call_add_participant]', error.message);
+      socket.emit('call_add_rejected', { code: 'INTERNAL' });
+    }
+  });
+};
+
+const cancelAddParticipant = (io, socket, userSockets) => {
+  socket.on('call_add_cancel', () => {
+    try {
+      if (!socket.authenticated) return;
+      const session = callSessions.getByUser(socket.alanyaID);
+      if (!session?.pending) return;
+      // L'invitation appartient à celui qui l'a lancée : lui seul l'annule.
+      if (session.pending.byUserId !== socket.alanyaID) return;
+      failInvite(io, session.sessionId, 'cancelled');
+    } catch (error) {
+      console.error('[Socket call_add_cancel]', error.message);
+    }
+  });
+};
+
+const confReject = (io, socket, userSockets) => {
+  socket.on('call_conf_reject', () => {
+    try {
+      if (!socket.authenticated) return;
+      const session = callSessions.getByUser(socket.alanyaID);
+      if (!session || !callSessions.isPending(session, socket.alanyaID)) return;
+      failInvite(io, session.sessionId, 'declined');
+    } catch (error) {
+      console.error('[Socket call_conf_reject]', error.message);
+    }
+  });
+};
+
+const confJoin = (io, socket, userSockets) => {
+  socket.on('call_conf_join', async () => {
+    try {
+      if (!socket.authenticated) return;
+      const inviteeID = socket.alanyaID;
+      const session = callSessions.getByUser(inviteeID);
+      if (!session || !callSessions.isPending(session, inviteeID)) return;
+
+      const { sessionId } = session;
+      const present = callSessions.participantIds(session);
+      const promoted = callSessions.promotePending(sessionId);
+      if (!promoted) return;
+
+      pendingCalls.clear(inviteeID);
+      callState.setInCall(inviteeID, {
+        callId: sessionId,
+        peerId: present[0] ?? null,
+        isVideo: session.isVideo,
+      });
+
+      console.log(`[Socket call_add] ✔ ${inviteeID} rejoint la session ${sessionId} (présents=[${present}])`);
+
+      openSessionHistory(promoted, inviteeID)
+        .catch((err) => console.warn('[Socket call_conf_join] historique:', err.message));
+
+      const cards = await fetchUserCards([...present, inviteeID]);
+      const fallback = (uid) => ({ id: String(uid), name: '', photo: null });
+      const inviteeCard = cards.get(inviteeID) ?? fallback(inviteeID);
+
+      // Chaque présent ouvre une connexion vers l'arrivant : ce sont eux qui
+      // offrent, l'arrivant se contente de répondre — aucune collision d'offres.
+      for (const uid of present) {
+        emitToUser(io, uid, 'call_conf_joined', { sessionId, user: inviteeCard });
+      }
+
+      emitToUser(io, inviteeID, 'call_conf_peers', {
+        sessionId,
+        isVideo: session.isVideo,
+        peers: present.map((uid) => cards.get(uid) ?? fallback(uid)),
+      });
+    } catch (error) {
+      console.error('[Socket call_conf_join]', error.message);
+    }
+  });
+};
+
+//  APPELS DE GROUPE
 
 const createGroupCall = (io, socket, userSockets) => {
   socket.on('create_group_call', (data) => {
@@ -1017,6 +1467,12 @@ module.exports = {
   iceCandidate,
   endCall,
   endActiveCallForUser,
+  leaveCallSession,
+  failInvite,
+  addParticipant,
+  cancelAddParticipant,
+  confJoin,
+  confReject,
   createGroupCall,
   joinGroupCall,
   leaveGroupCall,
