@@ -13,6 +13,7 @@ const {
 } = require('../../services/alanyaPhoneService');
 const { sendMail, renderHtmlEmail, escapeHtml } = require('../../services/mailService');
 const { sendToUser } = require('../../services/notificationService');
+const recoveryCode = require('../../services/recoveryCodeService');
 const { _buildUserMailFrom, _appName } = require('./helpers');
 
 const SALT_ROUNDS = 10;
@@ -187,13 +188,25 @@ const createUser = async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-    const avatarUrl = _defaultAvatar(avatarGender === 'female' ? 'female' : 'male');
+    const isFemale = avatarGender === 'female';
+    const avatarUrl = _defaultAvatar(isFemale ? 'female' : 'male');
+
+    // `avatarGender` ne servait jusqu'ici qu'à choisir un avatar par défaut, sans
+    // jamais être conservé. Maintenant que la colonne existe, on l'y persiste —
+    // uniquement quand il a été explicitement fourni : le repli « male » de la
+    // ligne au-dessus est un choix d'illustration, pas une déclaration de genre.
+    const genre = avatarGender === 'female' ? 'femme'
+      : avatarGender === 'male' ? 'homme'
+      : null;
+
+    // Comme à l'inscription : aucun compte ne doit exister sans voie de secours.
+    const { encrypted: recoveryEncrypted } = recoveryCode.issue();
 
     const [result] = await pool.execute(
       `INSERT INTO users
         (nom, pseudo, alanyaPhone, email, password, idPays, avatar_url,
-         type_compte, fcm_token, device_ID, last_seen, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INDEFINI', 'INDEFINI', NOW(), NOW())`,
+         type_compte, genre, recovery_code_enc, fcm_token, device_ID, last_seen, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INDEFINI', 'INDEFINI', NOW(), NOW())`,
       [
         nom.trim(),
         pseudo.trim(),
@@ -203,6 +216,8 @@ const createUser = async (req, res) => {
         resolvedIdPays,
         avatarUrl,
         resolvedType,
+        genre,
+        recoveryEncrypted,
       ]
     );
 

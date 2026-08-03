@@ -32,13 +32,31 @@ CREATE TABLE IF NOT EXISTS users (
   biometric        TINYINT      NOT NULL DEFAULT 0,
   fcm_token        VARCHAR(255) NOT NULL DEFAULT 'INDEFINI',
   device_ID        VARCHAR(255) NOT NULL DEFAULT 'INDEFINI' COMMENT 'Android ID ou Apple ID',
-  email            VARCHAR(255) NULL COMMENT 'Email pour authentication et reset password',
+  email            VARCHAR(255) NULL COMMENT 'Email FACULTATIF, pour la récupération de mot de passe',
   reset_otp        VARCHAR(6)   NULL COMMENT 'OTP de 6 chiffres pour reset password',
   reset_otp_expires_at DATETIME NULL COMMENT 'Expiration de l''OTP (10 minutes)',
+  -- migration 025
+  pending_email    VARCHAR(255) NULL COMMENT 'Email en attente de confirmation OTP',
+  email_change_otp VARCHAR(6)   NULL,
+  email_change_otp_expires_at DATETIME NULL,
+  -- migration 026
+  qr_public_id     VARCHAR(64)  NULL COMMENT 'Jeton opaque du QR d''identité',
+  -- migration 030
+  bio              VARCHAR(500) NULL,
+  -- migration 035
+  delete_requested_at DATETIME  NULL COMMENT 'Demande de suppression par l''utilisateur',
+  delete_scheduled_at DATETIME  NULL COMMENT 'Purge définitive prévue (demande + 7 jours)',
+  -- migration 037
+  genre            VARCHAR(20)  NULL COMMENT 'homme|femme|autre|non_precise — écriture unique',
+  age              TINYINT UNSIGNED NULL COMMENT 'Déclaré par l''utilisateur — écriture unique',
+  annee_naissance  SMALLINT UNSIGNED NULL COMMENT 'Déduite de age (approximative)',
+  ville            VARCHAR(120) NULL COMMENT 'Déduite de l''IP (ipwho.is), jamais déclarée',
+  recovery_code_enc VARCHAR(255) NULL COMMENT 'Code de récupération chiffré AES-256-GCM',
   created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (alanyaID),
   UNIQUE KEY uq_phone (alanyaPhone),
   UNIQUE KEY uq_email (email),
+  UNIQUE KEY uq_users_qr_public_id (qr_public_id),
   KEY idx_users_phone (alanyaPhone),
   KEY idx_users_online (is_online, last_seen),
   KEY idx_users_created_at (created_at),

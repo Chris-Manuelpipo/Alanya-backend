@@ -7,17 +7,52 @@ const { normalize } = require('../utils/alanyaPhone');
 const { generateUniquePhone } = require('../services/alanyaPhoneService');
 const deviceSessionService = require('../services/deviceSessionService');
 const { emitToUser } = require('../utils/userSocketRegistry');
+const recoveryCode = require('../services/recoveryCodeService');
+const { lookupPlace } = require('../services/ipGeoService');
 
 const SALT_ROUNDS = 10;
 
 const _selectUserWithPays = `
   SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.idPays,
          u.avatar_url, u.bio, u.type_compte, u.is_online, u.last_seen,
+         u.genre, u.age, u.annee_naissance, u.ville,
          p.libelle AS pays_libelle, p.prefix AS pays_prefix
   FROM users u
   LEFT JOIN pays p ON u.idPays = p.idPays
   WHERE u.alanyaID = ?
 `;
+
+// Vocabulaire fermé du genre. `non_precise` est une valeur à part entière et non
+// un NULL : « je préfère ne pas dire » est une réponse, « pas encore renseigné »
+// en est une autre, et les confondre fausserait toute lecture ultérieure.
+const GENRES = ['homme', 'femme', 'autre', 'non_precise'];
+
+// L'app est interdite aux moins de 13 ans ; au-delà de 120 c'est une faute de
+// frappe, pas un utilisateur.
+const AGE_MIN = 13;
+const AGE_MAX = 120;
+
+/**
+ * Renseigne users.ville à partir de l'IP, en arrière-plan et sans jamais faire
+ * échouer l'appelant. Même contrat que la géolocalisation des sessions QR : la
+ * ville est une donnée d'appoint, aucun parcours n'en dépend.
+ * `ville IS NULL` dans le WHERE : on ne réécrit jamais une ville déjà connue,
+ * un utilisateur en déplacement ne doit pas voir sa ville changer à chaque
+ * connexion.
+ */
+const _resoudreVilleEnArrierePlan = (ip, alanyaID) => {
+  lookupPlace(ip)
+    .then((lieu) => {
+      if (!lieu?.city) return null;
+      return pool.execute(
+        'UPDATE users SET ville = ? WHERE alanyaID = ? AND ville IS NULL',
+        [lieu.city, alanyaID],
+      );
+    })
+    .catch((error) => {
+      console.warn('[ipGeo] ville non persistée:', error.message);
+    });
+};
 
 const countryExists = async (idPays) => {
   const id = Number(idPays);
@@ -117,11 +152,17 @@ const register = async (req, res) => {
       return res.status(400).json({ error: 'Pays invalide' });
     }
 
+    // Émis pour TOUT compte, avec ou sans e-mail : le client ne l'affiche qu'aux
+    // comptes sans e-mail, mais un utilisateur peut retirer son e-mail de l'écran
+    // de sécurité plus tard, et un compte sans voie de récupération est un compte
+    // perdu. Le générer systématiquement coûte un appel crypto.
+    const { code: recoveryPlain, encrypted: recoveryEncrypted } = recoveryCode.issue();
+
     const [result] = await pool.execute(
       `INSERT INTO users
         (nom, pseudo, alanyaPhone, email, password, idPays, avatar_url,
-         fcm_token, device_ID, last_seen, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+         fcm_token, device_ID, recovery_code_enc, last_seen, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         nom        || 'Utilisateur',
         pseudo     || nom || 'AlanyaUser',
@@ -132,8 +173,12 @@ const register = async (req, res) => {
         'NON DEFINI',
         fcm_token  || 'INDEFINI',
         device_ID  || 'INDEFINI',
+        recoveryEncrypted,
       ]
     );
+
+    // Ville déduite de l'IP : lancée ici et jamais attendue.
+    _resoudreVilleEnArrierePlan(_clientIp(req), result.insertId);
 
     const appareilId = await deviceSessionService.recordLogin({
       alanyaID: result.insertId,
@@ -154,7 +199,9 @@ const register = async (req, res) => {
     const refreshToken  = generateRefreshToken(tokenPayload);
 
     const [rows] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, email, avatar_url, is_online, last_seen FROM users WHERE alanyaID = ?',
+      `SELECT alanyaID, nom, pseudo, alanyaPhone, email, avatar_url, is_online, last_seen,
+              genre, age, annee_naissance, ville
+       FROM users WHERE alanyaID = ?`,
       [result.insertId]
     );
 
@@ -164,7 +211,10 @@ const register = async (req, res) => {
       osSystem: os_system,
     });
 
-    res.status(201).json({ user: rows[0], accessToken, refreshToken });
+    // `recoveryCode` en clair : unique occasion de le transmettre en dehors du
+    // chemin « reveal » (qui, lui, exige le mot de passe). Le client l'affiche
+    // sur l'écran identifiants et ne le stocke jamais en dur.
+    res.status(201).json({ user: rows[0], accessToken, refreshToken, recoveryCode: recoveryPlain });
   } catch (error) {
     console.error('[Register] ERROR:', error);
     res.status(500).json({ error: error.message || 'Registration failed' });
@@ -194,7 +244,10 @@ const login = async (req, res) => {
     const phoneCanonical = normalize(alanyaPhone);
 
     const [rows] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, email, password, avatar_url, is_online, exclus, exclude_reason, delete_scheduled_at FROM users WHERE alanyaPhone = ?',
+      `SELECT alanyaID, nom, pseudo, alanyaPhone, email, password, avatar_url, is_online,
+              genre, age, annee_naissance, ville,
+              exclus, exclude_reason, delete_scheduled_at
+       FROM users WHERE alanyaPhone = ?`,
       [phoneCanonical]
     );
 
@@ -246,6 +299,12 @@ const login = async (req, res) => {
     if (!appareilId) {
       console.error('[Login] recordLogin a échoué — token non émis (session serait irrévocable)');
       return res.status(503).json({ error: 'Service temporairement indisponible' });
+    }
+
+    // Rattrape les comptes créés avant l'existence de la colonne : le UPDATE
+    // porte `ville IS NULL`, il ne se déclenche donc qu'une fois par compte.
+    if (user.ville == null) {
+      _resoudreVilleEnArrierePlan(_clientIp(req), user.alanyaID);
     }
 
     const tokenPayload = { alanyaID: user.alanyaID, email: user.email, appareilId };
@@ -601,10 +660,14 @@ const updateFcmToken = async (req, res) => {
   }
 };
 
-// Met à jour les infos de l'utilisateur (nom, pseudo, bio, avatar_url, fcm_token, device_ID, is_online)
+// Met à jour les infos de l'utilisateur (nom, pseudo, bio, avatar_url, fcm_token,
+// device_ID, is_online, idPays, genre, age).
+// `ville` n'est volontairement PAS acceptée ici : elle est constatée depuis
+// l'adresse IP, jamais déclarée — l'exposer en écriture en ferait une donnée
+// arbitraire et non plus une observation.
 const updateMe = async (req, res) => {
   try {
-    const { nom, pseudo, bio, avatar_url, fcm_token, device_ID, is_online, idPays } = req.body;
+    const { nom, pseudo, bio, avatar_url, fcm_token, device_ID, is_online, idPays, genre, age } = req.body;
     const updates = [];
     const values  = [];
 
@@ -627,6 +690,59 @@ const updateMe = async (req, res) => {
       }
       updates.push('idPays = ?');
       values.push(Number(idPays));
+    }
+    // Genre et âge sont à ÉCRITURE UNIQUE : une fois renseignés, ils ne sont plus
+    // modifiables par l'utilisateur. Ce sont des données déclaratives sur
+    // lesquelles on veut pouvoir s'appuyer ; les laisser changer librement en
+    // ferait des champs de profil ordinaires, sans valeur analytique.
+    // La lecture ci-dessous sert à renvoyer une erreur explicite ; c'est le
+    // COALESCE des UPDATE qui garantit la règle, y compris si deux requêtes
+    // arrivent en même temps (la seconde n'écrase alors rien).
+    const veutEcrireGenre = genre !== undefined && genre !== null && genre !== '';
+    const veutEcrireAge = age !== undefined && age !== null && age !== '';
+
+    if (veutEcrireGenre || veutEcrireAge) {
+      const [actuels] = await pool.execute(
+        'SELECT genre, age FROM users WHERE alanyaID = ?',
+        [req.user.alanyaID],
+      );
+      const actuel = actuels[0] || {};
+
+      if (veutEcrireGenre) {
+        if (!GENRES.includes(genre)) {
+          return res.status(400).json({ error: `Genre invalide (attendu : ${GENRES.join(', ')})` });
+        }
+        if (actuel.genre != null) {
+          return res.status(409).json({
+            error: 'Le genre ne peut pas être modifié',
+            code: 'FIELD_IMMUTABLE',
+          });
+        }
+        updates.push('genre = COALESCE(genre, ?)');
+        values.push(genre);
+      }
+
+      if (veutEcrireAge) {
+        const ageNum = Number(age);
+        if (!Number.isInteger(ageNum) || ageNum < AGE_MIN || ageNum > AGE_MAX) {
+          return res.status(400).json({ error: `Âge invalide (entre ${AGE_MIN} et ${AGE_MAX})` });
+        }
+        if (actuel.age != null) {
+          return res.status(409).json({
+            error: 'L\'âge ne peut pas être modifié',
+            code: 'FIELD_IMMUTABLE',
+          });
+        }
+        // L'année de naissance est DÉDUITE ici et nulle part ailleurs : le client
+        // ne l'envoie jamais. Elle est approximative (l'anniversaire de l'année en
+        // cours peut être passé ou non), mais contrairement à l'âge elle ne se
+        // périme pas. C'est elle qui permettra plus tard de recalculer l'âge de
+        // tout le monde une fois par an, sans rien redemander aux utilisateurs :
+        //   UPDATE users SET age = YEAR(NOW()) - annee_naissance
+        //   WHERE annee_naissance IS NOT NULL;
+        updates.push('age = COALESCE(age, ?), annee_naissance = COALESCE(annee_naissance, ?)');
+        values.push(ageNum, new Date().getFullYear() - ageNum);
+      }
     }
     if (is_online !== undefined) {
       updates.push('is_online = ?, last_seen = NOW()');
@@ -815,6 +931,120 @@ const changePassword = async (req, res) => {
   }
 };
 
+// ── Code de récupération ────────────────────────────────────────────────────
+//
+// Noter ce qui n'est PAS fait ici : ni changePassword ni completePasswordReset ne
+// touchent recovery_code_enc. Le code survit donc à tout changement de mot de
+// passe — c'est l'exigence, et c'est aussi ce qui le rend notable une fois pour
+// toutes sur un bout de papier.
+
+/**
+ * Voie de récupération sans e-mail : numéro Alanya + code ⇒ même resetToken que
+ * validateOTP, donc `POST /auth/reset-password-confirm` fonctionne tel quel
+ * derrière. Écrire un second chemin de changement de mot de passe aurait été
+ * l'occasion d'oublier une garde.
+ */
+const validateRecoveryCode = async (req, res) => {
+  try {
+    const { alanyaPhone, recoveryCode: saisie } = req.body;
+
+    if (!alanyaPhone || !saisie) {
+      return res.status(400).json({ error: 'Numéro Alanya et code de récupération requis' });
+    }
+
+    // Réponse volontairement identique pour « numéro inconnu », « aucun code » et
+    // « code faux » : distinguer ces cas dirait à un attaquant quels numéros
+    // existent, alors que le numéro Alanya est justement l'identifiant public.
+    const echec = () =>
+      res.status(401).json({ error: 'Numéro ou code de récupération invalide' });
+
+    const [rows] = await pool.execute(
+      `SELECT alanyaID, recovery_code_enc, exclus, exclude_reason, delete_scheduled_at
+       FROM users WHERE alanyaPhone = ?`,
+      [normalize(alanyaPhone)],
+    );
+    if (rows.length === 0) return echec();
+
+    const user = rows[0];
+
+    // Mêmes gardes que login : un compte banni ou en cours de suppression ne doit
+    // pas pouvoir être réactivé par un changement de mot de passe.
+    if (user.exclus === 1) {
+      if (
+        user.exclude_reason === 'self_delete_pending'
+        && user.delete_scheduled_at
+        && new Date(user.delete_scheduled_at).getTime() > Date.now()
+      ) {
+        return res.status(403).json({
+          error: 'Suppression du compte en cours',
+          code: 'ACCOUNT_DELETION_PENDING',
+          scheduledAt: user.delete_scheduled_at,
+        });
+      }
+      return res.status(403).json({ error: 'Compte banni' });
+    }
+
+    if (!recoveryCode.matches(user.recovery_code_enc, saisie)) return echec();
+
+    const resetToken = jwt.sign(
+      { alanyaID: user.alanyaID, type: 'password_reset' },
+      process.env.JWT_SECRET || 'talky-secret-key-change-in-production',
+      { expiresIn: '15m' },
+    );
+
+    res.json({ resetToken, message: 'Code validé. Utilisez resetToken pour changer le mot de passe' });
+  } catch (error) {
+    console.error('[ValidateRecoveryCode] ERROR:', error);
+    res.status(500).json({ error: error.message || 'Validation échouée' });
+  }
+};
+
+/**
+ * Reconsultation du code par son propriétaire, derrière le mot de passe : un
+ * appareil déverrouillé et laissé sans surveillance ne doit pas suffire à
+ * repartir avec la clé de secours du compte.
+ */
+const revealRecoveryCode = async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ error: 'Mot de passe requis' });
+    }
+
+    const [rows] = await pool.execute(
+      'SELECT password, recovery_code_enc FROM users WHERE alanyaID = ? AND exclus = 0',
+      [req.user.alanyaID],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    }
+
+    const valid = await bcrypt.compare(password, rows[0].password);
+    if (!valid) {
+      return res.status(401).json({ error: 'Mot de passe incorrect' });
+    }
+
+    let code = recoveryCode.decrypt(rows[0].recovery_code_enc);
+
+    // Comptes antérieurs à la migration 037, ou code devenu illisible après une
+    // rotation de clé : on en émet un à la volée plutôt que de laisser un compte
+    // sans voie de récupération. Évite aussi un script de backfill.
+    if (!code) {
+      const emis = recoveryCode.issue();
+      await pool.execute(
+        'UPDATE users SET recovery_code_enc = ? WHERE alanyaID = ?',
+        [emis.encrypted, req.user.alanyaID],
+      );
+      code = emis.code;
+    }
+
+    res.json({ recoveryCode: recoveryCode.format(code) });
+  } catch (error) {
+    console.error('[RevealRecoveryCode] ERROR:', error);
+    res.status(500).json({ error: error.message || 'Lecture du code échouée' });
+  }
+};
+
 module.exports = {
   register,
   login,
@@ -829,5 +1059,7 @@ module.exports = {
   requestEmailChangeOtp,
   confirmEmailChange,
   changePassword,
+  validateRecoveryCode,
+  revealRecoveryCode,
   authCustom: require('../middleware/authCustom').authCustom,
 };
