@@ -23,6 +23,7 @@ const {
   banUser,
   unbanUser,
   setAccountType,
+  setUserSocle,
   deleteUser,
   createUser,
   updateUserPhone,
@@ -34,6 +35,7 @@ const {
   updateMe,
   updatePassword,
 } = require('../controllers/adminController');
+const { broadcastSendLimiter, broadcastEstimateLimiter } = require('../middleware/rateLimiter');
 
 /**
  * @swagger
@@ -580,6 +582,7 @@ router.delete('/users/:id/ban',            adminAuth, unbanUser);
  *         description: Rôle mis à jour
  */
 router.put('/users/:id/role',              adminAuth, superAdminAuth, setAccountType);
+router.put('/users/:id/socle',             adminAuth, superAdminAuth, setUserSocle);
 router.put('/users/:id/phone',             adminAuth, updateUserPhone);
 router.delete('/users/:id',                adminAuth, superAdminAuth, deleteUser);
 
@@ -587,5 +590,21 @@ router.get('/alanya-phones/check-assignable', adminAuth, checkAssignablePhone);
 router.get('/reserved-alanya-phones',      adminAuth, listReservedPhones);
 router.post('/reserved-alanya-phones',     adminAuth, superAdminAuth, addReservedPhone);
 router.delete('/reserved-alanya-phones/:phone', adminAuth, superAdminAuth, removeReservedPhone);
+
+const {
+  listBroadcasts,
+  getBroadcast,
+  estimateBroadcast,
+  createBroadcast,
+  cancelScheduled,
+} = require('../controllers/admin/broadcast');
+const { getVilles } = require('../controllers/admin/villes');
+
+router.get('/broadcasts', adminAuth, listBroadcasts);
+router.get('/broadcasts/:id', adminAuth, getBroadcast);
+router.post('/broadcasts/estimate', adminAuth, broadcastEstimateLimiter, estimateBroadcast);
+router.post('/broadcasts', adminAuth, broadcastSendLimiter, createBroadcast);
+router.delete('/broadcasts/scheduled/:jobId', adminAuth, cancelScheduled);
+router.get('/villes', adminAuth, getVilles);
 
 module.exports = router;

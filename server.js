@@ -60,6 +60,11 @@ const {
 
 const { startMeetingScheduler, stopMeetingScheduler } = require('./src/services/meetingScheduler');
 const { startAccountLifecycleSchedulers } = require('./src/controllers/accountLifecycleController');
+const { initBroadcastCache, runNightlyDeliveryMaintenance } = require('./src/services/broadcastService');
+const { registerBroadcastJobHandlers } = require('./src/services/broadcastWorkers');
+const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
+const { startVerificationScheduler, stopVerificationScheduler } = require('./src/services/verificationScheduler');
+const { withLease } = require('./src/services/schedulerLease');
 
 let stopAccountLifecycleSchedulers = () => {};
 
@@ -193,8 +198,18 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Serveur en marche sur le port ${PORT}`);
   resetStalePresence();
+  registerBroadcastJobHandlers();
+  initBroadcastCache().catch((e) => console.error('[Broadcast] init cache:', e.message));
+  startJobWorker();
   startMeetingScheduler();
+  startVerificationScheduler();
   stopAccountLifecycleSchedulers = startAccountLifecycleSchedulers();
+
+  setInterval(() => {
+    withLease('broadcast_nightly_purge', () => runNightlyDeliveryMaintenance()).catch(
+      (e) => console.error('[Broadcast] nightly:', e.message),
+    );
+  }, 24 * 60 * 60 * 1000);
 });
 
 // Filet de dernier recours. Express 4 ne capture PAS le rejet d'un handler
@@ -219,6 +234,8 @@ process.on('uncaughtException', (err) => {
 process.on('SIGINT', () => {
   console.log('Arrêt du serveur...');
   stopMeetingScheduler();
+  stopVerificationScheduler();
+  stopJobWorker();
   stopAccountLifecycleSchedulers();
   process.exit(0);
 });

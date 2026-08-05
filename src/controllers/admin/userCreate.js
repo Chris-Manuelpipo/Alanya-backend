@@ -15,6 +15,8 @@ const { sendMail, renderHtmlEmail, escapeHtml } = require('../../services/mailSe
 const { sendToUser } = require('../../services/notificationService');
 const recoveryCode = require('../../services/recoveryCodeService');
 const { _buildUserMailFrom, _appName } = require('./helpers');
+const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
+const { guardDisplayNames } = require('../../utils/displayNameGuard');
 
 const SALT_ROUNDS = 10;
 
@@ -139,10 +141,26 @@ const createUser = async (req, res) => {
       idPays,
       avatarGender,
       type_compte,
+      account_type: bodyAccountType,
     } = req.body || {};
 
     if (!nom || !pseudo || !password) {
       return res.status(400).json({ error: 'nom, pseudo et password requis' });
+    }
+
+    const resolvedAccountType = bodyAccountType != null ? Number(bodyAccountType) : 0;
+    if (![0, 1, 2].includes(resolvedAccountType)) {
+      return res.status(400).json({ error: 'account_type invalide' });
+    }
+
+    const nameGuard = guardDisplayNames({
+      nom: nom.trim(),
+      pseudo: pseudo.trim(),
+      accountType: resolvedAccountType,
+      allowOfficialBrandName: resolvedAccountType === ACCOUNT_TYPE.OFFICIEL,
+    });
+    if (!nameGuard.ok) {
+      return res.status(400).json({ error: nameGuard.message, code: nameGuard.code });
     }
     if (password.length < 6) {
       return res.status(400).json({ error: 'Le mot de passe doit faire au moins 6 caractères' });
@@ -162,6 +180,17 @@ const createUser = async (req, res) => {
         return res.status(400).json({ error: 'type_compte doit être 0, 1 ou 2' });
       }
       resolvedType = t;
+    }
+    if (resolvedAccountType === ACCOUNT_TYPE.OFFICIEL && resolvedType >= 1) {
+      return res.status(409).json({
+        error: 'Un compte officiel ne peut pas être administrateur (type_compte >= 1)',
+      });
+    }
+
+    if (resolvedAccountType === ACCOUNT_TYPE.OFFICIEL && resolvedType >= 1) {
+      return res.status(409).json({
+        error: 'Un compte officiel ne peut pas être administrateur (type_compte >= 1)',
+      });
     }
 
     const trimmedEmail = email ? String(email).toLowerCase().trim() : null;
@@ -189,7 +218,10 @@ const createUser = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
     const isFemale = avatarGender === 'female';
-    const avatarUrl = _defaultAvatar(isFemale ? 'female' : 'male');
+    const officialAvatar = process.env.OFFICIAL_ACCOUNT_AVATAR_URL;
+    const avatarUrl = resolvedAccountType === ACCOUNT_TYPE.OFFICIEL && officialAvatar
+      ? officialAvatar
+      : _defaultAvatar(isFemale ? 'female' : 'male');
 
     // `avatarGender` ne servait jusqu'ici qu'à choisir un avatar par défaut, sans
     // jamais être conservé. Maintenant que la colonne existe, on l'y persiste —
@@ -205,8 +237,8 @@ const createUser = async (req, res) => {
     const [result] = await pool.execute(
       `INSERT INTO users
         (nom, pseudo, alanyaPhone, email, password, idPays, avatar_url,
-         type_compte, genre, recovery_code_enc, fcm_token, device_ID, last_seen, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INDEFINI', 'INDEFINI', NOW(), NOW())`,
+         type_compte, account_type, genre, recovery_code_enc, fcm_token, device_ID, last_seen, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INDEFINI', 'INDEFINI', NOW(), NOW())`,
       [
         nom.trim(),
         pseudo.trim(),
@@ -216,6 +248,7 @@ const createUser = async (req, res) => {
         resolvedIdPays,
         avatarUrl,
         resolvedType,
+        resolvedAccountType,
         genre,
         recoveryEncrypted,
       ]

@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { ACCOUNT_TYPE } = require('../constants/accountTypes');
 const { loadUserPrivacyPrefs, _passesVisibility } = require('../services/privacyPrefsService');
 const { isSelfChatRow } = require('./directConversation');
 
@@ -107,6 +108,21 @@ const getCachedDirectConversationPeer = async (conversationID, userId) => {
 const evaluateDirectMessageSend = async (conversationID, senderID) => {
   const peerId = await getDirectConversationPeer(conversationID, senderID);
   if (peerId == null) return { isDirect: false };
+
+  const [peerRows] = await pool.execute(
+    'SELECT account_type FROM users WHERE alanyaID = ? LIMIT 1',
+    [peerId],
+  );
+  if (peerRows[0] && Number(peerRows[0].account_type) === ACCOUNT_TYPE.OFFICIEL) {
+    return {
+      isDirect: true,
+      peerId,
+      action: 'reject',
+      code: 'OFFICIAL_READONLY',
+      iBlockedThem: false,
+      theyBlockedMe: false,
+    };
+  }
 
   const pair = await getBlockPair(senderID, peerId);
   if (pair.iBlockedThem) {

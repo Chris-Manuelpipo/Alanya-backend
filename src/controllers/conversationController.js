@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { materializeForUser } = require('../services/broadcastService');
 const { markConversationReadBy } = require('../utils/readReceiptUtils');
 const { getBlockPair, maskPresenceIfBlocked } = require('../utils/blockUtils');
 const { attachParticipantsBatch } = require('../utils/conversationParticipantsBatch');
@@ -41,6 +42,7 @@ async function attachParticipants(conversationRow, viewerId = null) {
   const [parts] = await pool.execute(
     `SELECT u.alanyaID, u.nom, u.pseudo, u.avatar_url,
             u.alanyaPhone, u.is_online, u.last_seen,
+            u.account_type, u.verification_status, u.verified_until,
             cp.role, cp.joinedAt
      FROM conv_participants cp
      JOIN users u ON cp.alanyaID = u.alanyaID
@@ -141,19 +143,14 @@ async function emitConversationUpdated(io, conversID) {
 const getConversations = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
+    await materializeForUser(alanyaID);
     const [rows] = await pool.execute(
       `SELECT c.*, ${CP_VIEWER_FIELDS},
-              COALESCE(mc.cnt, 0) AS messageCount
+              COALESCE(c.message_count, 0) AS messageCount
        FROM conversation c
        JOIN conv_participants cp ON c.conversID = cp.conversID
-       LEFT JOIN (
-         SELECT conversationID, COUNT(*) AS cnt
-         FROM message
-         WHERE isDeleted = 0
-         GROUP BY conversationID
-       ) mc ON mc.conversationID = c.conversID
        WHERE cp.alanyaID = ?
-       ORDER BY cp.isPinned DESC, c.lastMessageAt DESC`,
+       ORDER BY cp.isPinned DESC, c.lastMessageAt DESC, c.conversID DESC`,
       [alanyaID]
     );
     const enriched = await attachParticipantsMany(rows, alanyaID);

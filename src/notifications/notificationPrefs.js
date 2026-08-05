@@ -6,6 +6,7 @@ const DEFAULT_PREFS = Object.freeze({
   callsEnabled: 1,
   meetingsEnabled: 1,
   statusViewEnabled: 0,
+  broadcastsEnabled: 1,
   soundEnabled: 1,
   vibrationEnabled: 1,
   previewMode: 'full',
@@ -31,14 +32,15 @@ const upsertUserNotificationPrefs = async (alanyaID, patch = {}) => {
   await pool.execute(
     `INSERT INTO user_notification_prefs
        (alanyaID, messagesEnabled, groupMessagesEnabled, callsEnabled, meetingsEnabled,
-        statusViewEnabled, soundEnabled, vibrationEnabled, previewMode)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        statusViewEnabled, broadcastsEnabled, soundEnabled, vibrationEnabled, previewMode)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        messagesEnabled = VALUES(messagesEnabled),
        groupMessagesEnabled = VALUES(groupMessagesEnabled),
        callsEnabled = VALUES(callsEnabled),
        meetingsEnabled = VALUES(meetingsEnabled),
        statusViewEnabled = VALUES(statusViewEnabled),
+       broadcastsEnabled = VALUES(broadcastsEnabled),
        soundEnabled = VALUES(soundEnabled),
        vibrationEnabled = VALUES(vibrationEnabled),
        previewMode = VALUES(previewMode),
@@ -50,6 +52,7 @@ const upsertUserNotificationPrefs = async (alanyaID, patch = {}) => {
       next.callsEnabled ? 1 : 0,
       next.meetingsEnabled ? 1 : 0,
       next.statusViewEnabled ? 1 : 0,
+      next.broadcastsEnabled != null ? (next.broadcastsEnabled ? 1 : 0) : 1,
       next.soundEnabled ? 1 : 0,
       next.vibrationEnabled ? 1 : 0,
       next.previewMode || 'full',

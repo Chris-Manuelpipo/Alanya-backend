@@ -5,15 +5,15 @@ let schedulerInterval = null;
 
 const startMeetingScheduler = async () => {
   console.log('[MeetingScheduler] Démarrage du scheduler de notifications');
+  const { withLease } = require('./schedulerLease');
 
-  // Vérifier toutes les minutes les réunions qui commencent dans 10 minutes
   schedulerInterval = setInterval(async () => {
     try {
-      await checkAndNotifyUpcomingMeetings();
+      await withLease('meeting_scheduler', () => checkAndNotifyUpcomingMeetings());
     } catch (error) {
       console.error('[MeetingScheduler] Erreur:', error.message);
     }
-  }, 60000); // Vérifier chaque minute
+  }, 60000);
 };
 
 const stopMeetingScheduler = () => {

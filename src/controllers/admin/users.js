@@ -1,6 +1,8 @@
 const pool = require('../../config/db');
 const { ensureGroupOwner } = require('../../utils/groupOwnership');
 const { _notifyUserAccountAction } = require('./helpers');
+const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
+const { guardDisplayNames } = require('../../utils/displayNameGuard');
 
 // Utilisateurs (liste complète, détails, bannissement, rôle, suppression…)
 const getUsers = async (req, res) => {
@@ -28,6 +30,10 @@ const getUsers = async (req, res) => {
     if (status === 'online')  { where.push('u.is_online = ?'); params.push(1); }
     if (status === 'banned')  { where.push('u.exclus = ?'); params.push(1); }
     if (status === 'admin')   { where.push('u.type_compte >= ?'); params.push(1); }
+    if (req.query.account_type != null && req.query.account_type !== '') {
+      where.push('u.account_type = ?');
+      params.push(Number(req.query.account_type));
+    }
     if (from) { where.push('u.created_at >= ?'); params.push(from); }
     if (to)   { where.push('u.created_at <= ?'); params.push(to); }
     if (idPays) { where.push('u.idPays = ?'); params.push(idPays); }
@@ -44,7 +50,8 @@ const getUsers = async (req, res) => {
  
     const [items] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
-              u.type_compte, u.is_online, u.last_seen, u.exclus, u.exclude_at,
+              u.type_compte, u.account_type, u.verification_status, u.verified_until,
+              u.is_online, u.last_seen, u.exclus, u.exclude_at,
               u.exclude_reason, u.created_at, u.idPays, p.libelle AS pays_libelle
        FROM users u
        LEFT JOIN pays p ON u.idPays = p.idPays
@@ -72,7 +79,8 @@ const getUserById = async (req, res) => {
     const { id } = req.params;
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
-              u.type_compte, u.is_online, u.last_seen, u.exclus, u.exclude_at,
+              u.type_compte, u.account_type, u.verification_status, u.verified_until,
+              u.is_online, u.last_seen, u.exclus, u.exclude_at,
               u.exclude_reason, u.created_at, u.idPays, u.fcm_token, u.device_ID,
               p.libelle AS pays_libelle, p.prefix AS pays_prefix
        FROM users u
@@ -275,6 +283,61 @@ const deleteUser = async (req, res) => {
   }
 };
 
+const setUserSocle = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { account_type, verification_status, verified_until } = req.body || {};
+    const [users] = await pool.execute(
+      'SELECT type_compte, account_type, nom, pseudo FROM users WHERE alanyaID = ?',
+      [id],
+    );
+    if (!users.length) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+    const updates = [];
+    const values = [];
+
+    if (account_type != null) {
+      const at = Number(account_type);
+      if (![0, 1, 2].includes(at)) {
+        return res.status(400).json({ error: 'account_type invalide' });
+      }
+      if ((users[0].type_compte ?? 0) >= 1 && at !== Number(users[0].account_type ?? 0)) {
+        return res.status(409).json({
+          error: 'Impossible de modifier le genre de compte d\'un administrateur via account_type',
+        });
+      }
+      updates.push('account_type = ?');
+      values.push(at);
+    }
+
+    if (verification_status != null) {
+      updates.push('verification_status = ?');
+      values.push(Number(verification_status));
+    }
+    if (verified_until !== undefined) {
+      updates.push('verified_until = ?');
+      values.push(verified_until || null);
+    }
+
+    if (Number(account_type) === ACCOUNT_TYPE.OFFICIEL) {
+      const officialAvatar = process.env.OFFICIAL_ACCOUNT_AVATAR_URL;
+      if (officialAvatar) {
+        updates.push('avatar_url = ?');
+        values.push(officialAvatar);
+      }
+    }
+
+    if (!updates.length) return res.status(400).json({ error: 'Aucune modification' });
+
+    values.push(id);
+    await pool.execute(`UPDATE users SET ${updates.join(', ')} WHERE alanyaID = ?`, values);
+    res.json({ message: 'Socle de compte mis à jour' });
+  } catch (error) {
+    console.error('[Admin] setUserSocle error:', error.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
 module.exports = {
   getUsers,
   getUserById,
@@ -283,5 +346,6 @@ module.exports = {
   banUser,
   unbanUser,
   setAccountType,
+  setUserSocle,
   deleteUser,
 };

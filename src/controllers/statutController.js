@@ -1,4 +1,6 @@
 const pool = require('../config/db');
+const { ACCOUNT_TYPE } = require('../constants/accountTypes');
+const { evaluateInMemory } = require('../services/criteriaResolver');
 const { notifyStatusView } = require('../services/notificationService');
 const {
   getAudienceForAuthor,
@@ -16,6 +18,7 @@ const getStatus = async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT s.*,
               u.nom, u.pseudo, u.avatar_url, u.is_online,
+              u.account_type, u.verification_status,
               EXISTS(
                 SELECT 1 FROM statut_views sv
                 WHERE sv.statutID = s.ID AND sv.alanyaID = ? AND sv.liked = 1
@@ -39,7 +42,53 @@ const getStatus = async (req, res) => {
       [alanyaID, alanyaID, alanyaID, alanyaID, alanyaID, alanyaID]
     );
 
-    res.json(rows);
+    const [userRows] = await pool.execute(
+      `SELECT alanyaID, idPays, idVille, genre, age, account_type, verification_status,
+              created_at, last_seen, verified_until
+       FROM users WHERE alanyaID = ?`,
+      [alanyaID],
+    );
+    const viewer = userRows[0] || {};
+
+    const [officialRows] = await pool.execute(
+      `SELECT s.*,
+              u.nom, u.pseudo, u.avatar_url, u.is_online,
+              u.account_type, u.verification_status,
+              b.criteria, b.sent_at AS broadcast_sent_at,
+              EXISTS(
+                SELECT 1 FROM statut_views sv
+                WHERE sv.statutID = s.ID AND sv.alanyaID = ? AND sv.liked = 1
+              ) AS likedByMe,
+              EXISTS(
+                SELECT 1 FROM statut_views sv2
+                WHERE sv2.statutID = s.ID AND sv2.alanyaID = ?
+              ) AS seenByMe
+       FROM statut s
+       JOIN users u ON s.alanyaID = u.alanyaID
+       JOIN broadcast b ON b.statut_id = s.ID
+       WHERE s.expiredAt > NOW()
+         AND u.account_type = ?
+         AND s.alanyaID != ?
+         AND NOT EXISTS (
+           SELECT 1 FROM blocked b2
+           WHERE b2.alanyaID = s.alanyaID AND b2.idCallerBlock = ?
+         )`,
+      [alanyaID, alanyaID, ACCOUNT_TYPE.OFFICIEL, alanyaID, alanyaID],
+    );
+
+    const officialFiltered = officialRows.filter((row) => {
+      const criteria = typeof row.criteria === 'string' ? JSON.parse(row.criteria) : row.criteria;
+      const createdOk = !viewer.created_at || new Date(viewer.created_at) <= new Date(row.broadcast_sent_at);
+      return createdOk && evaluateInMemory(viewer, criteria, { sentAt: row.broadcast_sent_at });
+    });
+
+    const merged = [...rows];
+    const seenIds = new Set(rows.map((r) => r.ID));
+    for (const o of officialFiltered) {
+      if (!seenIds.has(o.ID)) merged.push(o);
+    }
+
+    res.json(merged.slice(0, 500));
   } catch (error) {
     throw error;
   }

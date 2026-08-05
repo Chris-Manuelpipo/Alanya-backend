@@ -13,6 +13,7 @@ const _formatPrefs = (row) => ({
   callsEnabled: _toBool(row.callsEnabled),
   meetingsEnabled: _toBool(row.meetingsEnabled),
   statusViewEnabled: _toBool(row.statusViewEnabled),
+  broadcastsEnabled: row.broadcastsEnabled == null ? true : _toBool(row.broadcastsEnabled),
   soundEnabled: _toBool(row.soundEnabled),
   vibrationEnabled: _toBool(row.vibrationEnabled),
   previewMode: row.previewMode || 'full',
@@ -26,6 +27,7 @@ const _normalizePatch = (body = {}) => {
     'callsEnabled',
     'meetingsEnabled',
     'statusViewEnabled',
+    'broadcastsEnabled',
     'soundEnabled',
     'vibrationEnabled',
   ];

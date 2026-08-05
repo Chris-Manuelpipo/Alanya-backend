@@ -9,13 +9,16 @@ const deviceSessionService = require('../services/deviceSessionService');
 const { emitToUser } = require('../utils/userSocketRegistry');
 const recoveryCode = require('../services/recoveryCodeService');
 const { lookupPlace } = require('../services/ipGeoService');
+const { guardDisplayNames } = require('../utils/displayNameGuard');
+const { ACCOUNT_TYPE } = require('../constants/accountTypes');
 
 const SALT_ROUNDS = 10;
 
 const _selectUserWithPays = `
   SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.idPays,
-         u.avatar_url, u.bio, u.type_compte, u.is_online, u.last_seen,
-         u.genre, u.age, u.annee_naissance, u.ville,
+         u.avatar_url, u.bio, u.type_compte, u.account_type, u.verification_status,
+         u.verified_until, u.is_online, u.last_seen,
+         u.genre, u.age, u.annee_naissance, u.ville, u.idVille,
          p.libelle AS pays_libelle, p.prefix AS pays_prefix
   FROM users u
   LEFT JOIN pays p ON u.idPays = p.idPays
@@ -40,13 +43,16 @@ const AGE_MAX = 120;
  * un utilisateur en déplacement ne doit pas voir sa ville changer à chaque
  * connexion.
  */
-const _resoudreVilleEnArrierePlan = (ip, alanyaID) => {
+const _resoudreVilleEnArrierePlan = (ip, alanyaID, idPays) => {
   lookupPlace(ip)
-    .then((lieu) => {
+    .then(async (lieu) => {
       if (!lieu?.city) return null;
+      const { lookupVilleId } = require('../services/villeService');
+      const idVille = idPays ? await lookupVilleId(idPays, lieu.city) : null;
       return pool.execute(
-        'UPDATE users SET ville = ? WHERE alanyaID = ? AND ville IS NULL',
-        [lieu.city, alanyaID],
+        `UPDATE users SET ville = COALESCE(ville, ?), idVille = COALESCE(idVille, ?)
+         WHERE alanyaID = ? AND ville IS NULL`,
+        [lieu.city, idVille, alanyaID],
       );
     })
     .catch((error) => {
@@ -178,7 +184,7 @@ const register = async (req, res) => {
     );
 
     // Ville déduite de l'IP : lancée ici et jamais attendue.
-    _resoudreVilleEnArrierePlan(_clientIp(req), result.insertId);
+    _resoudreVilleEnArrierePlan(_clientIp(req), result.insertId, resolvedIdPays);
 
     const appareilId = await deviceSessionService.recordLogin({
       alanyaID: result.insertId,
@@ -304,7 +310,7 @@ const login = async (req, res) => {
     // Rattrape les comptes créés avant l'existence de la colonne : le UPDATE
     // porte `ville IS NULL`, il ne se déclenche donc qu'une fois par compte.
     if (user.ville == null) {
-      _resoudreVilleEnArrierePlan(_clientIp(req), user.alanyaID);
+      _resoudreVilleEnArrierePlan(_clientIp(req), user.alanyaID, user.idPays);
     }
 
     const tokenPayload = { alanyaID: user.alanyaID, email: user.email, appareilId };
@@ -673,6 +679,22 @@ const updateMe = async (req, res) => {
 
     if (nom)       { updates.push('nom = ?');        values.push(nom); }
     if (pseudo)    { updates.push('pseudo = ?');     values.push(pseudo); }
+
+    const [selfRows] = await pool.execute(
+      'SELECT account_type, nom, pseudo FROM users WHERE alanyaID = ?',
+      [req.user.alanyaID],
+    );
+    const selfAccountType = selfRows[0]?.account_type ?? 0;
+    const nameGuard = guardDisplayNames({
+      nom: nom ?? selfRows[0]?.nom,
+      pseudo: pseudo ?? selfRows[0]?.pseudo,
+      accountType: selfAccountType,
+      allowOfficialBrandName: Number(selfAccountType) === ACCOUNT_TYPE.OFFICIEL,
+    });
+    if (!nameGuard.ok) {
+      return res.status(400).json({ error: nameGuard.message, code: nameGuard.code });
+    }
+
     if (bio !== undefined) {
       const trimmedBio = typeof bio === 'string' ? bio.trim() : '';
       if (trimmedBio.length > 500) {
@@ -690,6 +712,7 @@ const updateMe = async (req, res) => {
       }
       updates.push('idPays = ?');
       values.push(Number(idPays));
+      updates.push('idVille = NULL');
     }
     // Genre et âge sont à ÉCRITURE UNIQUE : une fois renseignés, ils ne sont plus
     // modifiables par l'utilisateur. Ce sont des données déclaratives sur

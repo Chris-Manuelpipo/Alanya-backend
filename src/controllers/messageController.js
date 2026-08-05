@@ -262,7 +262,8 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     await _execute(conn,
       `UPDATE conversation
        SET lastMessage = ?, lastMessageAt = NOW(),
-           lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
+           lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1,
+           message_count = message_count + 1
        WHERE conversID = ?`,
       [
         resolveLastMessagePreview({ content, mediaName, type, isViewOnce }),
@@ -422,10 +423,16 @@ const deleteMessage = async (req, res) => {
     }
 
     if (all === 'true') {
-      await pool.execute(
-        'UPDATE message SET isDeleted = 1, deletedForID = NULL WHERE msgID = ?',
-        [id]
-      );
+      if (!existing[0].isDeleted) {
+        await pool.execute(
+          'UPDATE message SET isDeleted = 1, deletedForID = NULL WHERE msgID = ?',
+          [id],
+        );
+        await pool.execute(
+          'UPDATE conversation SET message_count = GREATEST(0, message_count - 1) WHERE conversID = ?',
+          [existing[0].conversationID],
+        );
+      }
     } else {
       await pool.execute(
         'UPDATE message SET deletedForID = ? WHERE msgID = ?',
@@ -808,9 +815,15 @@ const batchDeleteMessages = async (req, res) => {
 
     if (forAll) {
       await conn.execute(
-        `UPDATE message SET isDeleted = 1, deletedForID = NULL WHERE msgID IN (${placeholders})`,
-        ids
+        `UPDATE message SET isDeleted = 1, deletedForID = NULL WHERE msgID IN (${placeholders}) AND isDeleted = 0`,
+        ids,
       );
+      for (const row of existing) {
+        await conn.execute(
+          'UPDATE conversation SET message_count = GREATEST(0, message_count - 1) WHERE conversID = ?',
+          [row.conversationID],
+        );
+      }
     } else {
       await conn.execute(
         `UPDATE message SET deletedForID = ? WHERE msgID IN (${placeholders})`,
