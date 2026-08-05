@@ -374,7 +374,25 @@ async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnec
 // mais n'a PLUS AUCUN socket connecté et aucune reconnexion en grâce → son appel
 // précédent n'a jamais été nettoyé (kill multi-socket, socket fantôme, crash sans
 // end_call…). On le purge des deux côtés pour ne pas renvoyer un faux call_busy.
+// Session à trois résiduelle : le participant n'a plus aucune socket et aucune
+// reconnexion en grâce — son client a terminé sans prévenir (crash, kill, bug).
+// Sans ce nettoyage, la session le maintiendrait « occupé » et confisquerait le
+// droit d'ajout de l'appel indéfiniment.
+function reclaimStaleSession(io, userID) {
+  const session = callSessions.getByUser(userID);
+  if (!session) return false;
+  if (isUserOnline(io, userID)) return false;
+  if (callState.getEntry(userID)?.disconnectTimer) return false;
+
+  console.log(
+    `[callSessions] reclaimStaleSession user=${userID} session=${session.sessionId} (hors-ligne, sans grâce)`,
+  );
+  callSessions.removeParticipant(session.sessionId, userID);
+  return true;
+}
+
 function reclaimStaleBusy(io, userID) {
+  reclaimStaleSession(io, userID);
   const entry = callState.getEntry(userID);
   if (!entry) return false;
   if (entry.status !== 'in_call' && entry.status !== 'ringing') return false;
