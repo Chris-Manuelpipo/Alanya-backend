@@ -606,4 +606,5 @@ module.exports = {
   loadBroadcastOptOut,
   loadPushTokensForBatch,
   selectPushTokens,
+  ensureDirectConversation,
 };

@@ -603,6 +603,12 @@ const {
   getOfficialAccount,
   createOfficialAccount,
 } = require('../controllers/admin/officialAccount');
+const {
+  getWelcome,
+  updateDraft,
+  publish,
+  backfill,
+} = require('../controllers/admin/welcome');
 
 // Le compte officiel est unique et se crée sans aucune saisie. Sa création est
 // un acte irréversible : super-admin, comme setUserSocle et deleteUser.
@@ -615,5 +621,10 @@ router.post('/broadcasts/estimate', adminAuth, broadcastEstimateLimiter, estimat
 router.post('/broadcasts', adminAuth, broadcastSendLimiter, createBroadcast);
 router.delete('/broadcasts/scheduled/:jobId', adminAuth, cancelScheduled);
 router.get('/villes', adminAuth, getVilles);
+
+router.get('/welcome', adminAuth, superAdminAuth, getWelcome);
+router.put('/welcome/draft', adminAuth, superAdminAuth, updateDraft);
+router.post('/welcome/publish', adminAuth, superAdminAuth, publish);
+router.post('/welcome/backfill', adminAuth, superAdminAuth, backfill);
 
 module.exports = router;

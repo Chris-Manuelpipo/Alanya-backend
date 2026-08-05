@@ -200,6 +200,16 @@ function messagePreview({
     return contact || mediaTypeLabel(7);
   }
 
+  // type=8 : boutons CTA (message de bienvenue officiel).
+  if (t === 8) {
+    try {
+      const parsed = JSON.parse(String(content || '{}'));
+      const buttons = Array.isArray(parsed.buttons) ? parsed.buttons : [];
+      if (buttons.length) return buttons.map((b) => b.label).filter(Boolean).join(' · ');
+    } catch (_) { /* ignore */ }
+    return 'Message de bienvenue';
+  }
+
   // type=6 : événement de groupe, JSON lui aussi. Le court-circuit doit rester
   // AVANT le traitement générique, qui renverrait le payload brut.
   if (t === 6) {

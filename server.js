@@ -32,6 +32,7 @@ const contactListRoutes  = require('./src/routes/contactLists');
 const qrRoutes           = require('./src/routes/qr');
 const turnRoutes         = require('./src/routes/turn');
 const adminRoutes        = require('./src/routes/admin');
+const welcomeRoutes      = require('./src/routes/welcome');
 const qrLandingRoutes    = require('./src/routes/qrLanding');
 
 // ── Socket handlers ───────────────────────────────────────────────────
@@ -63,6 +64,7 @@ const { startMeetingScheduler, stopMeetingScheduler } = require('./src/services/
 const { startAccountLifecycleSchedulers } = require('./src/controllers/accountLifecycleController');
 const { initBroadcastCache, runNightlyDeliveryMaintenance } = require('./src/services/broadcastService');
 const { registerBroadcastJobHandlers } = require('./src/services/broadcastWorkers');
+const { registerWelcomeJobHandlers } = require('./src/services/welcomeWorkers');
 const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
 const { startVerificationScheduler, stopVerificationScheduler } = require('./src/services/verificationScheduler');
 const { withLease } = require('./src/services/schedulerLease');
@@ -107,6 +109,7 @@ app.use('/api/contact-lists', contactListRoutes);
 app.use('/api/qr',            qrRoutes);
 app.use('/api/turn',          turnRoutes);
 app.use('/api/admin',         adminRoutes);
+app.use('/api/welcome',       welcomeRoutes);
 app.use('/notify',            notifyRoutes);
 
 // Routes publiques du volet QR (page d'accueil d'un code, fichiers
@@ -201,6 +204,7 @@ server.listen(PORT, () => {
   console.log(`Serveur en marche sur le port ${PORT}`);
   resetStalePresence();
   registerBroadcastJobHandlers();
+  registerWelcomeJobHandlers();
   initBroadcastCache().catch((e) => console.error('[Broadcast] init cache:', e.message));
   startJobWorker();
   startMeetingScheduler();
