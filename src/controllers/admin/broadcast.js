@@ -6,7 +6,7 @@ const {
   mapBroadcastRow,
 } = require('../../services/broadcastService');
 const { enqueue } = require('../../services/jobQueue');
-const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
+const { getOfficialAccountId } = require('../../utils/officialAccountGuard');
 
 const listBroadcasts = async (req, res) => {
   try {
@@ -94,12 +94,23 @@ const createBroadcast = async (req, res) => {
       return res.status(400).json({ error: 'senderId, criteria et clientId requis' });
     }
 
-    const [senders] = await pool.execute(
-      'SELECT alanyaID, account_type FROM users WHERE alanyaID = ?',
-      [senderId],
-    );
-    if (!senders.length || Number(senders[0].account_type) !== ACCOUNT_TYPE.OFFICIEL) {
-      return res.status(400).json({ error: 'Expéditeur officiel requis' });
+    // Il n'existe qu'un compte officiel, et toutes les diffusions en émanent :
+    // c'est la règle « une seule voix ». On compare à l'identifiant canonique
+    // plutôt qu'au seul genre de compte, pour que l'apparition accidentelle
+    // d'un second compte officiel ne fragmente pas l'identité côté utilisateur.
+    const officialId = await getOfficialAccountId();
+    if (officialId == null) {
+      return res.status(409).json({
+        error: 'Aucun compte officiel : créez-le avant de diffuser',
+        code: 'OFFICIAL_ACCOUNT_MISSING',
+      });
+    }
+    if (Number(senderId) !== officialId) {
+      return res.status(400).json({
+        error: 'L\'expéditeur doit être le compte officiel',
+        code: 'OFFICIAL_SENDER_REQUIRED',
+        expected: officialId,
+      });
     }
 
     const { count, criteria: resolved } = await estimateAudience(criteria);
@@ -148,19 +159,10 @@ const cancelScheduled = async (req, res) => {
   }
 };
 
-const listOfficialSenders = async (req, res) => {
-  const [rows] = await pool.execute(
-    'SELECT alanyaID, nom, pseudo, avatar_url FROM users WHERE account_type = ? ORDER BY nom',
-    [ACCOUNT_TYPE.OFFICIEL],
-  );
-  res.json(rows);
-};
-
 module.exports = {
   listBroadcasts,
   getBroadcast,
   estimateBroadcast,
   createBroadcast,
   cancelScheduled,
-  listOfficialSenders,
 };

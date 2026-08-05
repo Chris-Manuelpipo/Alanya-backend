@@ -11,6 +11,7 @@ const recoveryCode = require('../services/recoveryCodeService');
 const { lookupPlace } = require('../services/ipGeoService');
 const { guardDisplayNames } = require('../utils/displayNameGuard');
 const { ACCOUNT_TYPE } = require('../constants/accountTypes');
+const { isOfficialAccount } = require('../utils/officialAccountGuard');
 
 const SALT_ROUNDS = 10;
 
@@ -262,6 +263,17 @@ const login = async (req, res) => {
     }
 
     const user = rows[0];
+
+    // Ceinture et bretelles : le compte officiel n'a ni e-mail, ni mot de passe
+    // connu, ni code de récupération, donc aucun identifiant exploitable. Ce
+    // refus explicite tient même si l'un de ces verrous venait à sauter — et il
+    // couvre les comptes officiels créés avant que la règle n'existe.
+    if (await isOfficialAccount(user.alanyaID)) {
+      return res.status(403).json({
+        error: 'Ce compte ne permet pas la connexion',
+        code: 'OFFICIAL_NOT_LOGGABLE',
+      });
+    }
 
     if (user.exclus === 1) {
       if (

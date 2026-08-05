@@ -2,6 +2,7 @@ const pool = require('../../config/db');
 const { notifyIncomingCall, notifyGroupCall, notifyCallEnded } = require('../../services/notificationService');
 const { maxParticipants, maxInvitees } = require('../../constants/participantLimits');
 const { isBlockedEitherWay } = require('../../utils/blockUtils');
+const { isOfficialAccount } = require('../../utils/officialAccountGuard');
 const { getClientIp, parseCallMode } = require('../../utils/clientIp');
 const { buildDirectConversationLookup } = require('../../utils/directConversation');
 const pendingCalls = require('../state/pendingCalls');
@@ -421,6 +422,16 @@ const callUser = (io, socket, userSockets) => {
       if (targetID === callerID) {
         console.warn(`[Socket call_user] ** Auto-appel refusé: user=${callerID}`);
         socket.emit('call_failed', { reason: 'Appel impossible', code: 'CALL_SELF' });
+        return;
+      }
+
+      // Le compte officiel diffuse, il ne décroche pas. Sans ce garde, l'appel
+      // partirait vers un compte que personne n'ouvrira jamais.
+      if (await isOfficialAccount(targetID)) {
+        socket.emit('call_failed', {
+          reason: 'Ce compte ne reçoit pas d\'appels',
+          code: 'OFFICIAL_NOT_CALLABLE',
+        });
         return;
       }
 

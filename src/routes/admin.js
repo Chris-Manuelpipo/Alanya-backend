@@ -599,6 +599,15 @@ const {
   cancelScheduled,
 } = require('../controllers/admin/broadcast');
 const { getVilles } = require('../controllers/admin/villes');
+const {
+  getOfficialAccount,
+  createOfficialAccount,
+} = require('../controllers/admin/officialAccount');
+
+// Le compte officiel est unique et se crée sans aucune saisie. Sa création est
+// un acte irréversible : super-admin, comme setUserSocle et deleteUser.
+router.get('/official-account', adminAuth, getOfficialAccount);
+router.post('/official-account', adminAuth, superAdminAuth, createOfficialAccount);
 
 router.get('/broadcasts', adminAuth, listBroadcasts);
 router.get('/broadcasts/:id', adminAuth, getBroadcast);

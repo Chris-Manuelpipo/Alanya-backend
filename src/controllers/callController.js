@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { isBlockedEitherWay } = require('../utils/blockUtils');
+const { isOfficialAccount } = require('../utils/officialAccountGuard');
 const { getClientIp, parseCallMode } = require('../utils/clientIp');
 const { processRejectCall } = require('../socket/handlers/calls');
  
@@ -33,6 +34,15 @@ const createCall = async (req, res) => {
 
     if (!idReceiver) {
       return res.status(400).json({ error: 'idReceiver required' });
+    }
+
+    // Symétrique du garde posé sur `call_user` côté Socket.IO : les deux
+    // chemins d'appel doivent refuser le compte officiel.
+    if (await isOfficialAccount(idReceiver)) {
+      return res.status(403).json({
+        error: 'Ce compte ne reçoit pas d\'appels',
+        code: 'OFFICIAL_NOT_CALLABLE',
+      });
     }
 
     if (await isBlockedEitherWay(idCaller, idReceiver)) {

@@ -1,7 +1,8 @@
 const pool = require('../../config/db');
 const { ensureGroupOwner } = require('../../utils/groupOwnership');
 const { _notifyUserAccountAction } = require('./helpers');
-const { ACCOUNT_TYPE, resolveOfficialAvatarUrl } = require('../../constants/accountTypes');
+const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
+const { invalidateOfficialAccountCache } = require('../../utils/officialAccountGuard');
 const { guardDisplayNames } = require('../../utils/displayNameGuard');
 
 // Utilisateurs (liste complète, détails, bannissement, rôle, suppression…)
@@ -242,9 +243,18 @@ const deleteUser = async (req, res) => {
       return res.status(400).json({ error: 'Impossible de se supprimer soi-même' });
     }
     const [users] = await pool.execute(
-      'SELECT email, nom FROM users WHERE alanyaID = ?',
+      'SELECT email, nom, account_type FROM users WHERE alanyaID = ?',
       [id]
     );
+    // Le compte officiel est référencé par broadcast.sender_id, sans ON DELETE :
+    // dès la première diffusion, la suppression échouerait sur une violation de
+    // clé étrangère illisible. On refuse en amont, avec la marche à suivre.
+    if (Number(users[0]?.account_type ?? 0) === ACCOUNT_TYPE.OFFICIEL) {
+      return res.status(409).json({
+        error: 'Le compte officiel ne peut pas être supprimé. Révoquez d\'abord son genre de compte.',
+        code: 'OFFICIAL_NOT_DELETABLE',
+      });
+    }
     // Groupes dont ce compte est membre, lus AVANT la suppression : le
     // ON DELETE CASCADE de fk_cp_user va effacer ses lignes conv_participants,
     // et si c'était le propriétaire, le groupe se retrouverait sans role=2 —
@@ -301,6 +311,17 @@ const setUserSocle = async (req, res) => {
       if (![0, 1, 2].includes(at)) {
         return res.status(400).json({ error: 'account_type invalide' });
       }
+      // Un compte officiel se crée, il ne se promeut pas. Sans cette règle, un
+      // compte personnel — dont le propriétaire connaît l'e-mail, le mot de
+      // passe et le code de récupération — pourrait devenir la voix de
+      // l'application. La révocation reste permise.
+      const wasOfficial = Number(users[0].account_type ?? 0) === ACCOUNT_TYPE.OFFICIEL;
+      if (at === ACCOUNT_TYPE.OFFICIEL && !wasOfficial) {
+        return res.status(409).json({
+          error: 'Le compte officiel se crée depuis « Créer un utilisateur », il ne se promeut pas',
+          code: 'OFFICIAL_NOT_PROMOTABLE',
+        });
+      }
       if ((users[0].type_compte ?? 0) >= 1 && at !== Number(users[0].account_type ?? 0)) {
         return res.status(409).json({
           error: 'Impossible de modifier le genre de compte d\'un administrateur via account_type',
@@ -319,20 +340,26 @@ const setUserSocle = async (req, res) => {
       values.push(verified_until || null);
     }
 
-    // Bascule vers officiel : le logo Alanya s'impose, c'est une règle du socle
-    // et non une préférence de l'administrateur.
-    if (Number(account_type) === ACCOUNT_TYPE.OFFICIEL) {
-      const officialAvatar = resolveOfficialAvatarUrl();
-      if (officialAvatar) {
-        updates.push('avatar_url = ?');
-        values.push(officialAvatar);
-      }
+    // Révocation : le compte cesse d'être la voix de l'application, il ne doit
+    // donc plus en porter le logo. Sans cela, un compte redevenu ordinaire
+    // continuerait de s'afficher avec l'avatar Alanya — une usurpation par
+    // simple oubli.
+    if (
+      account_type != null
+      && Number(users[0].account_type ?? 0) === ACCOUNT_TYPE.OFFICIEL
+      && Number(account_type) !== ACCOUNT_TYPE.OFFICIEL
+    ) {
+      updates.push('avatar_url = ?');
+      values.push(process.env.AVATAR_DEFAULT_MALE || 'NON DEFINI');
     }
 
     if (!updates.length) return res.status(400).json({ error: 'Aucune modification' });
 
     values.push(id);
     await pool.execute(`UPDATE users SET ${updates.join(', ')} WHERE alanyaID = ?`, values);
+    // Une révocation change l'identité du compte officiel : les gardes mis en
+    // cache doivent la voir immédiatement.
+    if (account_type != null) invalidateOfficialAccountCache();
     res.json({ message: 'Socle de compte mis à jour' });
   } catch (error) {
     console.error('[Admin] setUserSocle error:', error.message);

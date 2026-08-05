@@ -15,7 +15,7 @@ const { sendMail, renderHtmlEmail, escapeHtml } = require('../../services/mailSe
 const { sendToUser } = require('../../services/notificationService');
 const recoveryCode = require('../../services/recoveryCodeService');
 const { _buildUserMailFrom, _appName } = require('./helpers');
-const { ACCOUNT_TYPE, resolveOfficialAvatarUrl } = require('../../constants/accountTypes');
+const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
 const { guardDisplayNames } = require('../../utils/displayNameGuard');
 
 const SALT_ROUNDS = 10;
@@ -149,15 +149,22 @@ const createUser = async (req, res) => {
     }
 
     const resolvedAccountType = bodyAccountType != null ? Number(bodyAccountType) : 0;
-    if (![0, 1, 2].includes(resolvedAccountType)) {
-      return res.status(400).json({ error: 'account_type invalide' });
+    if (![0, 1].includes(resolvedAccountType)) {
+      // Le compte officiel a son propre point d'entrée : il n'a ni nom, ni
+      // e-mail, ni mot de passe à saisir, et il est unique. Le faire passer par
+      // la création générique rouvrirait toutes ces portes.
+      return res.status(400).json({
+        error: resolvedAccountType === ACCOUNT_TYPE.OFFICIEL
+          ? 'Le compte officiel se crée via POST /admin/official-account'
+          : 'account_type invalide',
+        code: resolvedAccountType === ACCOUNT_TYPE.OFFICIEL ? 'OFFICIAL_WRONG_ENDPOINT' : undefined,
+      });
     }
 
     const nameGuard = guardDisplayNames({
       nom: nom.trim(),
       pseudo: pseudo.trim(),
       accountType: resolvedAccountType,
-      allowOfficialBrandName: resolvedAccountType === ACCOUNT_TYPE.OFFICIEL,
     });
     if (!nameGuard.ok) {
       return res.status(400).json({ error: nameGuard.message, code: nameGuard.code });
@@ -214,10 +221,7 @@ const createUser = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
     const isFemale = avatarGender === 'female';
-    const officialAvatar = resolveOfficialAvatarUrl();
-    const avatarUrl = resolvedAccountType === ACCOUNT_TYPE.OFFICIEL && officialAvatar
-      ? officialAvatar
-      : _defaultAvatar(isFemale ? 'female' : 'male');
+    const avatarUrl = _defaultAvatar(isFemale ? 'female' : 'male');
 
     // `avatarGender` ne servait jusqu'ici qu'à choisir un avatar par défaut, sans
     // jamais être conservé. Maintenant que la colonne existe, on l'y persiste —
