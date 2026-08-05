@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const admin = require('../config/firebase');
 const pool = require('../config/db');
 const { buildDirectConversationLookup } = require('../utils/directConversation');
-const { resolveLastMessagePreview } = require('../utils/messagePreview');
+const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const {
   resolveRelativeDates,
   compileToSql,
@@ -162,12 +162,14 @@ async function prepareBroadcast(broadcastId) {
   let totalJobs = 0;
 
   while (true) {
+    // LIMIT en littéral : mysql2 / certaines versions MySQL refusent LIMIT ?
+    // en requête préparée (« Incorrect arguments to mysqld_stmt_execute »).
     const [users] = await pool.execute(
       `SELECT alanyaID FROM users u
        WHERE ${whereFragment} AND u.alanyaID > ?
        ORDER BY u.alanyaID ASC
-       LIMIT ?`,
-      [...params, lastId, USER_PAGE],
+       LIMIT ${USER_PAGE}`,
+      [...params, lastId],
     );
     if (!users.length) break;
 
