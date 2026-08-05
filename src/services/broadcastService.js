@@ -324,7 +324,7 @@ async function sendBroadcastPushBatch({ broadcastId, idFrom, idTo }) {
         broadcastId: String(broadcastId),
         senderId: String(b.sender_id),
         title: 'Alanya',
-        body: b.content ? String(b.content).slice(0, 120) : 'Nouvelle annonce',
+        body: b.content ? String(b.content).slice(0, 120) : (Number(b.kind) === 1 ? 'Nouveau statut' : 'Nouvelle annonce'),
       });
       try {
         await admin.messaging().sendEachForMulticast({
@@ -456,51 +456,55 @@ async function materializeForUser(alanyaID) {
       const criteria = typeof b.criteria === 'string' ? JSON.parse(b.criteria) : b.criteria;
       const match = evaluateInMemory(userRow, criteria, { sentAt: b.sent_at });
       if (match) {
-        const [del] = await conn.execute(
-          `INSERT IGNORE INTO broadcast_delivery (broadcast_id, alanyaID)
-           VALUES (?, ?)`,
-          [b.id, alanyaID],
-        );
-        if (del.affectedRows === 1) {
-          const conversID = await ensureDirectConversation(conn, b.sender_id, alanyaID);
-          const clientMsgId = `broadcast:${b.id}:${alanyaID}`;
-          const [msgIns] = await conn.execute(
-            `INSERT INTO message
-              (senderID, conversationID, content, type, status, sendAt, clientID, mediaUrl)
-             VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
-            [
-              b.sender_id,
-              conversID,
-              b.content,
-              b.type,
-              b.sent_at,
-              clientMsgId,
-              b.media_url,
-            ],
+        // kind=1 : statut déjà inséré à la publication (broadcast.statut_id).
+        // Ne pas créer de message privé — il apparaît dans la bande Statuts.
+        if (Number(b.kind) !== 1) {
+          const [del] = await conn.execute(
+            `INSERT IGNORE INTO broadcast_delivery (broadcast_id, alanyaID)
+             VALUES (?, ?)`,
+            [b.id, alanyaID],
           );
-          const msgID = msgIns.insertId;
-          await conn.execute(
-            `UPDATE conversation
-             SET lastMessage = ?, lastMessageAt = ?, lastMessageSenderID = ?,
-                 lastMessageType = ?, lastMessageStatus = 1, message_count = message_count + 1
-             WHERE conversID = ?`,
-            [
-              resolveLastMessagePreview({ content: b.content, type: b.type }),
-              b.sent_at,
-              b.sender_id,
-              b.type,
-              conversID,
-            ],
-          );
-          await conn.execute(
-            'UPDATE conv_participants SET unreadCount = unreadCount + 1 WHERE conversID = ? AND alanyaID = ?',
-            [conversID, alanyaID],
-          );
-          await conn.execute(
-            `UPDATE broadcast_delivery SET conversID = ?, msgID = ?, delivered_at = NOW()
-             WHERE broadcast_id = ? AND alanyaID = ?`,
-            [conversID, msgID, b.id, alanyaID],
-          );
+          if (del.affectedRows === 1) {
+            const conversID = await ensureDirectConversation(conn, b.sender_id, alanyaID);
+            const clientMsgId = `broadcast:${b.id}:${alanyaID}`;
+            const [msgIns] = await conn.execute(
+              `INSERT INTO message
+                (senderID, conversationID, content, type, status, sendAt, clientID, mediaUrl)
+               VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+              [
+                b.sender_id,
+                conversID,
+                b.content,
+                b.type,
+                b.sent_at,
+                clientMsgId,
+                b.media_url,
+              ],
+            );
+            const msgID = msgIns.insertId;
+            await conn.execute(
+              `UPDATE conversation
+               SET lastMessage = ?, lastMessageAt = ?, lastMessageSenderID = ?,
+                   lastMessageType = ?, lastMessageStatus = 1, message_count = message_count + 1
+               WHERE conversID = ?`,
+              [
+                resolveLastMessagePreview({ content: b.content, type: b.type }),
+                b.sent_at,
+                b.sender_id,
+                b.type,
+                conversID,
+              ],
+            );
+            await conn.execute(
+              'UPDATE conv_participants SET unreadCount = unreadCount + 1 WHERE conversID = ? AND alanyaID = ?',
+              [conversID, alanyaID],
+            );
+            await conn.execute(
+              `UPDATE broadcast_delivery SET conversID = ?, msgID = ?, delivered_at = NOW()
+               WHERE broadcast_id = ? AND alanyaID = ?`,
+              [conversID, msgID, b.id, alanyaID],
+            );
+          }
         }
       }
       lastId = b.id;

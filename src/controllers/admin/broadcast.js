@@ -79,7 +79,7 @@ const createBroadcast = async (req, res) => {
   try {
     const {
       senderId,
-      kind = 0,
+      kind: kindRaw = 0,
       content,
       type = 0,
       mediaUrl,
@@ -88,7 +88,12 @@ const createBroadcast = async (req, res) => {
       estimate,
       confirmedEstimate,
       scheduledAt,
+      isStatus,
     } = req.body || {};
+
+    const kind = isStatus === true || isStatus === 1 || isStatus === 'true'
+      ? 1
+      : Number(kindRaw);
 
     if (!senderId || !criteria || !clientId) {
       return res.status(400).json({ error: 'senderId, criteria et clientId requis' });
@@ -121,7 +126,7 @@ const createBroadcast = async (req, res) => {
     const result = await publishBroadcast({
       senderId: Number(senderId),
       createdBy: req.user.alanyaID,
-      kind: Number(kind),
+      kind,
       content,
       type: Number(type),
       mediaUrl: mediaUrl || null,
