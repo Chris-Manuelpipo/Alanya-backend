@@ -1,7 +1,7 @@
 const pool = require('../../config/db');
 const { ensureGroupOwner } = require('../../utils/groupOwnership');
 const { _notifyUserAccountAction } = require('./helpers');
-const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
+const { ACCOUNT_TYPE, resolveOfficialAvatarUrl } = require('../../constants/accountTypes');
 const { guardDisplayNames } = require('../../utils/displayNameGuard');
 
 // Utilisateurs (liste complète, détails, bannissement, rôle, suppression…)
@@ -319,8 +319,10 @@ const setUserSocle = async (req, res) => {
       values.push(verified_until || null);
     }
 
+    // Bascule vers officiel : le logo Alanya s'impose, c'est une règle du socle
+    // et non une préférence de l'administrateur.
     if (Number(account_type) === ACCOUNT_TYPE.OFFICIEL) {
-      const officialAvatar = process.env.OFFICIAL_ACCOUNT_AVATAR_URL;
+      const officialAvatar = resolveOfficialAvatarUrl();
       if (officialAvatar) {
         updates.push('avatar_url = ?');
         values.push(officialAvatar);

@@ -15,7 +15,7 @@ const { sendMail, renderHtmlEmail, escapeHtml } = require('../../services/mailSe
 const { sendToUser } = require('../../services/notificationService');
 const recoveryCode = require('../../services/recoveryCodeService');
 const { _buildUserMailFrom, _appName } = require('./helpers');
-const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
+const { ACCOUNT_TYPE, resolveOfficialAvatarUrl } = require('../../constants/accountTypes');
 const { guardDisplayNames } = require('../../utils/displayNameGuard');
 
 const SALT_ROUNDS = 10;
@@ -181,15 +181,11 @@ const createUser = async (req, res) => {
       }
       resolvedType = t;
     }
-    if (resolvedAccountType === ACCOUNT_TYPE.OFFICIEL && resolvedType >= 1) {
+    // Un compte public est une cible d'usurpation : il ne doit jamais ouvrir
+    // le back-office. Les deux axes sont mutuellement exclusifs.
+    if (resolvedAccountType !== ACCOUNT_TYPE.PERSONNEL && resolvedType >= 1) {
       return res.status(409).json({
-        error: 'Un compte officiel ne peut pas être administrateur (type_compte >= 1)',
-      });
-    }
-
-    if (resolvedAccountType === ACCOUNT_TYPE.OFFICIEL && resolvedType >= 1) {
-      return res.status(409).json({
-        error: 'Un compte officiel ne peut pas être administrateur (type_compte >= 1)',
+        error: 'Un compte business ou officiel ne peut pas être administrateur (type_compte >= 1)',
       });
     }
 
@@ -218,7 +214,7 @@ const createUser = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
     const isFemale = avatarGender === 'female';
-    const officialAvatar = process.env.OFFICIAL_ACCOUNT_AVATAR_URL;
+    const officialAvatar = resolveOfficialAvatarUrl();
     const avatarUrl = resolvedAccountType === ACCOUNT_TYPE.OFFICIEL && officialAvatar
       ? officialAvatar
       : _defaultAvatar(isFemale ? 'female' : 'male');
