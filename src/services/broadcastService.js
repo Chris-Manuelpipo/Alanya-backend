@@ -323,6 +323,7 @@ async function sendBroadcastPushBatch({ broadcastId, idFrom, idTo }) {
         type: 'broadcast',
         broadcastId: String(broadcastId),
         senderId: String(b.sender_id),
+        kind: String(Number(b.kind) || 0),
         title: 'Alanya',
         body: b.content ? String(b.content).slice(0, 120) : (Number(b.kind) === 1 ? 'Nouveau statut' : 'Nouvelle annonce'),
       });
