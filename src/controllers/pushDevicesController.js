@@ -37,6 +37,27 @@ const registerPushDevice = async (req, res) => {
     const plat = _normalizePlatform(platform);
     const voip = voipToken ? String(voipToken).slice(0, 2048) : null;
 
+    // Un appareil n'appartient qu'à un compte à la fois : on réclame le
+    // deviceId et le token FCM aux autres comptes (logout hors-ligne,
+    // réinstallation), sinon l'ancien compte continue de pousser vers
+    // cet appareil via sa ligne orpheline.
+    if (token) {
+      await pool.execute(
+        `DELETE FROM user_push_devices
+          WHERE alanyaID <> ? AND (deviceId = ? OR fcmToken = ?)`,
+        [alanyaID, devId, token],
+      );
+      await pool.execute(
+        'UPDATE users SET fcm_token = "INDEFINI" WHERE alanyaID <> ? AND fcm_token = ?',
+        [alanyaID, token],
+      );
+    } else {
+      await pool.execute(
+        'DELETE FROM user_push_devices WHERE alanyaID <> ? AND deviceId = ?',
+        [alanyaID, devId],
+      );
+    }
+
     await pool.execute(
       `INSERT INTO user_push_devices
          (alanyaID, deviceId, platform, fcmToken, voipToken, locale, tokenUpdatedAt, lastHeartbeatAt)
@@ -135,6 +156,13 @@ const deletePushDevice = async (req, res) => {
     }
     await pool.execute(
       'DELETE FROM user_push_devices WHERE alanyaID = ? AND deviceId = ?',
+      [alanyaID, devId],
+    );
+    // Fallback legacy users.fcm_token : sans cette purge, resolvePushTargets
+    // repousserait vers cet appareil dès que le compte n'a plus de ligne
+    // user_push_devices.
+    await pool.execute(
+      'UPDATE users SET fcm_token = "INDEFINI" WHERE alanyaID = ? AND device_ID = ?',
       [alanyaID, devId],
     );
     res.json({ ok: true });
