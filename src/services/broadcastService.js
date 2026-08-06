@@ -11,6 +11,11 @@ const {
 } = require('./criteriaResolver');
 const { generateEventId, stringifyData } = require('../notifications/notificationContract');
 const { enqueue } = require('./jobQueue');
+const {
+  normalizeLocale,
+  pickLocalized,
+  defaultBroadcastPushBody,
+} = require('../utils/localeContent');
 
 const PUSH_BATCH = 500;
 const USER_PAGE = 1000;
@@ -50,6 +55,7 @@ async function publishBroadcast({
   createdBy,
   kind = 0,
   content,
+  contentEn = null,
   type = 0,
   mediaUrl = null,
   criteria,
@@ -66,6 +72,7 @@ async function publishBroadcast({
         createdBy,
         kind,
         content,
+        contentEn,
         type,
         mediaUrl,
         criteria,
@@ -95,14 +102,15 @@ async function publishBroadcast({
     await conn.beginTransaction();
     const [ins] = await conn.execute(
       `INSERT INTO broadcast
-        (sender_id, created_by, kind, content, type, media_url, criteria, estimate,
+        (sender_id, created_by, kind, content, content_en, type, media_url, criteria, estimate,
          client_id, status, sent_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'preparing', ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'preparing', ?)`,
       [
         senderId,
         createdBy,
         kind,
         content,
+        contentEn,
         type,
         mediaUrl,
         JSON.stringify(resolvedCriteria),
@@ -119,10 +127,10 @@ async function publishBroadcast({
       // La colonne du texte s'appelle `text`, pas `content` (migration 001).
       // Même gabarit que statutController.createStatus.
       const [st] = await conn.execute(
-        `INSERT INTO statut (alanyaID, type, text, mediaUrl, createdAt, expiredAt,
+        `INSERT INTO statut (alanyaID, type, text, text_en, mediaUrl, createdAt, expiredAt,
                              viewedBy, likedBy)
-         VALUES (?, ?, ?, ?, NOW(), ?, 0, 0)`,
-        [senderId, type, content ?? '', mediaUrl, expiredAt],
+         VALUES (?, ?, ?, ?, ?, NOW(), ?, 0, 0)`,
+        [senderId, type, content ?? '', contentEn ?? null, mediaUrl, expiredAt],
       );
       statutId = st.insertId;
       await conn.execute('UPDATE broadcast SET statut_id = ? WHERE id = ?', [statutId, broadcastId]);
@@ -231,7 +239,7 @@ async function loadPushTokensForBatch(ids) {
   const placeholders = ids.map(() => '?').join(',');
   try {
     const [devices] = await pool.execute(
-      `SELECT alanyaID, fcmToken FROM user_push_devices
+      `SELECT alanyaID, fcmToken, locale FROM user_push_devices
        WHERE alanyaID IN (${placeholders})
          AND notificationsEnabled = 1
          AND fcmToken IS NOT NULL AND fcmToken <> 'INDEFINI'`,
@@ -240,7 +248,7 @@ async function loadPushTokensForBatch(ids) {
     for (const d of devices) {
       const id = Number(d.alanyaID);
       if (!byUser.has(id)) byUser.set(id, []);
-      byUser.get(id).push(d.fcmToken);
+      byUser.get(id).push({ token: d.fcmToken, locale: d.locale });
     }
   } catch (e) {
     if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
@@ -261,23 +269,47 @@ async function loadPushTokensForBatch(ids) {
  * @param {Map<number, string[]>} devicesByUser
  * @returns {string[]} jetons dédoublonnés
  */
-function selectPushTokens(users, optedOut, devicesByUser) {
-  const tokens = [];
+/**
+ * Jetons à notifier pour un lot, groupés par locale normalisée.
+ *
+ * @param {Array<{alanyaID:number, fcm_token:string|null}>} users
+ * @param {Set<number>} optedOut
+ * @param {Map<number, Array<{token:string, locale:string|null}>>} devicesByUser
+ * @returns {Map<string, string[]>}
+ */
+function selectPushTokensByLocale(users, optedOut, devicesByUser) {
+  const byLocale = new Map();
   const seen = new Set();
+
+  function addToken(locale, tok) {
+    if (!tok || seen.has(tok)) return;
+    seen.add(tok);
+    const loc = normalizeLocale(locale);
+    if (!byLocale.has(loc)) byLocale.set(loc, []);
+    byLocale.get(loc).push(tok);
+  }
+
   for (const u of users) {
     const id = Number(u.alanyaID);
     if (optedOut.has(id)) continue;
 
     const registered = devicesByUser.get(id);
-    const userTokens = registered && registered.length
-      ? registered
-      : (u.fcm_token && u.fcm_token !== 'INDEFINI' ? [u.fcm_token] : []);
-
-    for (const tok of userTokens) {
-      if (!tok || seen.has(tok)) continue;
-      seen.add(tok);
-      tokens.push(tok);
+    if (registered && registered.length) {
+      for (const d of registered) {
+        addToken(d.locale, d.token);
+      }
+    } else if (u.fcm_token && u.fcm_token !== 'INDEFINI') {
+      addToken('fr', u.fcm_token);
     }
+  }
+  return byLocale;
+}
+
+/** @deprecated Tests / compat — liste plate sans locale. */
+function selectPushTokens(users, optedOut, devicesByUser) {
+  const tokens = [];
+  for (const list of selectPushTokensByLocale(users, optedOut, devicesByUser).values()) {
+    tokens.push(...list);
   }
   return tokens;
 }
@@ -312,11 +344,14 @@ async function sendBroadcastPushBatch({ broadcastId, idFrom, idTo }) {
     loadPushTokensForBatch(ids),
   ]);
 
-  const tokens = selectPushTokens(users, optedOut, devicesByUser);
+  const tokensByLocale = selectPushTokensByLocale(users, optedOut, devicesByUser);
 
-  if (tokens.length && admin.apps.length) {
-    for (let i = 0; i < tokens.length; i += PUSH_BATCH) {
-      const slice = tokens.slice(i, i + PUSH_BATCH);
+  if (tokensByLocale.size && admin.apps.length) {
+    for (const [locale, tokens] of tokensByLocale) {
+      const localizedBody = pickLocalized(b, locale, 'content');
+      const body = localizedBody
+        ? String(localizedBody).slice(0, 120)
+        : defaultBroadcastPushBody(b.kind, locale);
       const data = stringifyData({
         schemaVersion: '2',
         eventId: generateEventId(),
@@ -325,17 +360,20 @@ async function sendBroadcastPushBatch({ broadcastId, idFrom, idTo }) {
         senderId: String(b.sender_id),
         kind: String(Number(b.kind) || 0),
         title: 'Alanya',
-        body: b.content ? String(b.content).slice(0, 120) : (Number(b.kind) === 1 ? 'Nouveau statut' : 'Nouvelle annonce'),
+        body,
       });
-      try {
-        await admin.messaging().sendEachForMulticast({
-          tokens: slice,
-          data,
-          android: { priority: 'high' },
-          apns: { payload: { aps: { 'content-available': 1 } } },
-        });
-      } catch (e) {
-        console.warn('[Broadcast] push batch:', e.message);
+      for (let i = 0; i < tokens.length; i += PUSH_BATCH) {
+        const slice = tokens.slice(i, i + PUSH_BATCH);
+        try {
+          await admin.messaging().sendEachForMulticast({
+            tokens: slice,
+            data,
+            android: { priority: 'high' },
+            apns: { payload: { aps: { 'content-available': 1 } } },
+          });
+        } catch (e) {
+          console.warn('[Broadcast] push batch:', e.message);
+        }
       }
     }
   }
@@ -404,7 +442,23 @@ async function markPushJobFailed(broadcastId) {
   }
 }
 
-async function materializeForUser(alanyaID) {
+async function resolveMaterializeLocale(alanyaID, hint) {
+  if (hint) return normalizeLocale(hint);
+  try {
+    const [rows] = await pool.execute(
+      `SELECT locale FROM user_push_devices
+       WHERE alanyaID = ? AND locale IS NOT NULL AND locale <> ''
+       ORDER BY lastHeartbeatAt DESC LIMIT 1`,
+      [alanyaID],
+    );
+    if (rows.length) return normalizeLocale(rows[0].locale);
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
+  return 'fr';
+}
+
+async function materializeForUser(alanyaID, { locale: localeHint } = {}) {
   // Chemin chaud : `GET /api/conversations` est appelé à chaque ouverture de
   // l'application. Tant que le filigrane a rattrapé la dernière diffusion
   // connue — la quasi-totalité des appels — on sort sans transaction et sans
@@ -426,6 +480,8 @@ async function materializeForUser(alanyaID) {
     throw e;
   }
   if (watermark >= maxBroadcastId) return;
+
+  const locale = await resolveMaterializeLocale(alanyaID, localeHint);
 
   const conn = await pool.getConnection();
   try {
@@ -468,6 +524,7 @@ async function materializeForUser(alanyaID) {
           if (del.affectedRows === 1) {
             const conversID = await ensureDirectConversation(conn, b.sender_id, alanyaID);
             const clientMsgId = `broadcast:${b.id}:${alanyaID}`;
+            const msgContent = pickLocalized(b, locale, 'content');
             const [msgIns] = await conn.execute(
               `INSERT INTO message
                 (senderID, conversationID, content, type, status, sendAt, clientID, mediaUrl)
@@ -475,7 +532,7 @@ async function materializeForUser(alanyaID) {
               [
                 b.sender_id,
                 conversID,
-                b.content,
+                msgContent,
                 b.type,
                 b.sent_at,
                 clientMsgId,
@@ -489,7 +546,7 @@ async function materializeForUser(alanyaID) {
                    lastMessageType = ?, lastMessageStatus = 1, message_count = message_count + 1
                WHERE conversID = ?`,
               [
-                resolveLastMessagePreview({ content: b.content, type: b.type }),
+                resolveLastMessagePreview({ content: msgContent, type: b.type }),
                 b.sent_at,
                 b.sender_id,
                 b.type,
@@ -570,6 +627,7 @@ function mapBroadcastRow(row) {
     createdBy: row.created_by,
     kind: row.kind,
     content: row.content,
+    contentEn: row.content_en ?? null,
     type: row.type,
     mediaUrl: row.media_url,
     criteria,
@@ -606,5 +664,7 @@ module.exports = {
   loadBroadcastOptOut,
   loadPushTokensForBatch,
   selectPushTokens,
+  selectPushTokensByLocale,
+  resolveMaterializeLocale,
   ensureDirectConversation,
 };

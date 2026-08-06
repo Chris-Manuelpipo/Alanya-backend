@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS welcome_config (
   KEY idx_welcome_active (is_active),
   KEY idx_welcome_draft (is_draft)
 );
-
+ 
 CREATE TABLE IF NOT EXISTS welcome_block (
   id         BIGINT      NOT NULL AUTO_INCREMENT,
   config_id  BIGINT      NOT NULL,

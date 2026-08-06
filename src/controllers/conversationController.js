@@ -143,7 +143,8 @@ async function emitConversationUpdated(io, conversID) {
 const getConversations = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
-    await materializeForUser(alanyaID);
+    const localeHint = req.query.locale || req.headers['accept-language'];
+    await materializeForUser(alanyaID, { locale: localeHint });
     const [rows] = await pool.execute(
       `SELECT c.*, ${CP_VIEWER_FIELDS},
               COALESCE(c.message_count, 0) AS messageCount

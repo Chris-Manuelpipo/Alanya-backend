@@ -34,7 +34,7 @@ assert.deepStrictEqual(
   selectPushTokens(
     [{ alanyaID: 1, fcm_token: 'legacy-1' }],
     new Set(),
-    new Map([[1, ['dev-a', 'dev-b']]]),
+    new Map([[1, [{ token: 'dev-a', locale: 'fr' }, { token: 'dev-b', locale: 'en' }]]]),
   ),
   ['dev-a', 'dev-b'],
   'les appareils enregistrés remplacent le jeton historique',
@@ -61,7 +61,7 @@ assert.deepStrictEqual(
   selectPushTokens(
     [{ alanyaID: 5, fcm_token: 'legacy-5' }, { alanyaID: 6, fcm_token: 'legacy-6' }],
     new Set([5]),
-    new Map([[5, ['dev-5']]]),
+    new Map([[5, [{ token: 'dev-5', locale: 'fr' }]]]),
   ),
   ['legacy-6'],
 );

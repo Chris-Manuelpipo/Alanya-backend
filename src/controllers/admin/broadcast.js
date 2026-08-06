@@ -81,6 +81,7 @@ const createBroadcast = async (req, res) => {
       senderId,
       kind: kindRaw = 0,
       content,
+      contentEn,
       type = 0,
       mediaUrl,
       criteria,
@@ -97,6 +98,9 @@ const createBroadcast = async (req, res) => {
 
     if (!senderId || !criteria || !clientId) {
       return res.status(400).json({ error: 'senderId, criteria et clientId requis' });
+    }
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ error: 'content (FR) requis' });
     }
 
     // Il n'existe qu'un compte officiel, et toutes les diffusions en émanent :
@@ -127,7 +131,8 @@ const createBroadcast = async (req, res) => {
       senderId: Number(senderId),
       createdBy: req.user.alanyaID,
       kind,
-      content,
+      content: String(content).trim(),
+      contentEn: contentEn != null ? String(contentEn).trim() : null,
       type: Number(type),
       mediaUrl: mediaUrl || null,
       criteria,
