@@ -60,7 +60,14 @@ INSERT INTO welcome_block (config_id, sort_order, block_type, content_fr, conten
  'Discover messaging, 24 h statuses, audio and video calls, and meetings — all in one app.'),
 (@active_id, 2, 'cta', NULL, NULL);
 
-SET @cta_block = LAST_INSERT_ID();
+-- Piège : après une insertion multi-lignes, LAST_INSERT_ID() renvoie
+-- l'identifiant de la PREMIÈRE ligne. L'utiliser ici écrivait les boutons sur
+-- le premier bloc texte et laissait le bloc CTA vide. On désigne donc le bloc
+-- explicitement.
+SELECT id INTO @cta_block
+FROM welcome_block
+WHERE config_id = @active_id AND block_type = 'cta'
+ORDER BY sort_order LIMIT 1;
 
 UPDATE welcome_block SET cta_json = JSON_OBJECT(
   'buttons', JSON_ARRAY(

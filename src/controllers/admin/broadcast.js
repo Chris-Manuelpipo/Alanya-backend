@@ -7,22 +7,29 @@ const {
 } = require('../../services/broadcastService');
 const { enqueue } = require('../../services/jobQueue');
 const { getOfficialAccountId } = require('../../utils/officialAccountGuard');
+const { buildBroadcastWhere } = require('./broadcastQuery');
 
 const listBroadcasts = async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const offset = (page - 1) * limit;
+    const { whereSql, params, sortCol, dir } = buildBroadcastWhere(req.query);
 
     const [items] = await pool.execute(
       `SELECT b.*, u.nom AS sender_nom
        FROM broadcast b
        JOIN users u ON b.sender_id = u.alanyaID
-       ORDER BY b.sent_at DESC
+       ${whereSql}
+       ORDER BY ${sortCol} ${dir}
        LIMIT ${limit} OFFSET ${offset}`,
+      params,
     );
 
-    const [[{ total }]] = await pool.execute('SELECT COUNT(*) AS total FROM broadcast');
+    const [[{ total }]] = await pool.execute(
+      `SELECT COUNT(*) AS total FROM broadcast b ${whereSql}`,
+      params,
+    );
 
     const [scheduled] = await pool.execute(
       `SELECT id AS jobId, payload, run_after AS scheduledAt
