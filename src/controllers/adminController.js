@@ -13,4 +13,5 @@ module.exports = {
   ...require('./admin/profile'),
   ...require('./admin/broadcast'),
   ...require('./admin/villes'),
+  ...require('./admin/export'),
 };

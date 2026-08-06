@@ -34,6 +34,8 @@ const {
   getMe,
   updateMe,
   updatePassword,
+  exportUsers,
+  exportAnalytics,
 } = require('../controllers/adminController');
 const { broadcastSendLimiter, broadcastEstimateLimiter } = require('../middleware/rateLimiter');
 
@@ -425,6 +427,8 @@ router.delete('/groups/:id',               adminAuth, deleteGroup);
  *       200:
  *         description: Liste des utilisateurs
  */
+router.get('/users/export',                   adminAuth, exportUsers);
+router.get('/analytics/export',               adminAuth, exportAnalytics);
 router.get('/users',                       adminAuth, getUsers);
 router.post('/users',                      adminAuth, createUser);
 

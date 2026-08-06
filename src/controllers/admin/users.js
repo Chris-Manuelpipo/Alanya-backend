@@ -4,51 +4,17 @@ const { _notifyUserAccountAction } = require('./helpers');
 const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
 const { invalidateOfficialAccountCache } = require('../../utils/officialAccountGuard');
 const { guardDisplayNames } = require('../../utils/displayNameGuard');
+const { buildUsersWhere, fetchUsersForExport } = require('./usersQuery');
 
-// Utilisateurs (liste complète, détails, bannissement, rôle, suppression…)
 const getUsers = async (req, res) => {
   try {
-    const {
-      search = '',
-      status = '',
-      from = '',
-      to = '',
-      idPays = '',
-      sort = 'created_at',
-      order = 'desc',
-      page = 1,
-      limit = 20,
-    } = req.query;
+    const { page = 1, limit = 20 } = req.query;
+    const { whereSql, params, sortCol, dir } = buildUsersWhere(req.query);
 
-    const where = [];
-    const params = [];
-
-    if (search) {
-      where.push('(u.nom LIKE ? OR u.pseudo LIKE ? OR u.alanyaPhone LIKE ?)');
-      const like = `%${search}%`;
-      params.push(like, like, like);
-    }
-    if (status === 'online')  { where.push('u.is_online = ?'); params.push(1); }
-    if (status === 'banned')  { where.push('u.exclus = ?'); params.push(1); }
-    if (status === 'admin')   { where.push('u.type_compte >= ?'); params.push(1); }
-    if (req.query.account_type != null && req.query.account_type !== '') {
-      where.push('u.account_type = ?');
-      params.push(Number(req.query.account_type));
-    }
-    if (from) { where.push('u.created_at >= ?'); params.push(from); }
-    if (to)   { where.push('u.created_at <= ?'); params.push(to); }
-    if (idPays) { where.push('u.idPays = ?'); params.push(idPays); }
-
-    const allowedSort = { created_at: 'u.created_at', nom: 'u.nom', last_seen: 'u.last_seen' };
-    const sortCol = allowedSort[sort] || 'u.created_at';
-    const dir = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-
-    const pageN  = Math.max(1, parseInt(page, 10));
+    const pageN = Math.max(1, parseInt(page, 10));
     const limitN = Math.min(100, Math.max(1, parseInt(limit, 10)));
     const offset = (pageN - 1) * limitN;
 
-    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
- 
     const [items] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
               u.type_compte, u.account_type, u.verification_status, u.verified_until,
@@ -59,12 +25,12 @@ const getUsers = async (req, res) => {
        ${whereSql}
        ORDER BY ${sortCol} ${dir}
        LIMIT ${limitN} OFFSET ${offset}`,
-      params
+      params,
     );
 
     const [[{ total }]] = await pool.execute(
       `SELECT COUNT(*) AS total FROM users u ${whereSql}`,
-      params
+      params,
     );
 
     res.json({ items, total, page: pageN, limit: limitN });
