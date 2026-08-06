@@ -227,6 +227,13 @@ async function saveWelcomeStatusConfig(patch, adminId) {
       err.status = 400;
       throw err;
     }
+    // Contrairement au message, le statut conserve les deux langues et l'app
+    // choisit à l'affichage : sans texte anglais, l'anglophone voit du français.
+    if (textFr && !textEn) {
+      const err = new Error('Un statut texte exige aussi sa traduction anglaise');
+      err.status = 400;
+      throw err;
+    }
     if (type !== 0 && !mediaUrl) {
       const err = new Error('Un statut image ou vidéo exige un média');
       err.status = 400;
@@ -331,14 +338,12 @@ async function purgeExpiredWelcomeStatuses({ retentionDays = 7 } = {}) {
 async function deliverWelcome(alanyaID, { locale = 'fr' } = {}) {
   const loc = normalizeLocale(locale);
 
-  // Le statut ne dépend pas du message : on le tente d'abord, et son échec
-  // éventuel ne doit pas interrompre la fin d'onboarding.
-  let welcomeStatus = { delivered: false, reason: 'ERROR' };
-  try {
-    welcomeStatus = await deliverWelcomeStatus(alanyaID);
-  } catch (e) {
-    console.error('[welcome] échec du statut de bienvenue:', e.message);
-  }
+  // Le statut n'est publié que lors de la PREMIÈRE livraison du message, plus
+  // bas. Cet endpoint est rappelé à chaque lancement de l'app en rattrapage
+  // (home_screen.dart) : le tenter ici enverrait le statut à tous les comptes
+  // existants dès l'activation de l'interrupteur, alors qu'il est réservé aux
+  // nouveaux inscrits.
+  let welcomeStatus = { delivered: false, reason: 'NOT_A_NEW_SIGNUP' };
 
   const [[delivery]] = await pool.execute(
     'SELECT conversID, config_id FROM welcome_delivery WHERE alanyaID = ?',
@@ -484,6 +489,16 @@ async function deliverWelcome(alanyaID, { locale = 'fr' } = {}) {
     conn.release();
   }
 
+  // Première livraison confirmée : c'est bien un nouvel inscrit. Le statut vient
+  // après la transaction du message pour qu'un échec ici — statut désactivé,
+  // média absent, erreur SQL — ne fasse jamais perdre le message déjà écrit.
+  try {
+    welcomeStatus = await deliverWelcomeStatus(alanyaID);
+  } catch (e) {
+    console.error('[welcome] échec du statut de bienvenue:', e.message);
+    welcomeStatus = { delivered: false, reason: 'ERROR' };
+  }
+
   const lastBody = lastPreview || 'Message de bienvenue';
   await notifyNewMessage(conversID, officialId, officialUser?.nom || 'Alanya', {
     content: lastBody,
@@ -554,6 +569,38 @@ async function publishDraft(adminId) {
     const blocks = await loadBlocksForConfig(draft.id, conn);
     if (!blocks.length) {
       const err = new Error('Le brouillon est vide');
+      err.status = 400;
+      throw err;
+    }
+
+    // Les deux langues sont exigées, mais seulement à la publication : un
+    // brouillon doit rester enregistrable en cours de rédaction. La traduction
+    // n'est due que là où il y a du texte — une légende vide des deux côtés est
+    // légitime sur un bloc image ou vidéo.
+    const untranslated = blocks
+      .filter((b) => b.blockType !== 'cta')
+      .filter((b) => String(b.contentFr || '').trim() && !String(b.contentEn || '').trim())
+      .map((b) => b.sortOrder + 1);
+    if (untranslated.length) {
+      const err = new Error(
+        `Traduction anglaise manquante — bloc(s) ${untranslated.join(', ')}`,
+      );
+      err.status = 400;
+      throw err;
+    }
+
+    // Un bouton sans libellé anglais est simplement retiré à la livraison
+    // (blockToMessagePayload) : l'anglophone verrait un bloc amputé.
+    const ctaUntranslated = blocks
+      .filter((b) => b.blockType === 'cta')
+      .filter((b) => (b.ctaJson?.buttons ?? []).some(
+        (btn) => String(btn.labelFr || '').trim() && !String(btn.labelEn || '').trim(),
+      ))
+      .map((b) => b.sortOrder + 1);
+    if (ctaUntranslated.length) {
+      const err = new Error(
+        `Libellé anglais manquant sur un bouton — bloc(s) ${ctaUntranslated.join(', ')}`,
+      );
       err.status = 400;
       throw err;
     }

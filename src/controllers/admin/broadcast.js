@@ -117,6 +117,11 @@ const createBroadcast = async (req, res) => {
     if (!content || !String(content).trim()) {
       return res.status(400).json({ error: 'content (FR) requis' });
     }
+    // Les deux langues sont exigées : sans traduction, `pickLocalized` sert le
+    // français aux anglophones sans que personne ne s'en aperçoive.
+    if (!contentEn || !String(contentEn).trim()) {
+      return res.status(400).json({ error: 'contentEn (EN) requis' });
+    }
 
     // Il n'existe qu'un compte officiel, et toutes les diffusions en émanent :
     // c'est la règle « une seule voix ». On compare à l'identifiant canonique
