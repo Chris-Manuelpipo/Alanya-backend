@@ -15,20 +15,40 @@ function registerJobHandler(kind, fn) {
   handlers.set(kind, fn);
 }
 
-async function enqueue(kind, payload, { dedupeKey = null, runAfter = null, maxAttempts = 5 } = {}) {
+/**
+ * Met un job en file.
+ *
+ * `reviveFailed` relance un job de même clé qui avait échoué définitivement.
+ * Sans lui, la ligne en échec reste en base avec sa clé de déduplication, et
+ * toute remise en file suivante retombe dessus via `ON DUPLICATE KEY` : le job
+ * ne repart plus jamais. Acceptable pour un enchaînement automatique, mais pas
+ * pour une action déclenchée à la main, qui doit pouvoir réessayer.
+ *
+ * Retourne l'identifiant du job mis en file, ou `null` si un job identique
+ * était déjà en attente. Les appelants doivent tester ce retour avant
+ * d'annoncer un lancement.
+ */
+async function enqueue(
+  kind,
+  payload,
+  { dedupeKey = null, runAfter = null, maxAttempts = 5, reviveFailed = false } = {},
+) {
   const runAfterVal = runAfter instanceof Date ? runAfter : runAfter ? new Date(runAfter) : new Date();
-  try {
-    const [res] = await pool.execute(
-      `INSERT INTO job_queue (kind, payload, dedupe_key, run_after, max_attempts)
-       VALUES (?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE id = id`,
-      [kind, JSON.stringify(payload || {}), dedupeKey, runAfterVal, maxAttempts],
+
+  if (reviveFailed && dedupeKey) {
+    await pool.execute(
+      'DELETE FROM job_queue WHERE kind = ? AND dedupe_key = ? AND failed_at IS NOT NULL',
+      [kind, dedupeKey],
     );
-    return res.insertId || null;
-  } catch (e) {
-    if (e.code === 'ER_NO_SUCH_TABLE') throw e;
-    throw e;
   }
+
+  const [res] = await pool.execute(
+    `INSERT INTO job_queue (kind, payload, dedupe_key, run_after, max_attempts)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE id = id`,
+    [kind, JSON.stringify(payload || {}), dedupeKey, runAfterVal, maxAttempts],
+  );
+  return res.insertId || null;
 }
 
 async function reclaimOrphans() {

@@ -356,7 +356,7 @@ async function deliverWelcome(alanyaID, { locale = 'fr' } = {}) {
     let officialAvatar = '';
     if (officialId) {
       const [[u]] = await pool.execute(
-        'SELECT nom, avatarUrl FROM users WHERE alanyaID = ?',
+        'SELECT nom, avatar_url AS avatarUrl FROM users WHERE alanyaID = ?',
         [officialId],
       );
       officialName = u?.nom || officialName;
@@ -392,7 +392,7 @@ async function deliverWelcome(alanyaID, { locale = 'fr' } = {}) {
   }
 
   const [[officialUser]] = await pool.execute(
-    'SELECT nom, avatarUrl FROM users WHERE alanyaID = ?',
+    'SELECT nom, avatar_url AS avatarUrl FROM users WHERE alanyaID = ?',
     [officialId],
   );
 
@@ -694,20 +694,40 @@ async function processWelcomeBackfillBatch({ idFrom = 0, limit = BACKFILL_BATCH 
   );
 
   let delivered = 0;
+  let failed = 0;
   let lastId = idFrom;
+  let firstError = null;
   for (const u of users) {
     lastId = Number(u.alanyaID);
     try {
       const r = await deliverWelcome(lastId, { locale: 'fr' });
       if (r.delivered) delivered += 1;
+      else if (!r.alreadyDelivered) {
+        failed += 1;
+        firstError = firstError || r.reason || 'SKIPPED';
+      }
     } catch (e) {
+      failed += 1;
+      firstError = firstError || e.message;
       console.warn('[Welcome] backfill user', lastId, e.message);
     }
   }
 
+  // Une erreur par utilisateur est rattrapée pour ne pas interrompre le lot,
+  // mais un lot entièrement en échec se terminait « avec succès » : le job
+  // était supprimé, rien n'était livré et l'admin n'en savait rien. On trace
+  // au moins un résumé exploitable.
+  const level = delivered === 0 && failed > 0 ? 'error' : 'log';
+  console[level](
+    `[Welcome] rattrapage : ${delivered} livré(s), ${failed} échec(s) sur ${users.length}` +
+      (firstError ? ` — première cause : ${firstError}` : ''),
+  );
+
   return {
     processed: users.length,
     delivered,
+    failed,
+    firstError,
     lastId,
     hasMore: users.length >= limit,
   };
@@ -716,13 +736,19 @@ async function processWelcomeBackfillBatch({ idFrom = 0, limit = BACKFILL_BATCH 
 async function startBackfill(adminId) {
   void adminId;
   const pending = await countBackfillCandidates();
-  if (!pending) return { queued: false, pending: 0 };
+  if (!pending) return { queued: false, pending: 0, reason: 'NOTHING_TO_DO' };
 
-  await enqueue(
+  // `reviveFailed` : un rattrapage ayant échoué définitivement laissait sa ligne
+  // en base et bloquait pour toujours toute nouvelle tentative, en silence.
+  const jobId = await enqueue(
     'welcome_backfill',
     { idFrom: 0 },
-    { dedupeKey: 'welcome_backfill' },
+    { dedupeKey: 'welcome_backfill', reviveFailed: true },
   );
+
+  // `enqueue` renvoie null quand un rattrapage est déjà en attente. L'ignorer
+  // faisait annoncer « lancé » alors que rien n'avait été mis en file.
+  if (!jobId) return { queued: false, pending, reason: 'ALREADY_RUNNING' };
 
   return { queued: true, pending };
 }
@@ -732,7 +758,7 @@ async function continueBackfillChain(lastId, hasMore) {
   await enqueue(
     'welcome_backfill',
     { idFrom: lastId },
-    { dedupeKey: `welcome_backfill:${lastId}` },
+    { dedupeKey: `welcome_backfill:${lastId}`, reviveFailed: true },
   );
 }
 
