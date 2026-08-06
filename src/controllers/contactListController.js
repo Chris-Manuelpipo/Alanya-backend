@@ -269,8 +269,11 @@ const addMember = async (req, res) => {
       'SELECT idPrefContact FROM preferredContact WHERE alanyaID = ? AND idFriend = ?',
       [alanyaID, friendID]
     );
+    // 403 et non 400 : la requête est bien formée, c'est la règle métier
+    // « un membre est d'abord un favori » qui l'interdit (cf. dossier de
+    // conception §4.1 et recette §7.1).
     if (pref.length === 0) {
-      return res.status(400).json({ error: 'User is not a preferred contact' });
+      return res.status(403).json({ error: 'User is not a preferred contact' });
     }
 
     // INSERT IGNORE : ré-ajouter un membre déjà présent est idempotent (la PK

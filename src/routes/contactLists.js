@@ -149,7 +149,7 @@ router.get('/:idList/members', auth, getListMembers);
  *     responses:
  *       201:
  *         description: Membre ajouté
- *       400:
+ *       403:
  *         description: L'utilisateur n'est pas un contact préféré
  *       404:
  *         description: Liste introuvable
