@@ -10,13 +10,21 @@ function normalizeLocale(raw) {
  * - Welcome : field `content` → `content_fr` / `content_en`
  * - Broadcast : field `content` → `content` / `content_en`
  * - Statut : field `text` → `text` / `text_en`
+ *
+ * Les deux conventions de nommage sont acceptées. Les diffusions passent une
+ * ligne SQL brute (`content_en`), tandis que les blocs de bienvenue arrivent
+ * déjà convertis par `mapBlockRow` (`contentEn`) : ne reconnaître que la
+ * première renvoyait silencieusement une chaîne vide pour tout le message de
+ * bienvenue.
  */
 function pickLocalized(row, locale, field) {
-  const frKey = `${field}_fr`;
-  const enKey = `${field}_en`;
-  const frVal = row[frKey] != null ? row[frKey] : row[field];
+  const first = (...keys) => {
+    for (const k of keys) if (row[k] != null) return row[k];
+    return null;
+  };
+  const frVal = first(`${field}_fr`, `${field}Fr`, field);
   if (locale === 'en') {
-    const en = row[enKey];
+    const en = first(`${field}_en`, `${field}En`);
     if (en != null && String(en).trim()) return String(en);
   }
   return frVal != null ? String(frVal) : '';
