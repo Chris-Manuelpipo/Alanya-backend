@@ -37,6 +37,14 @@ const getStatus = async (req, res) => {
            SELECT 1 FROM blocked b
            WHERE b.alanyaID = s.alanyaID AND b.idCallerBlock = ?
          )
+         -- Un statut de bienvenue n'appartient qu'à son destinataire. Il est
+         -- servi plus bas, par sa propre requête. L'exclure ici rend
+         -- l'isolation structurelle : même si un jour le compte officiel
+         -- apparaissait en contact réciproque, aucun statut de bienvenue
+         -- destiné à quelqu'un d'autre ne pourrait fuiter.
+         AND NOT EXISTS (
+           SELECT 1 FROM welcome_status_delivery w WHERE w.statut_id = s.ID
+         )
        ORDER BY s.alanyaID, s.createdAt ASC
        LIMIT 500`,
       [alanyaID, alanyaID, alanyaID, alanyaID, alanyaID, alanyaID]
@@ -82,10 +90,40 @@ const getStatus = async (req, res) => {
       return createdOk && evaluateInMemory(viewer, criteria, { sentAt: row.broadcast_sent_at });
     });
 
+    // Statut de bienvenue : une ligne par destinataire, visible de lui seul et
+    // pendant 24 h. Contrairement aux statuts de diffusion, il n'est pas filtré
+    // sur la date d'inscription — il existe précisément pour les nouveaux.
+    const [welcomeRows] = await pool.execute(
+      `SELECT s.*,
+              u.nom, u.pseudo, u.avatar_url, u.is_online,
+              u.account_type, u.verification_status,
+              EXISTS(
+                SELECT 1 FROM statut_views sv
+                WHERE sv.statutID = s.ID AND sv.alanyaID = ? AND sv.liked = 1
+              ) AS likedByMe,
+              EXISTS(
+                SELECT 1 FROM statut_views sv2
+                WHERE sv2.statutID = s.ID AND sv2.alanyaID = ?
+              ) AS seenByMe
+       FROM statut s
+       JOIN welcome_status_delivery w ON w.statut_id = s.ID
+       JOIN users u ON s.alanyaID = u.alanyaID
+       WHERE w.alanyaID = ?
+         AND s.expiredAt > NOW()
+         AND NOT EXISTS (
+           SELECT 1 FROM blocked b2
+           WHERE b2.alanyaID = s.alanyaID AND b2.idCallerBlock = ?
+         )`,
+      [alanyaID, alanyaID, alanyaID, alanyaID],
+    );
+
     const merged = [...rows];
     const seenIds = new Set(rows.map((r) => r.ID));
-    for (const o of officialFiltered) {
-      if (!seenIds.has(o.ID)) merged.push(o);
+    for (const o of [...officialFiltered, ...welcomeRows]) {
+      if (!seenIds.has(o.ID)) {
+        seenIds.add(o.ID);
+        merged.push(o);
+      }
     }
 
     res.json(merged.slice(0, 500));

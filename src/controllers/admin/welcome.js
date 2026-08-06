@@ -4,6 +4,8 @@ const {
   publishDraft,
   startBackfill,
   countBackfillCandidates,
+  getWelcomeStatusConfig,
+  saveWelcomeStatusConfig,
 } = require('../../services/welcomeService');
 
 const getWelcome = async (req, res) => {
@@ -56,9 +58,36 @@ const backfill = async (req, res) => {
   }
 };
 
+/**
+ * Statut de bienvenue — réglage global, hors versionnement.
+ *
+ * Il ne transite pas par le brouillon : `PUT` prend effet immédiatement, ce qui
+ * est le comportement attendu d'un interrupteur.
+ */
+const getStatusConfig = async (req, res) => {
+  try {
+    res.json(await getWelcomeStatusConfig());
+  } catch (e) {
+    console.error('[Admin] getWelcomeStatus:', e.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+const updateStatusConfig = async (req, res) => {
+  try {
+    const config = await saveWelcomeStatusConfig(req.body || {}, req.user.alanyaID);
+    res.json(config);
+  } catch (e) {
+    console.error('[Admin] updateWelcomeStatus:', e.message);
+    res.status(e.status || 500).json({ error: e.message || 'Erreur serveur' });
+  }
+};
+
 module.exports = {
   getWelcome,
   updateDraft,
   publish,
   backfill,
+  getStatusConfig,
+  updateStatusConfig,
 };

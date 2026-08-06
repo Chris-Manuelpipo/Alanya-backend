@@ -5,25 +5,19 @@ const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { notifyNewMessage } = require('./notificationService');
 const { enqueue } = require('./jobQueue');
 
+const {
+  normalizeLocale,
+  pickLocalized,
+} = require('../utils/localeContent');
+
 const WELCOME_CTA_MSG_TYPE = 8;
 const BACKFILL_BATCH = 100;
 
-function normalizeLocale(raw) {
-  const s = String(raw || 'fr').toLowerCase();
-  if (s.startsWith('en')) return 'en';
-  return 'fr';
-}
+/** `statut.text` est un TINYTEXT : 255 octets, pas 255 caractères. */
+const STATUS_TEXT_MAX = 200;
 
-function pickLocalized(block, locale, field) {
-  const frKey = `${field}_fr`;
-  const enKey = `${field}_en`;
-  if (locale === 'en') {
-    const en = block[enKey];
-    if (en != null && String(en).trim()) return String(en);
-  }
-  const fr = block[frKey];
-  return fr != null ? String(fr) : '';
-}
+/** Durée de vie d'un statut, alignée sur `statutController.createStatus`. */
+const STATUS_TTL_HOURS = 24;
 
 function mapBlockRow(row) {
   let ctaJson = row.cta_json;
@@ -161,8 +155,190 @@ function blockToMessagePayload(block, locale, configId, alanyaID, sortOrder) {
   }
 }
 
+/* ── Statut de bienvenue ──────────────────────────────────────────────────
+ *
+ * Réglage global et non versionné : l'interrupteur agit sans passer par
+ * « Publier », contrairement au message. Voir migrations/044_welcome_status.sql.
+ */
+
+function mapStatusConfigRow(row) {
+  return {
+    enabled: !!row.enabled,
+    type: Number(row.type) || 0,
+    textFr: row.text_fr ?? '',
+    textEn: row.text_en ?? '',
+    mediaUrl: row.media_url ?? '',
+    backgroundColor: row.background_color ?? '',
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by,
+  };
+}
+
+async function getWelcomeStatusConfig() {
+  const [[row]] = await pool.execute(
+    'SELECT * FROM welcome_status_config WHERE id = 1',
+  );
+  if (!row) {
+    return {
+      enabled: false, type: 0, textFr: '', textEn: '',
+      mediaUrl: '', backgroundColor: '', updatedAt: null, updatedBy: null,
+    };
+  }
+  return mapStatusConfigRow(row);
+}
+
+/** Couleur de fond acceptée par l'app : `#RRGGBB` (cf. `_parseColor`). */
+function normalizeBackgroundColor(raw) {
+  if (raw == null) return null;
+  const v = String(raw).trim();
+  if (!v) return null;
+  const hex = v.startsWith('#') ? v.slice(1) : v;
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) {
+    const err = new Error('Couleur de fond invalide (#RRGGBB attendu)');
+    err.status = 400;
+    throw err;
+  }
+  return `#${hex.toUpperCase()}`;
+}
+
+function normalizeStatusText(raw) {
+  const v = raw == null ? '' : String(raw).trim();
+  if (v.length > STATUS_TEXT_MAX) {
+    const err = new Error(`Texte du statut limité à ${STATUS_TEXT_MAX} caractères`);
+    err.status = 400;
+    throw err;
+  }
+  return v;
+}
+
+async function saveWelcomeStatusConfig(patch, adminId) {
+  const type = [0, 1, 2].includes(Number(patch?.type)) ? Number(patch.type) : 0;
+  const textFr = normalizeStatusText(patch?.textFr);
+  const textEn = normalizeStatusText(patch?.textEn);
+  const mediaUrl = patch?.mediaUrl ? String(patch.mediaUrl).slice(0, 512) : null;
+  const backgroundColor = normalizeBackgroundColor(patch?.backgroundColor);
+  const enabled = patch?.enabled ? 1 : 0;
+
+  // Activer sans contenu livrable produirait des statuts vides : on refuse ici
+  // plutôt que de laisser passer et d'échouer silencieusement à la livraison.
+  if (enabled) {
+    if (type === 0 && !textFr) {
+      const err = new Error('Un statut texte exige un texte en français');
+      err.status = 400;
+      throw err;
+    }
+    if (type !== 0 && !mediaUrl) {
+      const err = new Error('Un statut image ou vidéo exige un média');
+      err.status = 400;
+      throw err;
+    }
+  }
+
+  await pool.execute(
+    `INSERT INTO welcome_status_config
+       (id, enabled, type, text_fr, text_en, media_url, background_color, updated_by)
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       enabled = VALUES(enabled), type = VALUES(type),
+       text_fr = VALUES(text_fr), text_en = VALUES(text_en),
+       media_url = VALUES(media_url), background_color = VALUES(background_color),
+       updated_by = VALUES(updated_by)`,
+    [enabled, type, textFr || null, textEn || null, mediaUrl, backgroundColor, adminId ?? null],
+  );
+
+  return getWelcomeStatusConfig();
+}
+
+/**
+ * Publie le statut de bienvenue pour un utilisateur.
+ *
+ * Volontairement indépendant du message : le statut part même si aucune version
+ * du message n'est active, et une erreur ici ne doit jamais faire échouer la fin
+ * d'onboarding. La ligne `welcome_status_delivery` sert à la fois de clé de
+ * visibilité et de garde anti-doublon (`alanyaID` UNIQUE).
+ */
+async function deliverWelcomeStatus(alanyaID) {
+  const config = await getWelcomeStatusConfig();
+  if (!config.enabled) return { delivered: false, reason: 'DISABLED' };
+
+  const hasContent = config.type === 0 ? !!config.textFr : !!config.mediaUrl;
+  if (!hasContent) return { delivered: false, reason: 'EMPTY_STATUS' };
+
+  const officialId = await getOfficialAccountId();
+  if (!officialId) return { delivered: false, reason: 'NO_OFFICIAL_ACCOUNT' };
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [[dup]] = await conn.execute(
+      'SELECT statut_id FROM welcome_status_delivery WHERE alanyaID = ? FOR UPDATE',
+      [alanyaID],
+    );
+    if (dup) {
+      await conn.commit();
+      return { delivered: false, reason: 'ALREADY_DELIVERED', statutId: dup.statut_id };
+    }
+
+    const [ins] = await conn.execute(
+      `INSERT INTO statut
+         (alanyaID, type, text, text_en, mediaUrl, backgroundColor,
+          createdAt, expiredAt, viewedBy, likedBy)
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ? HOUR), 0, 0)`,
+      [
+        officialId,
+        config.type,
+        config.textFr || '',
+        config.textEn || null,
+        config.mediaUrl || null,
+        config.backgroundColor || null,
+        STATUS_TTL_HOURS,
+      ],
+    );
+
+    await conn.execute(
+      'INSERT INTO welcome_status_delivery (alanyaID, statut_id) VALUES (?, ?)',
+      [alanyaID, ins.insertId],
+    );
+
+    await conn.commit();
+    return { delivered: true, statutId: ins.insertId };
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
+ * Purge les statuts de bienvenue expirés.
+ *
+ * Sans elle, `statut` grossirait d'une ligne par inscription, indéfiniment :
+ * l'app cesse de les afficher après 24 h mais rien ne les supprimait.
+ * La suppression en cascade nettoie `welcome_status_delivery`.
+ */
+async function purgeExpiredWelcomeStatuses({ retentionDays = 7 } = {}) {
+  const [res] = await pool.execute(
+    `DELETE s FROM statut s
+     JOIN welcome_status_delivery w ON w.statut_id = s.ID
+     WHERE s.expiredAt < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+    [retentionDays],
+  );
+  return { purged: res.affectedRows || 0 };
+}
+
 async function deliverWelcome(alanyaID, { locale = 'fr' } = {}) {
   const loc = normalizeLocale(locale);
+
+  // Le statut ne dépend pas du message : on le tente d'abord, et son échec
+  // éventuel ne doit pas interrompre la fin d'onboarding.
+  let welcomeStatus = { delivered: false, reason: 'ERROR' };
+  try {
+    welcomeStatus = await deliverWelcomeStatus(alanyaID);
+  } catch (e) {
+    console.error('[welcome] échec du statut de bienvenue:', e.message);
+  }
 
   const [[delivery]] = await pool.execute(
     'SELECT conversID, config_id FROM welcome_delivery WHERE alanyaID = ?',
@@ -190,17 +366,24 @@ async function deliverWelcome(alanyaID, { locale = 'fr' } = {}) {
       senderName: officialName,
       senderAvatar: officialAvatar,
       messageCount: 0,
+      statusDelivered: welcomeStatus.delivered,
     };
   }
 
   const config = await getActiveConfig();
   if (!config?.blocks?.length) {
-    return { delivered: false, skipped: true, reason: 'NO_ACTIVE_CONFIG' };
+    return {
+      delivered: false, skipped: true, reason: 'NO_ACTIVE_CONFIG',
+      statusDelivered: welcomeStatus.delivered,
+    };
   }
 
   const officialId = await getOfficialAccountId();
   if (!officialId) {
-    return { delivered: false, skipped: true, reason: 'NO_OFFICIAL_ACCOUNT' };
+    return {
+      delivered: false, skipped: true, reason: 'NO_OFFICIAL_ACCOUNT',
+      statusDelivered: welcomeStatus.delivered,
+    };
   }
 
   const [[officialUser]] = await pool.execute(
@@ -232,6 +415,7 @@ async function deliverWelcome(alanyaID, { locale = 'fr' } = {}) {
         senderName: officialUser?.nom || 'Alanya',
         senderAvatar: officialUser?.avatarUrl || '',
         messageCount: 0,
+        statusDelivered: welcomeStatus.delivered,
       };
     }
 
@@ -267,7 +451,10 @@ async function deliverWelcome(alanyaID, { locale = 'fr' } = {}) {
 
     if (messageCount === 0) {
       await conn.rollback();
-      return { delivered: false, skipped: true, reason: 'EMPTY_CONFIG' };
+      return {
+        delivered: false, skipped: true, reason: 'EMPTY_CONFIG',
+        statusDelivered: welcomeStatus.delivered,
+      };
     }
 
     await conn.execute(
@@ -316,6 +503,7 @@ async function deliverWelcome(alanyaID, { locale = 'fr' } = {}) {
     senderName: officialUser?.nom || 'Alanya',
     senderAvatar: officialUser?.avatarUrl || '',
     messageCount,
+    statusDelivered: welcomeStatus.delivered,
   };
 }
 
@@ -511,4 +699,10 @@ module.exports = {
   processWelcomeBackfillBatch,
   startBackfill,
   continueBackfillChain,
+  // Statut de bienvenue (réglage global, non versionné)
+  STATUS_TEXT_MAX,
+  getWelcomeStatusConfig,
+  saveWelcomeStatusConfig,
+  deliverWelcomeStatus,
+  purgeExpiredWelcomeStatuses,
 };

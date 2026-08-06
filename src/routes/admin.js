@@ -608,6 +608,8 @@ const {
   updateDraft,
   publish,
   backfill,
+  getStatusConfig,
+  updateStatusConfig,
 } = require('../controllers/admin/welcome');
 
 // Le compte officiel est unique et se crée sans aucune saisie. Sa création est
@@ -626,5 +628,8 @@ router.get('/welcome', adminAuth, superAdminAuth, getWelcome);
 router.put('/welcome/draft', adminAuth, superAdminAuth, updateDraft);
 router.post('/welcome/publish', adminAuth, superAdminAuth, publish);
 router.post('/welcome/backfill', adminAuth, superAdminAuth, backfill);
+// Statut de bienvenue : réglage global, appliqué sans publication.
+router.get('/welcome/status', adminAuth, superAdminAuth, getStatusConfig);
+router.put('/welcome/status', adminAuth, superAdminAuth, updateStatusConfig);
 
 module.exports = router;

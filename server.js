@@ -65,6 +65,7 @@ const { startAccountLifecycleSchedulers } = require('./src/controllers/accountLi
 const { initBroadcastCache, runNightlyDeliveryMaintenance } = require('./src/services/broadcastService');
 const { registerBroadcastJobHandlers } = require('./src/services/broadcastWorkers');
 const { registerWelcomeJobHandlers } = require('./src/services/welcomeWorkers');
+const { purgeExpiredWelcomeStatuses } = require('./src/services/welcomeService');
 const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
 const { startVerificationScheduler, stopVerificationScheduler } = require('./src/services/verificationScheduler');
 const { withLease } = require('./src/services/schedulerLease');
@@ -214,6 +215,12 @@ server.listen(PORT, () => {
   setInterval(() => {
     withLease('broadcast_nightly_purge', () => runNightlyDeliveryMaintenance()).catch(
       (e) => console.error('[Broadcast] nightly:', e.message),
+    );
+    // Sans cette purge, `statut` grossit d'une ligne par inscription et ne
+    // rétrécit jamais : l'app cesse d'afficher un statut expiré, mais rien ne
+    // le supprimait.
+    withLease('welcome_status_purge', () => purgeExpiredWelcomeStatuses()).catch(
+      (e) => console.error('[Welcome] purge statuts:', e.message),
     );
   }, 24 * 60 * 60 * 1000);
 });
