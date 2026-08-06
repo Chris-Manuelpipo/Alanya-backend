@@ -75,6 +75,20 @@ const estimateBroadcast = async (req, res) => {
   }
 };
 
+/** Couleur acceptée par l'app : `#RRGGBB` (cf. `_parseColor` du viewer). */
+function normalizeBackgroundColor(raw) {
+  if (raw == null) return null;
+  const v = String(raw).trim();
+  if (!v) return null;
+  const hex = v.startsWith('#') ? v.slice(1) : v;
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) {
+    const err = new Error('Couleur de fond invalide (#RRGGBB attendu)');
+    err.status = 400;
+    throw err;
+  }
+  return `#${hex.toUpperCase()}`;
+}
+
 const createBroadcast = async (req, res) => {
   try {
     const {
@@ -84,6 +98,7 @@ const createBroadcast = async (req, res) => {
       contentEn,
       type = 0,
       mediaUrl,
+      backgroundColor,
       criteria,
       clientId,
       estimate,
@@ -135,6 +150,9 @@ const createBroadcast = async (req, res) => {
       contentEn: contentEn != null ? String(contentEn).trim() : null,
       type: Number(type),
       mediaUrl: mediaUrl || null,
+      // Seul un statut porte une couleur de fond ; l'ignorer pour un message
+      // évite de stocker un réglage qui n'aurait aucun effet visible.
+      backgroundColor: kind === 1 ? normalizeBackgroundColor(backgroundColor) : null,
       criteria,
       clientId,
       estimate: estimate ?? count,
@@ -150,7 +168,9 @@ const createBroadcast = async (req, res) => {
     res.status(201).json(result);
   } catch (e) {
     console.error('[Admin] createBroadcast:', e.message);
-    res.status(500).json({ error: e.message || 'Erreur serveur' });
+    // Une saisie invalide (couleur mal formée) doit ressortir en 400, sans quoi
+    // l'admin voit « Erreur serveur » pour une faute qui est la sienne.
+    res.status(e.status || 500).json({ error: e.message || 'Erreur serveur' });
   }
 };
 

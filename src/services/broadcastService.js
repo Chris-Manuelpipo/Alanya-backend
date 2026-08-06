@@ -58,6 +58,7 @@ async function publishBroadcast({
   contentEn = null,
   type = 0,
   mediaUrl = null,
+  backgroundColor = null,
   criteria,
   clientId,
   estimate = 0,
@@ -75,6 +76,7 @@ async function publishBroadcast({
         contentEn,
         type,
         mediaUrl,
+        backgroundColor,
         criteria,
         clientId,
         estimate,
@@ -102,9 +104,9 @@ async function publishBroadcast({
     await conn.beginTransaction();
     const [ins] = await conn.execute(
       `INSERT INTO broadcast
-        (sender_id, created_by, kind, content, content_en, type, media_url, criteria, estimate,
-         client_id, status, sent_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'preparing', ?)`,
+        (sender_id, created_by, kind, content, content_en, type, media_url, background_color,
+         criteria, estimate, client_id, status, sent_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'preparing', ?)`,
       [
         senderId,
         createdBy,
@@ -113,6 +115,7 @@ async function publishBroadcast({
         contentEn,
         type,
         mediaUrl,
+        backgroundColor,
         JSON.stringify(resolvedCriteria),
         estimate || count,
         clientId,
@@ -127,10 +130,10 @@ async function publishBroadcast({
       // La colonne du texte s'appelle `text`, pas `content` (migration 001).
       // Même gabarit que statutController.createStatus.
       const [st] = await conn.execute(
-        `INSERT INTO statut (alanyaID, type, text, text_en, mediaUrl, createdAt, expiredAt,
-                             viewedBy, likedBy)
-         VALUES (?, ?, ?, ?, ?, NOW(), ?, 0, 0)`,
-        [senderId, type, content ?? '', contentEn ?? null, mediaUrl, expiredAt],
+        `INSERT INTO statut (alanyaID, type, text, text_en, mediaUrl, backgroundColor,
+                             createdAt, expiredAt, viewedBy, likedBy)
+         VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, 0, 0)`,
+        [senderId, type, content ?? '', contentEn ?? null, mediaUrl, backgroundColor, expiredAt],
       );
       statutId = st.insertId;
       await conn.execute('UPDATE broadcast SET statut_id = ? WHERE id = ?', [statutId, broadcastId]);
@@ -630,6 +633,7 @@ function mapBroadcastRow(row) {
     contentEn: row.content_en ?? null,
     type: row.type,
     mediaUrl: row.media_url,
+    backgroundColor: row.background_color,
     criteria,
     estimate: row.estimate,
     clientId: row.client_id,
