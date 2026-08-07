@@ -47,6 +47,7 @@ const {
 const {
   callUser, answerCall, rejectCall, iceCandidate, endCall,
   addParticipant, cancelAddParticipant, confJoin, confReject,
+  confReady,
   createGroupCall, joinGroupCall, leaveGroupCall, endGroupCall,
   groupOffer, groupAnswer, groupIceCandidate,
   callMuteState, groupMuteState, callVideoState, groupVideoState, callRejoin,
@@ -147,6 +148,7 @@ io.on('connection', (socket) => {
   cancelAddParticipant(io, socket, userSockets);
   confJoin(io, socket, userSockets);
   confReject(io, socket, userSockets);
+  confReady(io, socket, userSockets);
   createGroupCall(io, socket, userSockets);
   joinGroupCall(io, socket, userSockets);
   leaveGroupCall(io, socket, userSockets);

@@ -568,8 +568,23 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
   }
 };
 
-const notifyIncomingCall = async (idReceiver, callerID, callerName, callerPhoto, isVideo, callId) => {
-  await sendCallToUser(idReceiver, {
+/**
+ * Push d'appel entrant (1-à-1 ou invitation conférence).
+ *
+ * Pour une conférence / transfert, passer extras :
+ *   { roomId, sessionId, sessionKind: 'conference', mode: 'join'|'transfer' }
+ * Les appels 1-à-1 n'envoient pas ces champs (rétrocompat).
+ */
+const notifyIncomingCall = async (
+  idReceiver,
+  callerID,
+  callerName,
+  callerPhoto,
+  isVideo,
+  callId,
+  extras = null,
+) => {
+  const payload = {
     type:       'call',
     title:      callerName || 'Appel entrant',
     body:       `${callerName || 'Quelqu\'un'} vous appelle`,
@@ -578,7 +593,22 @@ const notifyIncomingCall = async (idReceiver, callerID, callerName, callerPhoto,
     photo:      String(callerPhoto ?? ''),
     isVideo:    String(isVideo ?? false),
     callId:     String(callId ?? ''),
-  });
+  };
+  if (extras && typeof extras === 'object') {
+    if (extras.roomId != null && extras.roomId !== '') {
+      payload.roomId = String(extras.roomId);
+    }
+    if (extras.sessionId != null && extras.sessionId !== '') {
+      payload.sessionId = String(extras.sessionId);
+    }
+    if (extras.sessionKind != null && extras.sessionKind !== '') {
+      payload.sessionKind = String(extras.sessionKind);
+    }
+    if (extras.mode != null && extras.mode !== '') {
+      payload.mode = String(extras.mode);
+    }
+  }
+  await sendCallToUser(idReceiver, payload);
 };
 
 const notifyGroupCall = async (targetUserIds = [], callerID, callerName, callerPhoto, isVideo, roomId) => {
