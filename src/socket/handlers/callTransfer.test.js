@@ -185,7 +185,101 @@ function twoWay() {
   assert.ok(rem);
   assert.strictEqual(rem.transfer.state, 'cancelled');
 
+  // ── Handler Socket confReady → armed → auto-leave (fake timers) ────────────
+  reset();
+  twoWay();
+  const s7 = callSessions.openWithPending({
+    originCallId: 77,
+    participants: [CHRIS, AWA],
+    inviteeId: NADIA,
+    byUserId: CHRIS,
+    mode: 'transfer',
+  });
+  callSessions.promotePending(s7.sessionId);
+  callState.setInCall(NADIA, { peerId: CHRIS, callId: s7.sessionId });
+
+  const io7 = fakeIo();
+  const scheduled = [];
+  const realSetTimeout = global.setTimeout;
+  const realClearTimeout = global.clearTimeout;
+  // N'intercepter que les timers transfert ; laisser passer le reste (pool MySQL, etc.).
+  global.setTimeout = (fn, ms, ...args) => {
+    if (
+      ms === callSessions.TRANSFER_AUTO_LEAVE_MS ||
+      ms === callSessions.TRANSFER_READY_TIMEOUT_MS
+    ) {
+      const handle = { fn, ms, cleared: false };
+      scheduled.push(handle);
+      return handle;
+    }
+    return realSetTimeout(fn, ms, ...args);
+  };
+  global.clearTimeout = (handle) => {
+    if (handle && typeof handle === 'object' && 'cleared' in handle) {
+      handle.cleared = true;
+      return;
+    }
+    return realClearTimeout(handle);
+  };
+
+  try {
+    const { confReady } = require('./calls');
+    const handlers = {};
+    const fakeSocket = {
+      authenticated: true,
+      alanyaID: AWA,
+      on(event, fn) {
+        handlers[event] = fn;
+      },
+    };
+    confReady(io7, fakeSocket, null);
+    assert.ok(typeof handlers.call_conf_ready === 'function');
+
+    handlers.call_conf_ready({
+      sessionId: s7.sessionId,
+      peerId: String(NADIA),
+    });
+
+    assert.ok(
+      io7.eventsFor(CHRIS).includes('call_transfer_armed'),
+      'initiateur reçoit call_transfer_armed',
+    );
+    const armed = callSessions.get(s7.sessionId);
+    assert.strictEqual(armed.transfer.state, 'armed');
+
+    const leaveHandles = scheduled.filter(
+      (h) => h.ms === callSessions.TRANSFER_AUTO_LEAVE_MS && !h.cleared,
+    );
+    assert.strictEqual(leaveHandles.length, 1, 'un seul leaveTimer');
+
+    // Le callback setTimeout lance onTransferAutoLeave en fire-and-forget :
+    // callState.clear arrive avant les emits (après await closeSessionHistoryFor).
+    leaveHandles[0].fn();
+    for (let i = 0; i < 120; i++) {
+      if (io7.eventsFor(AWA).includes('call_conf_left')) break;
+      await new Promise((r) => realSetTimeout(r, 25));
+    }
+
+    assert.strictEqual(callState.get(CHRIS), 'idle', 'initiateur retiré');
+    assert.strictEqual(callState.get(AWA), 'in_call');
+    assert.strictEqual(callState.get(NADIA), 'in_call');
+    assert.ok(io7.eventsFor(AWA).includes('call_conf_left'));
+    assert.ok(io7.eventsFor(NADIA).includes('call_conf_left'));
+    assert.ok(
+      io7.eventsFor(CHRIS).includes('call_transfer_done'),
+      'call_transfer_done à l\'initiateur',
+    );
+    assert.ok(
+      io7.eventsFor(CHRIS).includes('call_ended'),
+      'call_ended à l\'initiateur (CallKit)',
+    );
+  } finally {
+    global.setTimeout = realSetTimeout;
+    global.clearTimeout = realClearTimeout;
+  }
+
   console.log('✅ callTransfer.test.js — tous les cas passent');
+  process.exit(0);
 })().catch((err) => {
   console.error(err);
   process.exit(1);

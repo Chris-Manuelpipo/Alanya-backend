@@ -569,14 +569,11 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
 };
 
 /**
- * Push d'appel entrant (1-à-1 ou invitation conférence).
- *
- * Pour une conférence / transfert, passer extras :
- *   { roomId, sessionId, sessionKind: 'conference', mode: 'join'|'transfer' }
- * Les appels 1-à-1 n'envoient pas ces champs (rétrocompat).
+ * Construit le data payload FCM/CallKit d'un appel entrant.
+ * Extras optionnels pour les invitations conférence / transfert.
+ * Exposé pour les tests de contrat (sans I/O réseau).
  */
-const notifyIncomingCall = async (
-  idReceiver,
+const buildIncomingCallPayload = (
   callerID,
   callerName,
   callerPhoto,
@@ -608,7 +605,29 @@ const notifyIncomingCall = async (
       payload.mode = String(extras.mode);
     }
   }
-  await sendCallToUser(idReceiver, payload);
+  return payload;
+};
+
+/**
+ * Push d'appel entrant (1-à-1 ou invitation conférence).
+ *
+ * Pour une conférence / transfert, passer extras :
+ *   { roomId, sessionId, sessionKind: 'conference', mode: 'join'|'transfer' }
+ * Les appels 1-à-1 n'envoient pas ces champs (rétrocompat).
+ */
+const notifyIncomingCall = async (
+  idReceiver,
+  callerID,
+  callerName,
+  callerPhoto,
+  isVideo,
+  callId,
+  extras = null,
+) => {
+  await sendCallToUser(
+    idReceiver,
+    buildIncomingCallPayload(callerID, callerName, callerPhoto, isVideo, callId, extras),
+  );
 };
 
 const notifyGroupCall = async (targetUserIds = [], callerID, callerName, callerPhoto, isVideo, roomId) => {
@@ -737,6 +756,7 @@ module.exports = {
   sendToUserLegacy,
   notifyNewMessage,
   notifyIncomingCall,
+  buildIncomingCallPayload,
   notifyGroupCall,
   notifyStatusView,
   notifyQrContactScanned,
