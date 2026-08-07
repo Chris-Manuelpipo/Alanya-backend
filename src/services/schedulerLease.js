@@ -19,6 +19,13 @@ async function withLease(name, fn, ttlSeconds = 55) {
 }
 
 async function tryAcquire(name, ttlSeconds = 55) {
+  // Auto-création : l'UPDATE seul ne matche rien si le bail n'a jamais été
+  // semé — le scheduler ne tournerait alors JAMAIS, silencieusement (c'est
+  // arrivé à 'welcome_status_purge', absent du semis de la migration 039).
+  await pool.execute(
+    'INSERT IGNORE INTO scheduler_leases (name) VALUES (?)',
+    [name],
+  );
   const [res] = await pool.execute(
     `UPDATE scheduler_leases
      SET locked_by = ?, locked_until = DATE_ADD(NOW(), INTERVAL ? SECOND)

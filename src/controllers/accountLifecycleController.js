@@ -7,6 +7,7 @@ const { loadUserPrivacyPrefs } = require('../services/privacyPrefsService');
 const { loadUserAppSettings } = require('../services/appSettingsService');
 const { loadUserDndSchedule } = require('../services/dndScheduleService');
 const { loadUserNotificationPrefs } = require('../notifications/notificationPrefs');
+const { withLease } = require('../services/schedulerLease');
 const {
   EXPORT_JOB_STATUS,
   exportStatusFromDb,
@@ -303,13 +304,22 @@ const cleanupExpiredExports = async () => {
 };
 
 const startAccountLifecycleSchedulers = () => {
+  // Sous bail : en multi-instances, une seule exécute la purge des comptes et
+  // le nettoyage des exports (DELETE users + fs.unlink concurrents sinon).
+  // TTL 300 s : une purge peut dépasser la minute sur un gros lot.
   const tick = () => {
-    purgeExpiredAccounts().catch((e) =>
-      console.error('[AccountDeletion] purge error:', e.message),
-    );
-    cleanupExpiredExports().catch((e) =>
-      console.error('[ExportCleanup] error:', e.message),
-    );
+    withLease(
+      'account_lifecycle',
+      async () => {
+        await purgeExpiredAccounts().catch((e) =>
+          console.error('[AccountDeletion] purge error:', e.message),
+        );
+        await cleanupExpiredExports().catch((e) =>
+          console.error('[ExportCleanup] error:', e.message),
+        );
+      },
+      300,
+    ).catch((e) => console.error('[AccountLifecycle] lease error:', e.message));
   };
   tick();
   return setInterval(tick, 60 * 60 * 1000);

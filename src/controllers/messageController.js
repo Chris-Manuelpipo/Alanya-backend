@@ -140,37 +140,48 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
       'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
       [conversationID, senderID]
     );
-    for (const p of participants) {
-      io.to(`user_${p.alanyaID}`).emit('message:received', msg);
+    if (participants.length > 0) {
+      // Forme tableau : une seule émission, encodage unique du payload.
+      io.to(participants.map((p) => `user_${p.alanyaID}`))
+        .emit('message:received', msg);
     }
     _emitSenderAck(req, senderID, msg);
   }
 
-  const [sender] = await pool.execute(
-    'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
-  );
-  const senderName = sender[0]?.nom ?? 'Talky';
+  // Fan-out FCM hors du cycle de la réponse HTTP (le chemin socket fait déjà
+  // pareil via setImmediate) : le client ne doit pas attendre N envois push
+  // avant de recevoir son 200, et la connexion pool est libérée tout de suite.
+  setImmediate(async () => {
+    try {
+      const [sender] = await pool.execute(
+        'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
+      );
+      const senderName = sender[0]?.nom ?? 'Talky';
 
-  const [convRows] = await pool.execute(
-    'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
-    [conversationID]
-  );
-  const conv = convRows[0] ?? {};
-  await notifyNewMessage(conversationID, senderID, senderName, {
-    content,
-    mediaName,
-    type,
-    isViewOnce,
-    isGroup: !!conv.isGroup,
-    groupName: conv.GroupName ?? '',
-    mentions,
-    // Sans eux, `stringifyData` les retirait du payload (clés undefined) : la
-    // push d'une réponse rapide partait sans msgID, et la déduplication client
-    // retombait sur `eventId`, régénéré à chaque envoi — donc inopérante. Le
-    // chemin socket les transmet depuis toujours.
-    msgID: msg.msgID,
-    clientId: msg.clientID ?? msg.clientId ?? null,
-  }, io);
+      const [convRows] = await pool.execute(
+        'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
+        [conversationID]
+      );
+      const conv = convRows[0] ?? {};
+      await notifyNewMessage(conversationID, senderID, senderName, {
+        content,
+        mediaName,
+        type,
+        isViewOnce,
+        isGroup: !!conv.isGroup,
+        groupName: conv.GroupName ?? '',
+        mentions,
+        // Sans eux, `stringifyData` les retirait du payload (clés undefined) : la
+        // push d'une réponse rapide partait sans msgID, et la déduplication client
+        // retombait sur `eventId`, régénéré à chaque envoi — donc inopérante. Le
+        // chemin socket les transmet depuis toujours.
+        msgID: msg.msgID,
+        clientId: msg.clientID ?? msg.clientId ?? null,
+      }, io);
+    } catch (e) {
+      console.error('[FCM] fan-out HTTP échoué:', e.message);
+    }
+  });
 };
 
 const _persistMessage = async (conn, conversationID, senderID, fields) => {

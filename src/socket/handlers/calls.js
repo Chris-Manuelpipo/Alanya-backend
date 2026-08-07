@@ -212,7 +212,37 @@ function createRoomState(isVideo, callerID, callerInfo) {
   if (callerID != null) {
     participants.set(callerID, callerInfo);
   }
-  return { isVideo: !!isVideo, participants };
+  // ownerID : seul l'organisateur peut terminer l'appel pour tout le monde
+  // (end_group_call). null si la room a été créée par un join tardif.
+  return { isVideo: !!isVideo, participants, ownerID: callerID ?? null };
+}
+
+/**
+ * Nettoyage à la déconnexion : retire l'utilisateur de sa room d'appel de
+ * groupe. Sans lui, chaque crash/kill d'app en plein appel laissait une entrée
+ * `groupRooms` immortelle (fuite mémoire) et un participant fantôme qui finit
+ * par rendre la room « complète » — et les autres membres n'apprenaient jamais
+ * le départ.
+ */
+function cleanupGroupRoomOnDisconnect(io, socket) {
+  const rId = socket.currentGroupRoom;
+  if (!rId) return;
+  try {
+    const room = groupRooms.get(rId);
+    const participants = getRoomParticipants(room);
+    if (participants && socket.alanyaID != null) {
+      participants.delete(socket.alanyaID);
+      if (participants.size === 0) groupRooms.delete(rId);
+    }
+    socket.to(`group_${rId}`).emit('group_user_left', {
+      roomId: rId,
+      userId: String(socket.alanyaID),
+    });
+  } catch (e) {
+    console.warn('[Socket disconnect] group room cleanup failed:', e.message);
+  } finally {
+    socket.currentGroupRoom = null;
+  }
 }
 
 /**
@@ -1230,6 +1260,7 @@ const joinGroupCall = (io, socket, userSockets) => {
 const leaveGroupCall = (io, socket, userSockets) => {
   socket.on('leave_group_call', (data) => {
     try {
+      if (!socket.authenticated) return;
       const { roomId } = data || {};
       const room = roomId ? groupRooms.get(roomId) : null;
       const participants = getRoomParticipants(room);
@@ -1258,9 +1289,22 @@ const leaveGroupCall = (io, socket, userSockets) => {
 const endGroupCall = (io, socket, userSockets) => {
   socket.on('end_group_call', (data) => {
     try {
+      // Terminer l'appel pour TOUT le monde est réservé à l'organisateur
+      // (ou, si la room n'a pas d'organisateur connu, à un participant).
+      // Sans ces gardes, n'importe quelle socket — même non authentifiée —
+      // pouvait tuer un appel de groupe en devinant son roomId.
+      if (!socket.authenticated) return;
       const { roomId } = data || {};
       const rId = roomId || socket.currentGroupRoom;
       if (!rId) return;
+
+      const room = groupRooms.get(rId);
+      if (room) {
+        const isOwner =
+          room.ownerID != null && Number(room.ownerID) === Number(socket.alanyaID);
+        const isParticipant = !!getRoomParticipants(room)?.has(socket.alanyaID);
+        if (!isOwner && !(room.ownerID == null && isParticipant)) return;
+      }
 
       groupRooms.delete(rId);
       io.to(`group_${rId}`).emit('group_call_ended', {});
@@ -1488,6 +1532,7 @@ module.exports = {
   joinGroupCall,
   leaveGroupCall,
   endGroupCall,
+  cleanupGroupRoomOnDisconnect,
   groupOffer,
   groupAnswer,
   groupIceCandidate,

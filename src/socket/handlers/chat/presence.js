@@ -3,7 +3,7 @@ const { emitPresenceUpdate } = require('../../../utils/blockUtils');
 const pendingCalls = require('../../state/pendingCalls');
 const meetingMuteStates = require('../../state/meetingMuteStates');
 const callState = require('../../state/callState');
-const { endActiveCallForUser } = require('../calls');
+const { endActiveCallForUser, cleanupGroupRoomOnDisconnect } = require('../calls');
 const {
   unregisterUserSocket,
   hasForegroundSocket,
@@ -11,9 +11,9 @@ const {
 
 /**
  * Dernier état diffusé par utilisateur, pour ne pas réécrire en base ni
- * rediffuser quand rien n'a changé. `emitPresenceUpdate` fait un `io.emit`
- * global : sans ce garde-fou, chaque bascule d'app d'un seul utilisateur
- * inonderait tous les clients connectés.
+ * rediffuser quand rien n'a changé. `emitPresenceUpdate` cible désormais les
+ * seuls co-participants/contacts, mais chaque diffusion coûte quand même
+ * 2-3 requêtes : ce garde-fou reste nécessaire.
  */
 const _lastBroadcast = new Map();
 
@@ -128,6 +128,10 @@ const handleDisconnect = async (io, socket, userSockets) => {
   if (lastSocket) {
     pendingCalls.markUndelivered(userID);
   }
+
+  // Appel de groupe : symétrique du bloc meetings ci-dessous. Sans lui, un
+  // crash d'app en plein appel laissait un participant fantôme à vie.
+  cleanupGroupRoomOnDisconnect(io, socket);
 
   const meetingID = socket.currentMeetingID;
   if (meetingID) {

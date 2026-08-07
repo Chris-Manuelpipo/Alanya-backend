@@ -224,6 +224,7 @@ const meetingChat = (io, socket, userSockets) => {
 const meetingLeave = (io, socket, userSockets) => {
   socket.on('meeting:leave', (data) => {
     try {
+      if (!socket.authenticated) return;
       const meetingID = data?.meetingID || socket.currentMeetingID;
       if (!meetingID) return;
 

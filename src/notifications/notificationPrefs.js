@@ -26,6 +26,29 @@ const loadUserNotificationPrefs = async (alanyaID) => {
   }
 };
 
+/**
+ * Préférences de plusieurs utilisateurs en une seule requête.
+ * @returns {Promise<Map<number, object>>} alanyaID → prefs (défauts si absent)
+ */
+const loadUserNotificationPrefsMany = async (alanyaIDs = []) => {
+  const map = new Map();
+  const ids = [...new Set(alanyaIDs.map(Number))].filter(Number.isInteger);
+  for (const id of ids) map.set(id, { ...DEFAULT_PREFS });
+  if (ids.length === 0) return map;
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM user_notification_prefs WHERE alanyaID IN (?)',
+      [ids],
+    );
+    for (const row of rows) {
+      map.set(Number(row.alanyaID), { ...DEFAULT_PREFS, ...row });
+    }
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
+  return map;
+};
+
 const upsertUserNotificationPrefs = async (alanyaID, patch = {}) => {
   const current = await loadUserNotificationPrefs(alanyaID);
   const next = { ...current, ...patch };
@@ -76,6 +99,35 @@ const loadConversationMute = async (conversationId, alanyaID) => {
   }
 };
 
+const DEFAULT_MUTE = Object.freeze({ mutedUntil: null, muteForever: 0, mentionsOnly: 0 });
+
+/**
+ * Sourdines de plusieurs participants d'une conversation en une requête.
+ * @returns {Promise<Map<number, object>>} alanyaID → ligne mute (défauts si absente)
+ */
+const loadConversationMuteMany = async (conversationId, alanyaIDs = []) => {
+  const map = new Map();
+  const ids = [...new Set(alanyaIDs.map(Number))].filter(Number.isInteger);
+  for (const id of ids) map.set(id, { ...DEFAULT_MUTE });
+  if (ids.length === 0) return map;
+  try {
+    const [rows] = await pool.query(
+      'SELECT alanyaID, mutedUntil, muteForever, mentionsOnly FROM conv_participants WHERE conversID = ? AND alanyaID IN (?)',
+      [conversationId, ids],
+    );
+    for (const row of rows) {
+      map.set(Number(row.alanyaID), {
+        mutedUntil: row.mutedUntil,
+        muteForever: row.muteForever,
+        mentionsOnly: row.mentionsOnly,
+      });
+    }
+  } catch (e) {
+    if (e.code !== 'ER_BAD_FIELD_ERROR') throw e;
+  }
+  return map;
+};
+
 const isConversationMuted = (muteRow) => {
   if (muteRow?.muteForever) return true;
   if (!muteRow?.mutedUntil) return false;
@@ -100,8 +152,10 @@ const applyPreviewPolicy = (prefs, { title, body, senderName, isGroup }) => {
 module.exports = {
   DEFAULT_PREFS,
   loadUserNotificationPrefs,
+  loadUserNotificationPrefsMany,
   upsertUserNotificationPrefs,
   loadConversationMute,
+  loadConversationMuteMany,
   isConversationMuted,
   applyPreviewPolicy,
 };

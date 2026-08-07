@@ -8,14 +8,30 @@ const pool = mysql.createPool({
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
   waitForConnections: true,
-  // Après réduction SQL message:send, 15–20 est raisonnable sous charge.
-  connectionLimit: Number(process.env.DB_POOL_SIZE) || 10,
-  queueLimit: 0, 
+  connectionLimit: Number(process.env.DB_POOL_SIZE) || 25,
+  // File d'attente bornée : sous saturation on veut échouer vite (erreur explicite)
+  // plutôt qu'empiler des requêtes en mémoire avec une latence infinie.
+  queueLimit: Number(process.env.DB_QUEUE_LIMIT) || 200,
+  connectTimeout: 10000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000,
+  // Pas de maxIdle/idleTimeout : maxIdle < connectionLimit fait démarrer un
+  // setInterval interne dans mysql2 qui empêche tout script one-shot (tests,
+  // scripts/) de se terminer naturellement.
   timezone: 'Z',
 });
- 
+
 pool.on('connection', (conn) => {
-  conn.query("SET time_zone = '+00:00'");
+  // `connection` expose la connexion callback sous-jacente (pas l'API promesse).
+  // max_execution_time (ms) ne s'applique qu'aux SELECT : garde-fou contre une
+  // requête de lecture pathologique qui monopoliserait une connexion.
+  conn.query("SET time_zone = '+00:00', SESSION max_execution_time = 5000", (e) => {
+    if (e) console.error('[DB pool] init connexion échouée:', e.message);
+  });
+});
+
+pool.on('error', (e) => {
+  console.error('[DB pool] erreur:', e.code, e.message);
 });
 
 module.exports = pool;

@@ -16,6 +16,11 @@ const { DEVICE_REGISTRY_V2, ANDROID_NATIVE_V2, IOS_RICH_NSE, IOS_VOIP_V2 } = req
 const { resolvePushTargets, resolveCallPushTargets } = require('../notifications/pushDeviceRegistry');
 const { sendVoipPush, clearVoipToken, isConfigured: isVoipConfigured } = require('../notifications/apnsVoipProvider');
 const { evaluateMessagePush, evaluateTypePush } = require('../notifications/notificationFilter');
+const {
+  loadUserNotificationPrefsMany,
+  loadConversationMuteMany,
+} = require('../notifications/notificationPrefs');
+const { loadUserDndScheduleMany } = require('./dndScheduleService');
 const { shouldUseAndroidNativeDataOnly } = require('../notifications/notificationAndroidNative');
 const { shouldUseDeviceRegistry } = require('../notifications/notificationRouting');
 
@@ -288,6 +293,11 @@ const sendToUserLegacy = async (alanyaID, data = {}, options = {}) => {
 
 const MAX_PUSH_CONCURRENCY = 5;
 
+// Nombre de destinataires traités en parallèle par notifyNewMessage : borne le
+// pic de connexions DB / d'appels FCM tout en supprimant la latence cumulée
+// d'un fan-out strictement séquentiel.
+const FANOUT_CONCURRENCY = Number(process.env.PUSH_FANOUT_CONCURRENCY || 10);
+
 /**
  * Envoie à tous les appareils enregistrés (skip foreground+conv active récent).
  */
@@ -469,15 +479,34 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
       [conversationID, senderID]
     );
+    if (participants.length === 0) return;
     const pushOptions = getMessagePushOptions();
+    const recipientIds = participants.map((p) => Number(p.alanyaID));
 
-    for (const p of participants) {
-      const [unreadRows] = await pool.execute(
-        'SELECT COALESCE(SUM(unreadCount), 0) AS total FROM conv_participants WHERE alanyaID = ?',
-        [p.alanyaID],
-      );
-      const totalUnread = unreadRows[0]?.total ?? 0;
+    // Lectures en batch : la boucle unitaire exécutait ~4 requêtes séquentielles
+    // PAR destinataire (unread, prefs, DND, mute) — soit ~800 requêtes pour un
+    // groupe de 200. Ici : 4 requêtes au total, quel que soit l'effectif.
+    const [
+      unreadRows,
+      prefsMap,
+      dndMap,
+      muteMap,
+    ] = await Promise.all([
+      pool
+        .query(
+          'SELECT alanyaID, COALESCE(SUM(unreadCount), 0) AS total FROM conv_participants WHERE alanyaID IN (?) GROUP BY alanyaID',
+          [recipientIds],
+        )
+        .then(([rows]) => rows),
+      loadUserNotificationPrefsMany(recipientIds),
+      loadUserDndScheduleMany(recipientIds),
+      loadConversationMuteMany(conversationID, recipientIds),
+    ]);
+    const unreadMap = new Map(
+      unreadRows.map((r) => [Number(r.alanyaID), Number(r.total) || 0]),
+    );
 
+    const notifyOne = async (recipientId) => {
       let payload = buildMessagePayload({
         msgID,
         clientId,
@@ -490,15 +519,20 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
         isGroup,
         groupName,
         groupAvatar,
-        unreadTotal: totalUnread,
+        unreadTotal: unreadMap.get(recipientId) ?? 0,
       });
 
-      const mentioned = isMentioned(mentionList, p.alanyaID, senderID);
+      const mentioned = isMentioned(mentionList, recipientId, senderID);
       payload = { ...payload, mentioned: mentioned ? '1' : '0' };
 
-      const decision = await evaluateMessagePush(p.alanyaID, conversationID, payload, {
+      const decision = await evaluateMessagePush(recipientId, conversationID, payload, {
         isGroup,
         isMentioned: mentioned,
+        preloaded: {
+          prefs: prefsMap.get(recipientId),
+          dnd: dndMap.get(recipientId),
+          mute: muteMap.get(recipientId),
+        },
       });
       if (!decision.allowed) {
         logSkipped({
@@ -506,14 +540,28 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
           eventId: payload.eventId,
           msgID: payload.msgID,
           conversationId: String(conversationID),
-          userId: p.alanyaID,
+          userId: recipientId,
           reason: decision.reason,
         });
-        continue;
+        return;
       }
       payload = decision.payload;
 
-      await sendToUser(p.alanyaID, payload, pushOptions);
+      await sendToUser(recipientId, payload, pushOptions);
+    };
+
+    // Envois par vagues bornées : plus de latence cumulée séquentielle
+    // (200 allers-retours FCM en série ≈ 40 s), sans pour autant noyer le
+    // pool DB ni l'API FCM.
+    for (let i = 0; i < recipientIds.length; i += FANOUT_CONCURRENCY) {
+      const wave = recipientIds.slice(i, i + FANOUT_CONCURRENCY);
+      await Promise.all(
+        wave.map((id) =>
+          notifyOne(id).catch((e) =>
+            console.error(`[FCM] notifyNewMessage destinataire=${id}:`, e.message),
+          ),
+        ),
+      );
     }
   } catch (error) {
     console.error('[FCM] notifyNewMessage error:', error.message);

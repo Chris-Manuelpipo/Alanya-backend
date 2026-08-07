@@ -31,8 +31,10 @@ const notifyMessageStatus = async (io, conversationID, status, byUserID, extra =
       participants = rows;
       setCachedParticipants(conversationID, byUserID, participants);
     }
-    for (const p of participants) {
-      io.to(`user_${p.alanyaID}`).emit('message:status', payload);
+    if (participants.length > 0) {
+      // Forme tableau : une seule émission, encodage unique du payload.
+      io.to(participants.map((p) => `user_${p.alanyaID}`))
+        .emit('message:status', payload);
     }
   } catch (e) {
     console.warn('[notifyMessageStatus] failed:', e.message);

@@ -38,6 +38,29 @@ const loadUserDndSchedule = async (alanyaID) => {
   }
 };
 
+/**
+ * Créneaux DND de plusieurs utilisateurs en une seule requête.
+ * @returns {Promise<Map<number, object>>} alanyaID → schedule (défauts si absent)
+ */
+const loadUserDndScheduleMany = async (alanyaIDs = []) => {
+  const map = new Map();
+  const ids = [...new Set(alanyaIDs.map(Number))].filter(Number.isInteger);
+  for (const id of ids) map.set(id, { ...DEFAULT_DND });
+  if (ids.length === 0) return map;
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM user_dnd_schedule WHERE alanyaID IN (?)',
+      [ids],
+    );
+    for (const row of rows) {
+      map.set(Number(row.alanyaID), { ...DEFAULT_DND, ...row });
+    }
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
+  return map;
+};
+
 const upsertUserDndSchedule = async (alanyaID, patch = {}) => {
   const current = await loadUserDndSchedule(alanyaID);
   const next = { ...current, ...patch };
@@ -117,6 +140,7 @@ const isDndActive = (schedule, now = new Date()) => {
 module.exports = {
   DEFAULT_DND,
   loadUserDndSchedule,
+  loadUserDndScheduleMany,
   upsertUserDndSchedule,
   isDndActive,
   _formatTime,

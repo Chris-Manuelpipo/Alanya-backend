@@ -139,12 +139,29 @@ async function emitConversationUpdated(io, conversID) {
 // `scoreDirectConversation` et `dedupeDirectConversations` vivent désormais dans
 // utils/directConversation.js, avec la résolution des conversations 1-1.
 
+// Matérialisations de diffusions en vol, par utilisateur : évite d'empiler des
+// transactions (FOR UPDATE sur `users`) quand un client rafraîchit en rafale.
+const _materializingUsers = new Set();
+const _triggerMaterialize = (alanyaID, localeHint) => {
+  if (_materializingUsers.has(alanyaID)) return;
+  _materializingUsers.add(alanyaID);
+  setImmediate(() => {
+    materializeForUser(alanyaID, { locale: localeHint })
+      .catch((e) => console.error('[broadcast] materializeForUser échoué:', e.message))
+      .finally(() => _materializingUsers.delete(alanyaID));
+  });
+};
+
 // Récupère la liste des conversations de l'utilisateur connecté, avec les infos des participants et les métadonnées de la conversation
 const getConversations = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
     const localeHint = req.query.locale || req.headers['accept-language'];
-    await materializeForUser(alanyaID, { locale: localeHint });
+    // Hors du chemin de la réponse : après une diffusion, des milliers de
+    // clients ouvrent l'app en même temps — chacun ouvrait ici une transaction
+    // sur un pool partagé avant de recevoir sa liste. Les conversations
+    // matérialisées arrivent au rafraîchissement suivant / via socket.
+    _triggerMaterialize(alanyaID, localeHint);
     const [rows] = await pool.execute(
       `SELECT c.*, ${CP_VIEWER_FIELDS},
               COALESCE(c.message_count, 0) AS messageCount

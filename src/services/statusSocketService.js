@@ -25,10 +25,9 @@ const getAudienceForAuthor = async (authorID) => {
 };
 
 const emitToUsers = (io, userIDs, event, payload) => {
-  if (!io || !Array.isArray(userIDs)) return;
-  for (const uid of userIDs) {
-    io.to(`user_${uid}`).emit(event, payload);
-  }
+  if (!io || !Array.isArray(userIDs) || userIDs.length === 0) return;
+  // Forme tableau : une seule émission, encodage unique du payload.
+  io.to(userIDs.map((uid) => `user_${uid}`)).emit(event, payload);
 };
 
 const emitToUser = (io, userID, event, payload) => {

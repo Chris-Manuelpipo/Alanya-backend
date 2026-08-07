@@ -60,8 +60,7 @@ function buildDirectConversationLookup({ meId, peerId }) {
             AND cp1.id <> cp2.id
             AND c.isGroup = 0
             AND (c.GroupName IS NULL OR c.GroupName <> ?)
-          ORDER BY (SELECT COUNT(*) FROM message m
-                    WHERE m.conversationID = c.conversID AND m.isDeleted = 0) DESC,
+          ORDER BY COALESCE(c.message_count, 0) DESC,
                    c.lastMessageAt DESC, c.conversID DESC
           LIMIT 1`,
     params: [me, peer, SELF_CHAT_MARKER],

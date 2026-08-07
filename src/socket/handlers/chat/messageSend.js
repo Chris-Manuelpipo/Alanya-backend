@@ -287,8 +287,11 @@ const messageSend = (io, socket) => {
       if (!silentDrop) {
         const participants = await loadParticipantsExcept(conversationID, senderID);
 
-        for (const p of participants) {
-          io.to(`user_${p.alanyaID}`).emit('message:received', payload);
+        if (participants.length > 0) {
+          // Forme tableau : une seule émission, le payload n'est encodé qu'une fois
+          // (la boucle unitaire le sérialisait N fois sur l'event loop).
+          io.to(participants.map((p) => `user_${p.alanyaID}`))
+            .emit('message:received', payload);
         }
         logMsgPath(clientId, 'recipient_emit', t0);
 

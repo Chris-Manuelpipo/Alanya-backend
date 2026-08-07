@@ -135,8 +135,9 @@ async function postSystemMessage({
         const id = parseInt(extra, 10);
         if (Number.isInteger(id) && id > 0) targets.add(id);
       }
-      for (const id of targets) {
-        io.to(`user_${id}`).emit('message:received', msg);
+      if (targets.size > 0) {
+        // Forme tableau : une seule émission, encodage unique du payload.
+        io.to([...targets].map((id) => `user_${id}`)).emit('message:received', msg);
       }
     }
 
