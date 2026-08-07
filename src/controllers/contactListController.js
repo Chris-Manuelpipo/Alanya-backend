@@ -1,7 +1,7 @@
 const pool = require('../config/db');
 const { maskPresenceIfBlocked } = require('../utils/blockUtils');
 const { sanitizeUrl } = require('../services/contactService');
-const { ensureDefaultContactLists } = require('../utils/defaultContactLists');
+const { ensureDefaultContactLists, KIND_ORDER_SQL, isSystemListKind } = require('../utils/defaultContactLists');
 
 // Listes de contacts (Famille / Amis / Bureau…) — CRUD des listes et de leurs
 // membres. Tout est scopé au propriétaire (`req.user.alanyaID`) : une liste
@@ -31,7 +31,7 @@ const parseListId = (raw) => {
 // côtés) pour ne pas révéler l'existence des listes d'autrui.
 const findOwnedList = async (idList, alanyaID) => {
   const [rows] = await pool.execute(
-    'SELECT idList, alanyaID, name, color, member_limit, created_at FROM contact_list WHERE idList = ? AND alanyaID = ?',
+    'SELECT idList, alanyaID, name, kind, color, member_limit, created_at FROM contact_list WHERE idList = ? AND alanyaID = ?',
     [idList, alanyaID]
   );
   return rows[0] || null;
@@ -40,6 +40,7 @@ const findOwnedList = async (idList, alanyaID) => {
 const listRow = (r, memberCount = 0) => ({
   idList:      Number(r.idList),
   name:        r.name,
+  kind:        r.kind ?? null,
   color:       r.color,
   memberLimit: r.member_limit != null ? Number(r.member_limit) : null,
   memberCount: Number(memberCount) || 0,
@@ -56,6 +57,7 @@ const getLists = async (req, res) => {
       `SELECT
          cl.idList,
          cl.name,
+         cl.kind,
          cl.color,
          cl.member_limit,
          cl.created_at,
@@ -63,16 +65,8 @@ const getLists = async (req, res) => {
        FROM contact_list cl
        LEFT JOIN contact_list_member clm ON clm.idList = cl.idList
        WHERE cl.alanyaID = ?
-       GROUP BY cl.idList, cl.name, cl.color, cl.member_limit, cl.created_at
-       ORDER BY
-         CASE cl.name
-           WHEN 'Famille' THEN 1
-           WHEN 'Amis' THEN 2
-           WHEN 'Bureau' THEN 3
-           WHEN 'Confiance' THEN 4
-           ELSE 100
-         END,
-         cl.name ASC`,
+       GROUP BY cl.idList, cl.name, cl.kind, cl.color, cl.member_limit, cl.created_at
+       ORDER BY ${KIND_ORDER_SQL}, cl.name ASC`,
       [alanyaID]
     );
 
@@ -110,6 +104,7 @@ const createList = async (req, res) => {
     res.status(201).json({
       idList:      Number(result.insertId),
       name,
+      kind:        null,
       color,
       memberCount: 0,
     });
@@ -136,6 +131,16 @@ const updateList = async (req, res) => {
 
     const hasName  = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
     const hasColor = Object.prototype.hasOwnProperty.call(req.body || {}, 'color');
+
+    if (isSystemListKind(existing.kind) && hasName) {
+      const requested = cleanName(req.body.name);
+      if (requested !== existing.name) {
+        return res.status(403).json({
+          error: 'System list name cannot be changed',
+          code: 'SYSTEM_LIST_READONLY',
+        });
+      }
+    }
 
     const name  = hasName ? cleanName(req.body.name) : existing.name;
     const color = hasColor ? cleanColor(req.body.color) : existing.color;
