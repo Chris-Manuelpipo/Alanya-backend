@@ -17,6 +17,7 @@ const recoveryCode = require('../../services/recoveryCodeService');
 const { _buildUserMailFrom, _appName } = require('./helpers');
 const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
 const { guardDisplayNames } = require('../../utils/displayNameGuard');
+const { ensureDefaultContactLists } = require('../../utils/defaultContactLists');
 
 const SALT_ROUNDS = 10;
 
@@ -253,6 +254,8 @@ const createUser = async (req, res) => {
         recoveryEncrypted,
       ]
     );
+
+    await ensureDefaultContactLists(result.insertId);
 
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,

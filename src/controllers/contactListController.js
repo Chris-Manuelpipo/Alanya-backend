@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { maskPresenceIfBlocked } = require('../utils/blockUtils');
 const { sanitizeUrl } = require('../services/contactService');
+const { ensureDefaultContactLists } = require('../utils/defaultContactLists');
 
 // Listes de contacts (Famille / Amis / Bureau…) — CRUD des listes et de leurs
 // membres. Tout est scopé au propriétaire (`req.user.alanyaID`) : une liste
@@ -30,7 +31,7 @@ const parseListId = (raw) => {
 // côtés) pour ne pas révéler l'existence des listes d'autrui.
 const findOwnedList = async (idList, alanyaID) => {
   const [rows] = await pool.execute(
-    'SELECT idList, alanyaID, name, color, created_at FROM contact_list WHERE idList = ? AND alanyaID = ?',
+    'SELECT idList, alanyaID, name, color, member_limit, created_at FROM contact_list WHERE idList = ? AND alanyaID = ?',
     [idList, alanyaID]
   );
   return rows[0] || null;
@@ -40,6 +41,7 @@ const listRow = (r, memberCount = 0) => ({
   idList:      Number(r.idList),
   name:        r.name,
   color:       r.color,
+  memberLimit: r.member_limit != null ? Number(r.member_limit) : null,
   memberCount: Number(memberCount) || 0,
   createdAt:   r.created_at,
 });
@@ -48,19 +50,29 @@ const listRow = (r, memberCount = 0) => ({
 const getLists = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
+    await ensureDefaultContactLists(alanyaID);
 
     const [rows] = await pool.execute(
       `SELECT
          cl.idList,
          cl.name,
          cl.color,
+         cl.member_limit,
          cl.created_at,
          COUNT(clm.idFriend) AS member_count
        FROM contact_list cl
        LEFT JOIN contact_list_member clm ON clm.idList = cl.idList
        WHERE cl.alanyaID = ?
-       GROUP BY cl.idList, cl.name, cl.color, cl.created_at
-       ORDER BY cl.name ASC`,
+       GROUP BY cl.idList, cl.name, cl.color, cl.member_limit, cl.created_at
+       ORDER BY
+         CASE cl.name
+           WHEN 'Famille' THEN 1
+           WHEN 'Amis' THEN 2
+           WHEN 'Bureau' THEN 3
+           WHEN 'Confiance' THEN 4
+           ELSE 100
+         END,
+         cl.name ASC`,
       [alanyaID]
     );
 
@@ -274,6 +286,25 @@ const addMember = async (req, res) => {
     // conception §4.1 et recette §7.1).
     if (pref.length === 0) {
       return res.status(403).json({ error: 'User is not a preferred contact' });
+    }
+
+    if (owned.member_limit != null) {
+      const [[counted]] = await pool.execute(
+        'SELECT COUNT(*) AS member_count FROM contact_list_member WHERE idList = ?',
+        [idList],
+      );
+      const current = Number(counted.member_count) || 0;
+      const [already] = await pool.execute(
+        'SELECT 1 FROM contact_list_member WHERE idList = ? AND idFriend = ?',
+        [idList, friendID],
+      );
+      if (already.length === 0 && current >= owned.member_limit) {
+        return res.status(409).json({
+          error: 'List member limit reached',
+          code: 'LIST_MEMBER_LIMIT',
+          limit: owned.member_limit,
+        });
+      }
     }
 
     // INSERT IGNORE : ré-ajouter un membre déjà présent est idempotent (la PK

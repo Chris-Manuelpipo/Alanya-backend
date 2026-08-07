@@ -12,6 +12,7 @@ const { lookupPlace } = require('../services/ipGeoService');
 const { guardDisplayNames } = require('../utils/displayNameGuard');
 const { ACCOUNT_TYPE } = require('../constants/accountTypes');
 const { isOfficialAccount } = require('../utils/officialAccountGuard');
+const { ensureDefaultContactLists } = require('../utils/defaultContactLists');
 
 const SALT_ROUNDS = 10;
 
@@ -183,6 +184,8 @@ const register = async (req, res) => {
         recoveryEncrypted,
       ]
     );
+
+    await ensureDefaultContactLists(result.insertId);
 
     // Ville déduite de l'IP : lancée ici et jamais attendue.
     _resoudreVilleEnArrierePlan(_clientIp(req), result.insertId, resolvedIdPays);
