@@ -389,7 +389,11 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
 
   callState.clear(userID);
 
-  await closeSessionHistoryFor(sessionId, userID);
+  try {
+    await closeSessionHistoryFor(sessionId, userID);
+  } catch (err) {
+    console.warn('[Socket leaveCallSession] historique:', err.message);
+  }
 
   // Transfert : notifier l'initiateur si départ manuel pendant armed.
   if (
@@ -455,8 +459,16 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
     notifyCallEnded(last, userID, 'Correspondant', lastCallId)
       .catch((err) => console.warn('[Socket leaveCallSession] FCM error:', err.message));
 
-    await closeSessionHistoryFor(sessionId, last);
-    await closeCallHistory(io, userSockets, lastCallId);
+    try {
+      await closeSessionHistoryFor(sessionId, last);
+    } catch (err) {
+      console.warn('[Socket leaveCallSession] historique last:', err.message);
+    }
+    try {
+      await closeCallHistory(io, userSockets, lastCallId);
+    } catch (err) {
+      console.warn('[Socket leaveCallSession] closeCallHistory:', err.message);
+    }
   }
 
   return true;

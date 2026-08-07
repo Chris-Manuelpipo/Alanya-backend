@@ -48,11 +48,21 @@ assert.ok(t.transfer);
 assert.strictEqual(t.transfer.initiatorId, CHRIS);
 assert.strictEqual(t.transfer.targetId, NADIA);
 assert.strictEqual(t.transfer.state, 'pending');
+assert.deepStrictEqual(
+  callSessions.getTransferTimerFlags(t.sessionId),
+  { state: 'pending', hasLeaveTimer: false, hasReadyTimer: false },
+  'pending : aucun leaveTimer',
+);
 
 // promote → joined
 const promoted = callSessions.promotePending(t.sessionId);
 assert.strictEqual(promoted.transfer.state, 'joined');
 assert.strictEqual(promoted.addRight, 'consumed');
+assert.strictEqual(
+  callSessions.getTransferTimerFlags(t.sessionId).hasLeaveTimer,
+  false,
+  'joined sans ready : aucun leaveTimer',
+);
 
 // markTransferJoined + readyTimer
 let readyFired = false;

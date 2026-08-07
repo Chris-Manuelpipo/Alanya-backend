@@ -231,6 +231,12 @@ function markTransferJoined(sessionId, readyTimer) {
 /**
  * Enregistre un call_conf_ready. N'arme le leaveTimer qu'une seule fois.
  *
+ * Contrat strict :
+ * - state doit être `joined` (après call_conf_join / promotePending)
+ * - JAMAIS de leaveTimer en `pending` (invitation) ni en `joined` sans ready
+ * - seul un reporter restant (ni initiateur, ni cible) avec peerId === targetId
+ * - leaveTimerFactory appelé au plus une fois par session
+ *
  * @returns {{ ok: boolean, armed: boolean, reason?: string, session?: object }}
  */
 function registerTransferReady({ sessionId, reporterId, peerId, leaveTimerFactory }) {
@@ -245,6 +251,10 @@ function registerTransferReady({ sessionId, reporterId, peerId, leaveTimerFactor
   }
   if (t.state !== 'joined') {
     return { ok: false, armed: false, reason: 'NOT_JOINED' };
+  }
+  // Garde explicite : un leaveTimer ne peut pas déjà exister avant le 1er ready.
+  if (t.leaveTimer) {
+    return { ok: true, armed: false, reason: 'ALREADY_ARMED', session };
   }
 
   const reporter = _toInt(reporterId);
@@ -265,21 +275,30 @@ function registerTransferReady({ sessionId, reporterId, peerId, leaveTimerFactor
   t.readyBy.add(reporter);
 
   // Premier ready valide : armer une seule fois.
-  if (!t.leaveTimer) {
-    if (t.readyTimer) {
-      clearTimeout(t.readyTimer);
-      t.readyTimer = null;
-    }
-    t.state = 'armed';
-    t.armedAt = Date.now();
-    const leaveTimer = typeof leaveTimerFactory === 'function'
-      ? leaveTimerFactory()
-      : null;
-    t.leaveTimer = leaveTimer;
-    return { ok: true, armed: true, session };
+  if (t.readyTimer) {
+    clearTimeout(t.readyTimer);
+    t.readyTimer = null;
   }
+  t.state = 'armed';
+  t.armedAt = Date.now();
+  const leaveTimer = typeof leaveTimerFactory === 'function'
+    ? leaveTimerFactory()
+    : null;
+  t.leaveTimer = leaveTimer;
+  return { ok: true, armed: true, session };
+}
 
-  return { ok: true, armed: false, reason: 'ALREADY_ARMED', session };
+/** Snapshot testable des timers transfert (leaveTimer uniquement après ready). */
+function getTransferTimerFlags(sessionId) {
+  const session = _sessions.get(sessionId);
+  if (!session?.transfer) {
+    return { state: null, hasLeaveTimer: false, hasReadyTimer: false };
+  }
+  return {
+    state: session.transfer.state,
+    hasLeaveTimer: !!session.transfer.leaveTimer,
+    hasReadyTimer: !!session.transfer.readyTimer,
+  };
 }
 
 function armTransferLeaveTimer(sessionId, leaveTimer) {
@@ -425,6 +444,7 @@ module.exports = {
   markTransferJoined,
   registerTransferReady,
   armTransferLeaveTimer,
+  getTransferTimerFlags,
   canCompleteTransfer,
   cancelTransfer,
   completeTransfer,
