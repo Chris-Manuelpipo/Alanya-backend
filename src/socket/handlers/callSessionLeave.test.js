@@ -15,9 +15,20 @@ const CHRIS = 1;
 const AWA = 2;
 const NADIA = 3;
 
-// io factice : capture les événements émis par utilisateur.
-function fakeIo() {
+// io factice : capture les événements émis par utilisateur / socket device.
+function fakeIo(extraSockets = []) {
   const sent = [];
+  const socketsMap = new Map();
+  const rooms = new Map();
+
+  for (const s of extraSockets) {
+    socketsMap.set(s.id, s);
+    for (const room of s.rooms || []) {
+      if (!rooms.has(room)) rooms.set(room, new Set());
+      rooms.get(room).add(s.id);
+    }
+  }
+
   return {
     sent,
     to(room) {
@@ -33,7 +44,23 @@ function fakeIo() {
     payloadFor(userId, event) {
       return sent.find((e) => e.room === `user_${userId}` && e.event === event)?.payload;
     },
-    sockets: { adapter: { rooms: new Map() } },
+    sockets: {
+      sockets: socketsMap,
+      adapter: { rooms },
+    },
+  };
+}
+
+function deviceSocket(id, userId, deviceId) {
+  const events = [];
+  return {
+    id,
+    deviceId,
+    rooms: [`user_${userId}`],
+    events,
+    emit(event, payload) {
+      events.push({ event, payload });
+    },
   };
 }
 
@@ -162,16 +189,25 @@ function threeWaySession() {
   assert.strictEqual(callState.get(CHRIS), 'in_call', 'appel des présents intact');
   assert.strictEqual(callSessions.hasAddRight(CHRIS), true, 'droit rendu après échec');
 
-  // Un refus explicite n'a rien à couper chez celui qui refuse.
+  // Refus explicite multi-device : C1 refuse → C2 reçoit call_ended, C1 exclu.
   reset();
   twoWayCall();
   const declined = callSessions.openWithPending({
     participants: [CHRIS, AWA], inviteeId: NADIA, byUserId: CHRIS,
   });
   callState.setRinging(NADIA, { peerId: CHRIS });
-  io = fakeIo();
-  failInvite(io, declined.sessionId, 'declined');
-  assert.strictEqual(io.eventsFor(NADIA).length, 0, 'aucun call_ended sur refus explicite');
+  const c1 = deviceSocket('c1', NADIA, 'dev-C1');
+  const c2 = deviceSocket('c2', NADIA, 'dev-C2');
+  io = fakeIo([c1, c2]);
+  failInvite(io, declined.sessionId, 'declined', { decliningDeviceId: 'dev-C1' });
+  assert.strictEqual(io.payloadFor(CHRIS, 'call_conf_failed').reason, 'declined');
+  assert.strictEqual(c1.events.length, 0, 'C1 (refuseur) exclu du stop distant');
+  assert.strictEqual(c2.events.length, 1, 'C2 reçoit call_ended');
+  assert.strictEqual(c2.events[0].event, 'call_ended');
+  assert.strictEqual(c2.events[0].payload.reason, 'rejected_elsewhere');
+  assert.strictEqual(c2.events[0].payload.claimedByAnotherDevice, true);
+  assert.strictEqual(callState.get(NADIA), 'idle');
+  assert.strictEqual(callSessions.hasAddRight(CHRIS), true, 'droit rendu après refus');
 
   reset();
   console.log('✅ callSessionLeave.test.js — tous les cas passent');
