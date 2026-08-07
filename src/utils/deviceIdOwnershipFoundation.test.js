@@ -107,6 +107,11 @@ assert.strictEqual(callDeviceOwnership.getActiveDeviceId('100', 1), 'dev-A');
 assert.strictEqual(callDeviceOwnership.isOwnerDevice('100', 2, 'dev-B1'), true);
 assert.strictEqual(callDeviceOwnership.isOwnerDevice('100', 2, 'dev-B2'), false);
 
+// tryClaim n'invente pas de session
+const ghost = callDeviceOwnership.tryClaim('missing', 9, 'dev-X', 'sx');
+assert.strictEqual(ghost.ok, false);
+assert.strictEqual(ghost.reason, 'NO_SESSION');
+
 // ── meeting presence ─────────────────────────────────────────────────────────
 meetingDevicePresence._reset();
 const j1 = meetingDevicePresence.tryJoin(55, 9, 'm1', 's1');

@@ -207,8 +207,10 @@ function twoWay() {
   });
   const eA = callDeviceOwnership.getEntry(s7.sessionId, CHRIS);
   if (eA) eA.state = 'active';
-  callDeviceOwnership.tryClaim(s7.sessionId, AWA, 'dev-B', 'sb');
-  callDeviceOwnership.tryClaim(s7.sessionId, NADIA, 'dev-C', 'sc');
+  callDeviceOwnership.ring(s7.sessionId, AWA);
+  callDeviceOwnership.ring(s7.sessionId, NADIA);
+  assert.ok(callDeviceOwnership.tryClaim(s7.sessionId, AWA, 'dev-B', 'sb').ok);
+  assert.ok(callDeviceOwnership.tryClaim(s7.sessionId, NADIA, 'dev-C', 'sc').ok);
 
   const io7 = fakeIo();
   const scheduled = [];

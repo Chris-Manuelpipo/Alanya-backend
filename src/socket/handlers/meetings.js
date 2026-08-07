@@ -11,11 +11,24 @@ function toInt(v) {
 
 function emitMeetingSignal(io, toUserID, event, payload) {
   const did = meetingDevicePresence.getActiveDeviceId(payload.meetingID, toUserID);
-  if (did) {
-    emitToDevice(io, toUserID, did, event, payload);
-  } else {
-    emitToUser(io, toUserID, event, payload);
+  if (!did) {
+    console.warn(
+      `[Socket ${event}] pas de device cible user=${toUserID} meeting=${payload.meetingID} — drop`,
+    );
+    return false;
   }
+  return emitToDevice(io, toUserID, did, event, payload);
+}
+
+function assertMeetingOwnerSocket(socket, meetingID) {
+  const mID = toInt(meetingID);
+  const deviceId = normalizeDeviceId(socket.deviceId);
+  if (!mID || !deviceId) return null;
+  if (Number(socket.currentMeetingID) !== mID) return null;
+  if (!meetingDevicePresence.isOwnerDevice(mID, socket.alanyaID, deviceId)) {
+    return null;
+  }
+  return mID;
 }
 
 // Vérifie que le socket appartient à l'organisateur de la réunion.
@@ -66,8 +79,19 @@ const meetingJoinRoom = (io, socket, userSockets) => {
       if (!socket.authenticated) return;
       const { meetingID, userID, userName, isMuted, isVideoOff } = data;
       const mID = toInt(meetingID);
-      const uID = toInt(userID) || socket.alanyaID;
+      const uID = socket.alanyaID;
       const deviceId = normalizeDeviceId(socket.deviceId);
+
+      if (userID != null && toInt(userID) != null && toInt(userID) !== uID) {
+        console.warn(
+          `[Socket meeting:join_room] userID spoof payload=${userID} socket=${uID}`,
+        );
+        return socket.emit('meeting:join_denied', {
+          meetingID: mID,
+          code: 'USER_ID_MISMATCH',
+          message: 'Identité invalide',
+        });
+      }
 
       if (!mID) {
         return socket.emit('error', { message: 'meetingID requis' });
@@ -278,6 +302,15 @@ const meetingLeave = (io, socket, userSockets) => {
       if (!meetingID) return;
       const mID = toInt(meetingID);
       const uID = socket.alanyaID;
+      const deviceId = normalizeDeviceId(socket.deviceId);
+
+      // Non-owner : no-op (ne libère pas le slot du device actif).
+      if (!mID || !deviceId || !meetingDevicePresence.isOwnerDevice(mID, uID, deviceId)) {
+        console.log(
+          `[Socket meeting:leave] no-op non-owner user=${uID} meeting=${meetingID}`,
+        );
+        return;
+      }
 
       socket.to(`meeting_${meetingID}`).emit('meeting:user_left', {
         meetingID,
@@ -286,7 +319,7 @@ const meetingLeave = (io, socket, userSockets) => {
 
       meetingMuteStates.removeUser(meetingID, uID);
       meetingVideoStates.removeUser(meetingID, uID);
-      if (mID) meetingDevicePresence.leave(mID, uID);
+      meetingDevicePresence.leave(mID, uID);
       try {
         await pool.execute(
           `UPDATE participant
@@ -313,11 +346,13 @@ const meetingOffer = (io, socket, userSockets) => {
       const { meetingID, toUserID, offer } = data;
       const targetID = toInt(toUserID);
       if (!targetID || !offer) return;
+      const mID = assertMeetingOwnerSocket(socket, meetingID);
+      if (!mID) return;
 
       emitMeetingSignal(io, targetID, 'meeting:offer', {
         fromUserID: String(socket.alanyaID),
         offer,
-        meetingID,
+        meetingID: mID,
       });
     } catch (error) {
       console.error('[Socket meeting:offer]', error.message);
@@ -332,11 +367,13 @@ const meetingAnswer = (io, socket, userSockets) => {
       const { meetingID, toUserID, answer } = data;
       const targetID = toInt(toUserID);
       if (!targetID || !answer) return;
+      const mID = assertMeetingOwnerSocket(socket, meetingID);
+      if (!mID) return;
 
       emitMeetingSignal(io, targetID, 'meeting:answer', {
         fromUserID: String(socket.alanyaID),
         answer,
-        meetingID,
+        meetingID: mID,
       });
     } catch (error) {
       console.error('[Socket meeting:answer]', error.message);
@@ -351,11 +388,13 @@ const meetingIceCandidate = (io, socket, userSockets) => {
       const { meetingID, toUserID, candidate } = data;
       const targetID = toInt(toUserID);
       if (!targetID || !candidate) return;
+      const mID = assertMeetingOwnerSocket(socket, meetingID);
+      if (!mID) return;
 
       emitMeetingSignal(io, targetID, 'meeting:ice_candidate', {
         fromUserID: String(socket.alanyaID),
         candidate,
-        meetingID,
+        meetingID: mID,
       });
     } catch (error) {
       console.error('[Socket meeting:ice_candidate]', error.message);

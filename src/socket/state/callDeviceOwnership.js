@@ -71,25 +71,21 @@ function ring(key, userId) {
 }
 
 /**
- * Claim atomique : premier device qui gagne. Retourne { ok, reason?, entry? }.
+ * Claim atomique : premier device qui gagne.
+ * N'invente jamais d'entrée : la session doit exister (ring/setCalling).
+ * @returns {{ ok: boolean, reason?: string, entry?: object, alreadyOwner?: boolean }}
  */
 function tryClaim(key, userId, deviceId, socketId) {
-  const m = _userMap(key);
+  const k = _key(key);
+  if (!k) return { ok: false, reason: 'NO_SESSION' };
+  const m = _byKey.get(k);
   if (!m) return { ok: false, reason: 'NO_SESSION' };
   const uid = Number(userId);
   const did = normalizeDeviceId(deviceId);
   if (!did) return { ok: false, reason: 'DEVICE_ID_REQUIRED' };
 
-  let entry = m.get(uid);
-  if (!entry) {
-    entry = {
-      activeDeviceId: null,
-      activeSocketId: null,
-      claimedAt: null,
-      state: 'ringing',
-    };
-    m.set(uid, entry);
-  }
+  const entry = m.get(uid);
+  if (!entry) return { ok: false, reason: 'NO_SESSION' };
 
   if (entry.state === 'active' && entry.activeDeviceId) {
     if (entry.activeDeviceId === did) {
