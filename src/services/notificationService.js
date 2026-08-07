@@ -386,10 +386,21 @@ const sendCallToUser = async (alanyaID, data = {}) => {
 };
 
 /**
- * Fin d'appel : FCM data-only sur tous les appareils + VoIP dismiss iOS si actif.
+ * Fin d'appel : FCM data-only + VoIP dismiss iOS.
+ * @param {object} [options]
+ * @param {string} [options.excludeDeviceId] — ne pas pousser vers cet appareil (gagnant claim).
  */
-const sendCallEndedToUser = async (alanyaID, data = {}) => {
+const sendCallEndedToUser = async (alanyaID, data = {}, options = {}) => {
+  const { normalizeDeviceId } = require('../utils/deviceId');
+  const excludeDeviceId = normalizeDeviceId(options.excludeDeviceId);
+
   if (!DEVICE_REGISTRY_V2) {
+    if (excludeDeviceId) {
+      console.warn(
+        '[PushCall] excludeDeviceId ignored on legacy path user=',
+        alanyaID,
+      );
+    }
     return sendToUserLegacy(alanyaID, data, {});
   }
 
@@ -400,6 +411,27 @@ const sendCallEndedToUser = async (alanyaID, data = {}) => {
     }
 
     for (const target of targets) {
+      const targetDid = normalizeDeviceId(target.deviceId);
+
+      // Target sans deviceId clair : ne pas envoyer call_ended (évite de tuer
+      // le gagnant si excludeDeviceId est ambigu / si ids divergent).
+      if (!targetDid) {
+        console.warn(
+          `[PushCall] skip call_ended user=${alanyaID} reason=missing_or_ambiguous_deviceId`,
+        );
+        continue;
+      }
+
+      if (excludeDeviceId && targetDid === excludeDeviceId) {
+        continue;
+      }
+
+      if (options.excludeDeviceId && !excludeDeviceId) {
+        console.warn(
+          `[PushCall] excludeDeviceId missing/ambiguous user=${alanyaID}`,
+        );
+      }
+
       logQueued({
         type: data.type,
         userId: alanyaID,
@@ -708,14 +740,33 @@ const notifyMeetingReminder = async (participantId, meetingTitle, organiserName,
   });
 };
 
-const notifyCallEnded = async (receiverId, callerId, callerName, callId = null) => {
-  await sendCallEndedToUser(receiverId, {
+/**
+ * @param {object} [options]
+ * @param {string} [options.excludeDeviceId]
+ * @param {string} [options.reason]
+ * @param {boolean} [options.claimedByAnotherDevice]
+ */
+const notifyCallEnded = async (
+  receiverId,
+  callerId,
+  callerName,
+  callId = null,
+  options = {},
+) => {
+  const payload = {
     type:       'call_ended',
     title:      'Appel terminé',
     body:       `${callerName || 'L\'appel'} a raccroché`,
     callerId:   String(callerId),
     callerName: String(callerName ?? ''),
     callId:     String(callId ?? ''),
+  };
+  if (options.reason) payload.reason = String(options.reason);
+  if (options.claimedByAnotherDevice) {
+    payload.claimedByAnotherDevice = 'true';
+  }
+  await sendCallEndedToUser(receiverId, payload, {
+    excludeDeviceId: options.excludeDeviceId,
   });
 };
 

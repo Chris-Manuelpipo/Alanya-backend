@@ -2,7 +2,7 @@ const jwt  = require('jsonwebtoken');
 const pool = require('../../config/db');
 const pendingCalls = require('../state/pendingCalls');
 const callState = require('../state/callState');
-const { registerUserSocket } = require('../../utils/userSocketRegistry');
+const { registerUserSocket, deviceRoom, normalizeDeviceId } = require('../../utils/userSocketRegistry');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'talky-secret-key-change-in-production';
 const REPLAY_ENABLED = process.env.ENABLE_PENDING_CALL_REPLAY !== 'false';
@@ -49,9 +49,8 @@ const socketAuth = (io, socket, userSockets) => {
 
       const alanyaID = rows[0].alanyaID;
       const rawDevice = deviceId ?? deviceIdSnake;
-      if (rawDevice && String(rawDevice).trim()) {
-        socket.deviceId = String(rawDevice).trim().slice(0, 128);
-      }
+      // Canonique : même id que ensureStableDeviceId() / user_push_devices.deviceId.
+      socket.deviceId = normalizeDeviceId(rawDevice);
       // Clé de la déconnexion forcée à la révocation : `socket.deviceId` est
       // l'UUID applicatif du client, pas l'identifiant matériel de
       // `appareils.device_id` — seul `appareilId` désigne la même ligne des
@@ -77,6 +76,8 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
 
   registerUserSocket(userSockets, alanyaID, socket.id);
   socket.join(`user_${alanyaID}`);
+  const dRoom = deviceRoom(alanyaID, socket.deviceId);
+  if (dRoom) socket.join(dRoom);
   socket.emit('auth:verified', { success: true, alanyaID });
 
   // Reconnexion pendant un appel en cours (grace period après kill app).

@@ -1,11 +1,21 @@
 const pool = require('../../config/db');
-const { emitToUser } = require('../../utils/userSocketRegistry');
+const { emitToUser, emitToDevice, normalizeDeviceId } = require('../../utils/userSocketRegistry');
 const meetingMuteStates = require('../state/meetingMuteStates');
 const meetingVideoStates = require('../state/meetingVideoStates');
+const meetingDevicePresence = require('../state/meetingDevicePresence');
 
 function toInt(v) {
   const n = parseInt(v, 10);
   return isNaN(n) ? null : n;
+}
+
+function emitMeetingSignal(io, toUserID, event, payload) {
+  const did = meetingDevicePresence.getActiveDeviceId(payload.meetingID, toUserID);
+  if (did) {
+    emitToDevice(io, toUserID, did, event, payload);
+  } else {
+    emitToUser(io, toUserID, event, payload);
+  }
 }
 
 // Vérifie que le socket appartient à l'organisateur de la réunion.
@@ -29,6 +39,18 @@ const meetingCreate = (io, socket, userSockets) => {
     try {
       if (!socket.authenticated) return;
       const { meetingID, organiserID, meetingName } = data;
+      const mID = toInt(meetingID);
+      const deviceId = normalizeDeviceId(socket.deviceId);
+      if (mID && deviceId) {
+        const claim = meetingDevicePresence.tryJoin(mID, socket.alanyaID, deviceId, socket.id);
+        if (!claim.ok && claim.code === 'ACCOUNT_ALREADY_IN_MEETING') {
+          return socket.emit('meeting:join_denied', {
+            meetingID: mID,
+            code: 'ACCOUNT_ALREADY_IN_MEETING',
+            message: 'Cette réunion est déjà active sur un autre de vos appareils.',
+          });
+        }
+      }
       socket.join(`meeting_${meetingID}`);
       socket.currentMeetingID = meetingID;
       socket.emit('meeting:created', { meetingID, meetingName });
@@ -45,13 +67,39 @@ const meetingJoinRoom = (io, socket, userSockets) => {
       const { meetingID, userID, userName, isMuted, isVideoOff } = data;
       const mID = toInt(meetingID);
       const uID = toInt(userID) || socket.alanyaID;
+      const deviceId = normalizeDeviceId(socket.deviceId);
 
       if (!mID) {
         return socket.emit('error', { message: 'meetingID requis' });
       }
+      if (!deviceId) {
+        return socket.emit('meeting:join_denied', {
+          meetingID: mID,
+          code: 'DEVICE_ID_REQUIRED',
+          message: 'Identifiant appareil requis',
+        });
+      }
+
+      const claim = meetingDevicePresence.tryJoin(mID, uID, deviceId, socket.id);
+      if (!claim.ok) {
+        return socket.emit('meeting:join_denied', {
+          meetingID: mID,
+          code: claim.code || 'ACCOUNT_ALREADY_IN_MEETING',
+          message: 'Cette réunion est déjà active sur un autre de vos appareils.',
+        });
+      }
 
       socket.join(`meeting_${mID}`);
       socket.currentMeetingID = mID;
+
+      try {
+        await pool.execute(
+          'UPDATE participant SET connecte = 1, start_time = NOW() WHERE idMeeting = ? AND IDparticipant = ?',
+          [mID, uID],
+        );
+      } catch (dbErr) {
+        console.warn('[Socket meeting:join_room] connecte update:', dbErr.message);
+      }
 
       if (typeof isMuted === 'boolean') {
         meetingMuteStates.set(mID, uID, isMuted);
@@ -192,6 +240,7 @@ const meetingEnd = (io, socket, userSockets) => {
     io.to(`meeting_${meetingID}`).emit('meeting:ended', { meetingID });
     meetingMuteStates.clearMeeting(meetingID);
     meetingVideoStates.clearMeeting(meetingID);
+    meetingDevicePresence.clearMeeting(meetingID);
 
     const roomSockets = io.sockets.adapter.rooms.get(`meeting_${meetingID}`);
     if (roomSockets) {
@@ -222,19 +271,33 @@ const meetingChat = (io, socket, userSockets) => {
 };
 
 const meetingLeave = (io, socket, userSockets) => {
-  socket.on('meeting:leave', (data) => {
+  socket.on('meeting:leave', async (data) => {
     try {
       if (!socket.authenticated) return;
       const meetingID = data?.meetingID || socket.currentMeetingID;
       if (!meetingID) return;
+      const mID = toInt(meetingID);
+      const uID = socket.alanyaID;
 
       socket.to(`meeting_${meetingID}`).emit('meeting:user_left', {
         meetingID,
-        userID: String(socket.alanyaID),
+        userID: String(uID),
       });
 
-      meetingMuteStates.removeUser(meetingID, socket.alanyaID);
-      meetingVideoStates.removeUser(meetingID, socket.alanyaID);
+      meetingMuteStates.removeUser(meetingID, uID);
+      meetingVideoStates.removeUser(meetingID, uID);
+      if (mID) meetingDevicePresence.leave(mID, uID);
+      try {
+        await pool.execute(
+          `UPDATE participant
+           SET connecte = 0,
+               duree = TIMESTAMPDIFF(SECOND, start_time, NOW())
+           WHERE idMeeting = ? AND IDparticipant = ?`,
+          [mID, uID],
+        );
+      } catch (e) {
+        console.warn('[Socket meeting:leave] DB:', e.message);
+      }
       socket.leave(`meeting_${meetingID}`);
       socket.currentMeetingID = null;
     } catch (error) {
@@ -251,7 +314,7 @@ const meetingOffer = (io, socket, userSockets) => {
       const targetID = toInt(toUserID);
       if (!targetID || !offer) return;
 
-      emitToUser(io, targetID, 'meeting:offer', {
+      emitMeetingSignal(io, targetID, 'meeting:offer', {
         fromUserID: String(socket.alanyaID),
         offer,
         meetingID,
@@ -270,7 +333,7 @@ const meetingAnswer = (io, socket, userSockets) => {
       const targetID = toInt(toUserID);
       if (!targetID || !answer) return;
 
-      emitToUser(io, targetID, 'meeting:answer', {
+      emitMeetingSignal(io, targetID, 'meeting:answer', {
         fromUserID: String(socket.alanyaID),
         answer,
         meetingID,
@@ -289,7 +352,7 @@ const meetingIceCandidate = (io, socket, userSockets) => {
       const targetID = toInt(toUserID);
       if (!targetID || !candidate) return;
 
-      emitToUser(io, targetID, 'meeting:ice_candidate', {
+      emitMeetingSignal(io, targetID, 'meeting:ice_candidate', {
         fromUserID: String(socket.alanyaID),
         candidate,
         meetingID,

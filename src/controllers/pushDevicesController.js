@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { hashForLog } = require('../notifications/notificationLogger');
+const { normalizeDeviceId } = require('../utils/deviceId');
 
 const VALID_PLATFORMS = new Set(['android', 'ios', 'web', 'unknown']);
 const VALID_APP_STATES = new Set(['foreground', 'background', 'unknown']);
@@ -25,9 +26,9 @@ const registerPushDevice = async (req, res) => {
       locale,
     } = req.body;
 
-    const devId = String(deviceId || device_ID || '').trim();
+    const devId = normalizeDeviceId(deviceId || device_ID);
     const token = String(fcmToken || fcm_token || '').trim();
-    if (!devId || devId.length > 128) {
+    if (!devId) {
       return res.status(400).json({ error: 'deviceId requis (max 128)' });
     }
     if (token && token.length > 4096) {
@@ -103,7 +104,7 @@ const updatePushDeviceState = async (req, res) => {
       notificationsEnabled,
     } = req.body;
 
-    const devId = String(deviceId || device_ID || '').trim();
+    const devId = normalizeDeviceId(deviceId || device_ID);
     if (!devId) {
       return res.status(400).json({ error: 'deviceId requis' });
     }
@@ -150,7 +151,7 @@ const updatePushDeviceState = async (req, res) => {
 const deletePushDevice = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
-    const devId = String(req.params.deviceId || '').trim();
+    const devId = normalizeDeviceId(req.params.deviceId);
     if (!devId) {
       return res.status(400).json({ error: 'deviceId requis' });
     }

@@ -126,7 +126,14 @@ function openWithPending({
     createdAt: now,
     addRight: 'locked',
     participants: new Map(members.map((uid) => [uid, { joinedAt: now }])),
-    pending: { userId: invitee, byUserId: by, invitedAt: now, timer },
+    pending: {
+      userId: invitee,
+      byUserId: by,
+      invitedAt: now,
+      timer,
+      acceptedByDeviceId: null,
+      acceptedSocketId: null,
+    },
     transfer: null,
   };
 

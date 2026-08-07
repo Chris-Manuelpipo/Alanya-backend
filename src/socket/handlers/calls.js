@@ -8,26 +8,38 @@ const { buildDirectConversationLookup } = require('../../utils/directConversatio
 const pendingCalls = require('../state/pendingCalls');
 const callState = require('../state/callState');
 const callSessions = require('../state/callSessions');
-const { emitToUser, isUserOnline } = require('../../utils/userSocketRegistry');
+const callDeviceOwnership = require('../state/callDeviceOwnership');
+const {
+  emitToUser,
+  emitToDevice,
+  emitToUserExceptDevice,
+  isUserOnline,
+  normalizeDeviceId,
+} = require('../../utils/userSocketRegistry');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTRAT D'EVENTS — appels 1-à-1
 //
 // Client → Serveur :
 //   call_user     { targetUserId, callerId, callerName, callerPhoto, isVideo, offer }
-//   answer_call   { callerId, answer }
-//   reject_call   { callerId }
+//   answer_call   { callerId, callId, answer }
+//   reject_call   { callerId, callId? }
 //   end_call      { targetUserId, mode? }
 //   ice_candidate { targetUserId, candidate }
 //
 // Serveur → Client :
 //   incoming_call { callId, callerId, callerName, callerPhoto, isVideo, offer }
-//   call_answered { answer }
+//   call_answered { answer, callId? }
 //   call_rejected { callId? }
-//   call_ended    { callId? }
+//   call_ended    { callId?, reason?, claimedByAnotherDevice? }
+//   call_error    { code, callId? }  — CALL_ANSWERED_ELSEWHERE, DEVICE_ID_REQUIRED…
 //   call_failed   { reason, code? }                     — erreur (hors-ligne, données invalides…)
 //                 code CALL_SELF : la cible est l'appelant lui-même.
+//                 code CALL_ID_UNAVAILABLE : pas d'appel sans callId serveur.
 //   call_busy     { callId, targetId, reason:'busy' }   — cible déjà ringing / in_call
+//
+// Ownership média : callDeviceOwnership (par callId/sessionId/roomId + userId → device).
+// Rooms signaling : user_<alanyaID>_device_<normalizedDeviceId> (jamais device_<id> global).
 //   call_no_answer{ callId, targetId, reason:'no_answer' } — timeout serveur sans réponse
 //   ice_candidate { candidate }
 //
@@ -204,11 +216,14 @@ async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
   // être retardé/perdu sous Doze. call_ended est traité quel que soit le statut.
   emitToUser(io, targetID, 'call_ended', {
     callId: callID != null ? String(callID) : null,
+    reason: 'no_answer',
   });
 
   // Coupe la sonnerie/CallKit du destinataire s'il a été réveillé en arrière-plan.
-  notifyCallEnded(targetID, callerID, 'Appel manqué', callID)
+  notifyCallEnded(targetID, callerID, 'Appel manqué', callID, { reason: 'no_answer' })
     .catch((err) => console.warn('[Socket call_user] no-answer notifyCallEnded error:', err.message));
+
+  if (callID != null) callDeviceOwnership.release(String(callID));
 }
 
 function createRoomState(isVideo, callerID, callerInfo) {
@@ -527,8 +542,17 @@ const callUser = (io, socket, userSockets) => {
       const { targetUserId, callerId, callerName, callerPhoto, isVideo, offer } = data;
       const targetID = toInt(targetUserId);
       const callerID = toInt(callerId) || socket.alanyaID;
+      const callerDeviceId = normalizeDeviceId(socket.deviceId);
 
       console.log(`[Socket call_user] 📞 Appel: ${callerID} → ${targetID} (${isVideo ? 'vidéo' : 'audio'})`);
+
+      if (!callerDeviceId) {
+        socket.emit('call_failed', {
+          reason: 'Identifiant appareil requis',
+          code: 'DEVICE_ID_REQUIRED',
+        });
+        return;
+      }
 
       if (!targetID || !offer) {
         console.warn('[Socket call_user] ** Données invalides', { targetID, offerExists: !!offer });
@@ -616,8 +640,23 @@ const callUser = (io, socket, userSockets) => {
         console.warn('[Socket call_user] DB insert failed:', dbErr.message);
       }
 
+      if (!callID) {
+        socket.emit('call_failed', {
+          reason: 'Impossible de démarrer l\'appel',
+          code: 'CALL_ID_UNAVAILABLE',
+        });
+        return;
+      }
+
+      const callKey = String(callID);
+      callDeviceOwnership.setCalling(callKey, callerID, {
+        activeDeviceId: callerDeviceId,
+        activeSocketId: socket.id,
+      });
+      callDeviceOwnership.ring(callKey, targetID);
+
       const incomingPayload = {
-        callId:      callID != null ? String(callID) : null,
+        callId:      callKey,
         callerId:    String(callerID),
         callerName:  callerName  || '',
         callerPhoto: callerPhoto || null,
@@ -667,59 +706,112 @@ const answerCall = (io, socket, userSockets) => {
         console.warn('[Socket answer_call] ** Non authentifié');
         return;
       }
-      const { callerId, answer } = data;
+      const { callerId, answer, callId: rawCallId } = data || {};
 
       const callerID   = toInt(callerId);
       const receiverID = socket.alanyaID;
+      const deviceId   = normalizeDeviceId(socket.deviceId);
       if (!callerID || !answer) {
         console.warn('[Socket answer_call] ** Données invalides', { callerID, answerExists: !!answer });
         return;
       }
+      if (!deviceId) {
+        socket.emit('call_error', { code: 'DEVICE_ID_REQUIRED' });
+        return;
+      }
 
-      console.log(`[Socket answer_call] 📞 Réponse: Receiver ${receiverID} → Caller ${callerID}`);
+      const callerEntry = callState.getEntry(callerID);
+      const callId = toInt(rawCallId) || callerEntry?.callId || null;
+      if (!callId) {
+        socket.emit('call_error', { code: 'CALL_ID_UNAVAILABLE' });
+        return;
+      }
+      const callKey = String(callId);
 
-      // L'appel est traité : plus besoin de le rejouer au destinataire.
+      // Cohérence : l'appel ringing côté receiver doit matcher.
+      const receiverEntry = callState.getEntry(receiverID);
+      if (
+        receiverEntry &&
+        receiverEntry.status === 'ringing' &&
+        receiverEntry.callId != null &&
+        String(receiverEntry.callId) !== callKey
+      ) {
+        socket.emit('call_error', {
+          code: 'CALL_ANSWERED_ELSEWHERE',
+          callId: callKey,
+        });
+        return;
+      }
+
+      const claim = callDeviceOwnership.tryClaim(
+        callKey,
+        receiverID,
+        deviceId,
+        socket.id,
+      );
+      if (!claim.ok) {
+        socket.emit('call_error', {
+          code: claim.reason === 'DEVICE_ID_REQUIRED'
+            ? 'DEVICE_ID_REQUIRED'
+            : 'CALL_ANSWERED_ELSEWHERE',
+          callId: callKey,
+        });
+        return;
+      }
+
+      console.log(`[Socket answer_call] 📞 Réponse: Receiver ${receiverID} device=${deviceId} → Caller ${callerID} callId=${callKey}`);
+
       pendingCalls.clear(receiverID);
 
-      // État autoritaire : les deux participants passent « in_call » (annule le
-      // timer « pas de réponse » armé côté destinataire).
-      const callerEntry = callState.getEntry(callerID);
-      const callId = callerEntry?.callId ?? null;
       const isVideo = !!callerEntry?.isVideo;
       callState.setInCall(receiverID, { callId, peerId: callerID, isVideo });
       callState.setInCall(callerID, { callId, peerId: receiverID, lastAnswer: answer, isVideo });
 
-      // Lie l'appel à CE socket destinataire : la déconnexion de ce socket précis
-      // doit nettoyer l'appel même si le compte garde d'autres sockets ouverts
-      // (sinon état « in_call » orphelin → occupé à tort). Voir handleDisconnect.
       socket.currentCallID = callId;
       socket.currentCallTarget = callerID;
+
+      // Frères B : stop CallKit / UI (sauf device gagnant).
+      const elsewherePayload = {
+        callId: callKey,
+        reason: 'answered_elsewhere',
+        claimedByAnotherDevice: true,
+      };
+      emitToUserExceptDevice(
+        io,
+        receiverID,
+        deviceId,
+        'call_ended',
+        elsewherePayload,
+      );
+      notifyCallEnded(receiverID, callerID, 'Appel répondu sur un autre appareil', callId, {
+        excludeDeviceId: deviceId,
+        reason: 'answered_elsewhere',
+        claimedByAnotherDevice: true,
+      }).catch((err) => console.warn('[Socket answer_call] FCM siblings:', err.message));
 
       try {
         const [result] = await pool.execute(
           `UPDATE callHistory
            SET start_time = NOW(), status = 1
-           WHERE IDcall = (
-             SELECT IDcall FROM (
-               SELECT IDcall FROM callHistory
-               WHERE idCaller = ? AND idReceiver = ?
-               ORDER BY created_at DESC
-               LIMIT 1
-             ) AS sub
-           )`,
-          [callerID, receiverID]
+           WHERE IDcall = ?`,
+          [callId],
         );
         console.log(`[Socket answer_call] !! DB updated: ${result.affectedRows} row(s)`);
       } catch (dbErr) {
         console.warn('[Socket answer_call] DB update failed:', dbErr.message);
       }
 
-      if (isUserOnline(io, callerID)) {
-        console.log(`[Socket answer_call] !! Envoi call_answered à user_${callerID}`);
-        emitToUser(io, callerID, 'call_answered', {
-          answer,
-          callId: callId != null ? String(callId) : null,
-        });
+      const callerDeviceId = callDeviceOwnership.getActiveDeviceId(callKey, callerID);
+      const answeredPayload = {
+        answer,
+        callId: callKey,
+      };
+      if (callerDeviceId) {
+        console.log(`[Socket answer_call] !! Envoi call_answered → deviceRoom(${callerID}, ${callerDeviceId})`);
+        emitToDevice(io, callerID, callerDeviceId, 'call_answered', answeredPayload);
+      } else if (isUserOnline(io, callerID)) {
+        console.warn(`[Socket answer_call] caller device inconnu → fallback user_${callerID}`);
+        emitToUser(io, callerID, 'call_answered', answeredPayload);
       } else {
         console.warn(`[Socket answer_call] ** Caller ${callerID} non trouvé en ligne.`);
       }
@@ -744,6 +836,7 @@ const rejectCall = (io, socket, userSockets) => {
         callerID,
         receiverID,
         callIdHint: callId,
+        rejectingDeviceId: normalizeDeviceId(socket.deviceId),
       });
     } catch (error) {
       console.error('[Socket reject_call]', error.message);
@@ -755,17 +848,18 @@ const rejectCall = (io, socket, userSockets) => {
  * Logique partagée socket + HTTP : refuse un appel entrant pour [receiverID].
  * Idempotent (double refus / course HTTP+socket → no-op sûr).
  */
-async function processRejectCall({ io, userSockets, callerID, receiverID, callIdHint = null }) {
+async function processRejectCall({
+  io,
+  userSockets,
+  callerID,
+  receiverID,
+  callIdHint = null,
+  rejectingDeviceId = null,
+}) {
   if (!callerID || !receiverID) {
     return { ok: false, reason: 'invalid_ids' };
   }
 
-  // Garde anti-fratricide : un refus qui désigne explicitement un AUTRE appel
-  // que celui en cours entre ces deux utilisateurs est un refus tardif (ex.
-  // nettoyage cold-start d'une notification CallKit résiduelle côté client).
-  // Dans ce cas on marque le vieil appel refusé en DB, mais on ne touche ni à
-  // pendingCalls ni à callState — sinon un débris local tuerait l'appel qui
-  // sonne réellement.
   const hintID = toInt(callIdHint);
   if (hintID) {
     const receiverEntry = callState.getEntry(toInt(receiverID));
@@ -775,8 +869,6 @@ async function processRejectCall({ io, userSockets, callerID, receiverID, callId
         : null;
     if (currentPairCallID && currentPairCallID !== hintID) {
       try {
-        // `status = 0` uniquement : ne pas réécrire un appel déjà classé
-        // (répondu/refusé/manqué) par le flux normal.
         await pool.execute(
           'UPDATE callHistory SET status = 2 WHERE IDcall = ? AND status = 0',
           [hintID],
@@ -791,14 +883,29 @@ async function processRejectCall({ io, userSockets, callerID, receiverID, callId
     }
   }
 
-  // Appel refusé : ne pas le rejouer au destinataire.
-  pendingCalls.clear(receiverID);
+  let rejectedCallID = toInt(callIdHint);
+  if (!rejectedCallID) {
+    rejectedCallID = callState.getEntry(receiverID)?.callId ?? null;
+  }
+  const callKey = rejectedCallID != null ? String(rejectedCallID) : null;
+  if (callKey) {
+    const owner = callDeviceOwnership.getEntry(callKey, receiverID);
+    if (owner?.state === 'active' && owner.activeDeviceId) {
+      const rejDid = normalizeDeviceId(rejectingDeviceId);
+      if (!rejDid || owner.activeDeviceId !== rejDid) {
+        console.log(
+          `[processRejectCall] refus ignoré (déjà claimé device=${owner.activeDeviceId})`,
+        );
+        return { ok: false, reason: 'already_answered', callId: rejectedCallID };
+      }
+    }
+  }
 
-  // État autoritaire : les deux participants repassent « idle ».
+  pendingCalls.clear(receiverID);
   callState.clear(receiverID);
   callState.clear(callerID);
+  if (callKey) callDeviceOwnership.release(callKey);
 
-  let rejectedCallID = toInt(callIdHint);
   try {
     if (!rejectedCallID) {
       const [rows] = await pool.execute(
@@ -816,16 +923,31 @@ async function processRejectCall({ io, userSockets, callerID, receiverID, callId
     console.warn('[processRejectCall] DB update failed:', dbErr.message);
   }
 
-  // Met à jour la conversation + notifie les deux côtés (discussions + logs d'appel).
   finalizeCallAndNotify(io, userSockets, rejectedCallID)
     .catch((err) => console.warn('[processRejectCall] finalizeCallAndNotify error:', err.message));
 
   const rejectedCallIdStr = rejectedCallID != null ? String(rejectedCallID) : null;
   emitToUser(io, callerID, 'call_rejected', { callId: rejectedCallIdStr });
 
-  // FCM au caller pour arrêter la sonnerie (cas où receiver est en background)
-  notifyCallEnded(callerID, receiverID, 'Destinataire', rejectedCallID)
-    .catch((err) => console.warn('[processRejectCall] FCM notifyCallEnded error:', err.message));
+  notifyCallEnded(callerID, receiverID, 'Destinataire', rejectedCallID, {
+    reason: 'rejected_elsewhere',
+  }).catch((err) => console.warn('[processRejectCall] FCM notifyCallEnded error:', err.message));
+
+  const siblingPayload = {
+    callId: rejectedCallIdStr,
+    reason: 'rejected_elsewhere',
+    claimedByAnotherDevice: true,
+  };
+  if (rejectingDeviceId) {
+    emitToUserExceptDevice(io, receiverID, rejectingDeviceId, 'call_ended', siblingPayload);
+    notifyCallEnded(receiverID, callerID, 'Appel refusé sur un autre appareil', rejectedCallID, {
+      excludeDeviceId: rejectingDeviceId,
+      reason: 'rejected_elsewhere',
+      claimedByAnotherDevice: true,
+    }).catch((err) => console.warn('[processRejectCall] FCM siblings:', err.message));
+  } else {
+    emitToUser(io, receiverID, 'call_ended', siblingPayload);
+  }
 
   console.log(`[processRejectCall] !! Refus receiver=${receiverID} → caller=${callerID} callId=${rejectedCallIdStr}`);
   return { ok: true, callId: rejectedCallID };
@@ -839,7 +961,16 @@ const iceCandidate = (io, socket, userSockets) => {
       const targetID = toInt(targetUserId);
       if (!targetID || !candidate) return;
 
-      emitToUser(io, targetID, 'ice_candidate', { candidate });
+      const selfEntry = callState.getEntry(socket.alanyaID);
+      const callKey = selfEntry?.callId != null ? String(selfEntry.callId) : null;
+      const targetDeviceId = callKey
+        ? callDeviceOwnership.getActiveDeviceId(callKey, targetID)
+        : null;
+      if (targetDeviceId) {
+        emitToDevice(io, targetID, targetDeviceId, 'ice_candidate', { candidate });
+      } else {
+        emitToUser(io, targetID, 'ice_candidate', { candidate });
+      }
     } catch (error) {
       console.error('[Socket ice_candidate]', error.message);
     }
@@ -881,6 +1012,7 @@ const endCall = (io, socket, userSockets) => {
       // État autoritaire : les deux participants repassent « idle ».
       callState.clear(callerID);
       if (targetID) callState.clear(targetID);
+      if (endedCallID != null) callDeviceOwnership.release(String(endedCallID));
 
       if (callerID && endedCallID == null) {
         try {
@@ -917,10 +1049,15 @@ const endCall = (io, socket, userSockets) => {
 
       if (targetID) {
         const endedCallIdStr = endedCallID != null ? String(endedCallID) : null;
-        emitToUser(io, targetID, 'call_ended', { callId: endedCallIdStr });
+        emitToUser(io, targetID, 'call_ended', {
+          callId: endedCallIdStr,
+          reason: 'caller_ended',
+        });
 
         // Envoyer FCM au receiver pour arrêter la sonnerie (cas où receiver est en background)
-        notifyCallEnded(targetID, callerID, 'L\'appelant', endedCallID)
+        notifyCallEnded(targetID, callerID, 'L\'appelant', endedCallID, {
+          reason: 'caller_ended',
+        })
           .catch((err) => console.warn('[Socket end_call] FCM notifyCallEnded error:', err.message));
       }
 
@@ -1008,7 +1145,7 @@ async function closeSessionHistoryFor(sessionId, userID) {
   }
 }
 
-function failInvite(io, sessionId, reason) {
+function failInvite(io, sessionId, reason, { decliningDeviceId = null } = {}) {
   const session = callSessions.get(sessionId);
   if (!session?.pending) return;
 
@@ -1021,6 +1158,7 @@ function failInvite(io, sessionId, reason) {
   callSessions.abortPending(sessionId);
   callState.clear(inviteeID);
   pendingCalls.clear(inviteeID);
+  callDeviceOwnership.release(sessionId);
 
   for (const uid of present) {
     emitToUser(io, uid, 'call_conf_failed', {
@@ -1031,10 +1169,24 @@ function failInvite(io, sessionId, reason) {
     });
   }
 
-  if (reason !== 'declined') {
-    emitToUser(io, inviteeID, 'call_ended', { callId: sessionId });
-    notifyCallEnded(inviteeID, present[0] ?? null, 'Correspondant', sessionId)
-      .catch((err) => console.warn('[Socket call_add] FCM call_ended error:', err.message));
+  // Toujours stopper les appareils de C (y compris declined) — ExceptDevice si connu.
+  const endedPayload = {
+    callId: sessionId,
+    reason: reason === 'declined' ? 'rejected_elsewhere' : 'cancelled',
+    claimedByAnotherDevice: reason === 'declined',
+  };
+  if (decliningDeviceId) {
+    emitToUserExceptDevice(io, inviteeID, decliningDeviceId, 'call_ended', endedPayload);
+    notifyCallEnded(inviteeID, present[0] ?? null, 'Correspondant', sessionId, {
+      excludeDeviceId: decliningDeviceId,
+      reason: endedPayload.reason,
+      claimedByAnotherDevice: !!endedPayload.claimedByAnotherDevice,
+    }).catch((err) => console.warn('[Socket call_add] FCM call_ended error:', err.message));
+  } else {
+    emitToUser(io, inviteeID, 'call_ended', endedPayload);
+    notifyCallEnded(inviteeID, present[0] ?? null, 'Correspondant', sessionId, {
+      reason: endedPayload.reason,
+    }).catch((err) => console.warn('[Socket call_add] FCM call_ended error:', err.message));
   }
 }
 
@@ -1222,7 +1374,9 @@ const confReject = (io, socket, userSockets) => {
       if (!socket.authenticated) return;
       const session = callSessions.getByUser(socket.alanyaID);
       if (!session || !callSessions.isPending(session, socket.alanyaID)) return;
-      failInvite(io, session.sessionId, 'declined');
+      failInvite(io, session.sessionId, 'declined', {
+        decliningDeviceId: normalizeDeviceId(socket.deviceId),
+      });
     } catch (error) {
       console.error('[Socket call_conf_reject]', error.message);
     }
@@ -1234,14 +1388,47 @@ const confJoin = (io, socket, userSockets) => {
     try {
       if (!socket.authenticated) return;
       const inviteeID = socket.alanyaID;
+      const deviceId = normalizeDeviceId(socket.deviceId);
+      if (!deviceId) {
+        socket.emit('call_error', { code: 'DEVICE_ID_REQUIRED' });
+        return;
+      }
+
       const session = callSessions.getByUser(inviteeID);
       if (!session || !callSessions.isPending(session, inviteeID)) return;
 
       const { sessionId } = session;
+      if (session.pending.acceptedByDeviceId) {
+        socket.emit('call_error', {
+          code: 'CALL_ALREADY_JOINED_ON_OTHER_DEVICE',
+          callId: sessionId,
+        });
+        return;
+      }
+
+      session.pending.acceptedByDeviceId = deviceId;
+      session.pending.acceptedSocketId = socket.id;
+
       const mode = session.mode || 'join';
       const present = callSessions.participantIds(session);
       const promoted = callSessions.promotePending(sessionId);
       if (!promoted) return;
+
+      // Ownership session : C claim ; A/B repris depuis originCallId si possible.
+      callDeviceOwnership.tryClaim(sessionId, inviteeID, deviceId, socket.id);
+      if (session.originCallId) {
+        for (const uid of present) {
+          const prev = callDeviceOwnership.getEntry(String(session.originCallId), uid);
+          if (prev?.activeDeviceId) {
+            callDeviceOwnership.setCalling(sessionId, uid, {
+              activeDeviceId: prev.activeDeviceId,
+              activeSocketId: prev.activeSocketId,
+            });
+            const entry = callDeviceOwnership.getEntry(sessionId, uid);
+            if (entry) entry.state = 'active';
+          }
+        }
+      }
 
       pendingCalls.clear(inviteeID);
       callState.setInCall(inviteeID, {
@@ -1249,8 +1436,21 @@ const confJoin = (io, socket, userSockets) => {
         peerId: present[0] ?? null,
         isVideo: session.isVideo,
       });
+      socket.currentCallID = sessionId;
 
-      console.log(`[Socket call_add] ✔ ${inviteeID} rejoint session=${sessionId} mode=${mode} (présents=[${present}])`);
+      console.log(`[Socket call_add] ✔ ${inviteeID} device=${deviceId} rejoint session=${sessionId} mode=${mode}`);
+
+      const elsewherePayload = {
+        callId: sessionId,
+        reason: 'answered_elsewhere',
+        claimedByAnotherDevice: true,
+      };
+      emitToUserExceptDevice(io, inviteeID, deviceId, 'call_ended', elsewherePayload);
+      notifyCallEnded(inviteeID, present[0] ?? null, 'Appel répondu sur un autre appareil', sessionId, {
+        excludeDeviceId: deviceId,
+        reason: 'answered_elsewhere',
+        claimedByAnotherDevice: true,
+      }).catch((err) => console.warn('[Socket call_conf_join] FCM siblings:', err.message));
 
       if (mode === 'transfer') {
         callSessions.markTransferJoined(
@@ -1273,14 +1473,16 @@ const confJoin = (io, socket, userSockets) => {
       const inviteeCard = cards.get(inviteeID) ?? fallback(inviteeID);
 
       for (const uid of present) {
-        emitToUser(io, uid, 'call_conf_joined', {
-          sessionId,
-          user: inviteeCard,
-          mode,
-        });
+        const activeDid = callDeviceOwnership.getActiveDeviceId(sessionId, uid);
+        const payload = { sessionId, user: inviteeCard, mode };
+        if (activeDid) {
+          emitToDevice(io, uid, activeDid, 'call_conf_joined', payload);
+        } else {
+          emitToUser(io, uid, 'call_conf_joined', payload);
+        }
       }
 
-      emitToUser(io, inviteeID, 'call_conf_peers', {
+      emitToDevice(io, inviteeID, deviceId, 'call_conf_peers', {
         sessionId,
         isVideo: session.isVideo,
         mode,
@@ -1300,6 +1502,14 @@ const confReady = (io, socket, userSockets) => {
       const sessionId = data?.sessionId?.toString();
       const peerId = toInt(data?.peerId);
       if (!sessionId || !peerId) return;
+
+      const deviceId = normalizeDeviceId(socket.deviceId);
+      if (!deviceId || !callDeviceOwnership.isOwnerDevice(sessionId, reporterID, deviceId)) {
+        console.log(
+          `[Socket call_conf_ready] ignored reporter=${reporterID} reason=not_owner_device`,
+        );
+        return;
+      }
 
       const result = callSessions.registerTransferReady({
         sessionId,
@@ -1325,10 +1535,16 @@ const confReady = (io, socket, userSockets) => {
           `[Socket call_conf_ready] ✔ armed session=${sessionId} ` +
           `reporter=${reporterID} peer=${peerId} → leave ${initiatorId} in ${TRANSFER_AUTO_LEAVE_MS}ms`,
         );
-        emitToUser(io, initiatorId, 'call_transfer_armed', {
+        const initDid = callDeviceOwnership.getActiveDeviceId(sessionId, initiatorId);
+        const armedPayload = {
           sessionId,
           leaveInMs: TRANSFER_AUTO_LEAVE_MS,
-        });
+        };
+        if (initDid) {
+          emitToDevice(io, initiatorId, initDid, 'call_transfer_armed', armedPayload);
+        } else {
+          emitToUser(io, initiatorId, 'call_transfer_armed', armedPayload);
+        }
       }
     } catch (error) {
       console.error('[Socket call_conf_ready]', error.message);
@@ -1347,6 +1563,10 @@ const createGroupCall = (io, socket, userSockets) => {
 
       const callerID = toInt(callerId) || socket.alanyaID;
       const videoCall = !!isVideo;
+      const callerDeviceId = normalizeDeviceId(socket.deviceId);
+      if (!callerDeviceId) {
+        return socket.emit('call_error', { code: 'DEVICE_ID_REQUIRED' });
+      }
       const inviteLimit = maxInvitees(videoCall);
       const uniqueTargets = [...new Set(
         targetUserIds.map(toInt).filter((id) => id && id !== callerID),
@@ -1369,6 +1589,12 @@ const createGroupCall = (io, socket, userSockets) => {
 
       socket.join(`group_${roomId}`);
       socket.currentGroupRoom = roomId;
+      callDeviceOwnership.setCalling(String(roomId), callerID, {
+        activeDeviceId: callerDeviceId,
+        activeSocketId: socket.id,
+      });
+      const callerOwn = callDeviceOwnership.getEntry(String(roomId), callerID);
+      if (callerOwn) callerOwn.state = 'active';
 
       const fcmTargets = [];
       for (const targetID of uniqueTargets) {
@@ -1401,6 +1627,19 @@ const joinGroupCall = (io, socket, userSockets) => {
       if (!roomId || !userId) return;
 
       const userID = toInt(userId) || socket.alanyaID;
+      const deviceId = normalizeDeviceId(socket.deviceId);
+      if (!deviceId) {
+        return socket.emit('call_error', { code: 'DEVICE_ID_REQUIRED' });
+      }
+
+      const roomKey = String(roomId);
+      const claim = callDeviceOwnership.tryClaim(roomKey, userID, deviceId, socket.id);
+      if (!claim.ok) {
+        return socket.emit('call_error', {
+          code: 'CALL_ANSWERED_ELSEWHERE',
+          callId: roomKey,
+        });
+      }
 
       let room = groupRooms.get(roomId);
       if (!room || !(room.participants instanceof Map)) {
@@ -1421,6 +1660,19 @@ const joinGroupCall = (io, socket, userSockets) => {
 
       socket.join(`group_${roomId}`);
       socket.currentGroupRoom = roomId;
+
+      if (!claim.alreadyOwner) {
+        emitToUserExceptDevice(io, userID, deviceId, 'call_ended', {
+          callId: roomKey,
+          reason: 'answered_elsewhere',
+          claimedByAnotherDevice: true,
+        });
+        notifyCallEnded(userID, null, 'Appel répondu sur un autre appareil', roomKey, {
+          excludeDeviceId: deviceId,
+          reason: 'answered_elsewhere',
+          claimedByAnotherDevice: true,
+        }).catch(() => {});
+      }
 
       socket.to(`group_${roomId}`).emit('group_user_joined', {
         roomId,
@@ -1512,12 +1764,17 @@ const groupOffer = (io, socket, userSockets) => {
       const { toUserId, fromUserId, offer, roomId } = data;
       const targetID = toInt(toUserId);
       if (!targetID || !offer) return;
-
-      emitToUser(io, targetID, 'group_offer', {
+      const rId = roomId != null ? String(roomId) : null;
+      const targetDid = rId
+        ? callDeviceOwnership.getActiveDeviceId(rId, targetID)
+        : null;
+      const payload = {
         fromUserId: String(fromUserId || socket.alanyaID),
         offer,
         roomId,
-      });
+      };
+      if (targetDid) emitToDevice(io, targetID, targetDid, 'group_offer', payload);
+      else emitToUser(io, targetID, 'group_offer', payload);
     } catch (error) {
       console.error('[Socket group_offer]', error.message);
     }
@@ -1531,12 +1788,17 @@ const groupAnswer = (io, socket, userSockets) => {
       const { toUserId, fromUserId, answer, roomId } = data;
       const targetID = toInt(toUserId);
       if (!targetID || !answer) return;
-
-      emitToUser(io, targetID, 'group_answer', {
+      const rId = roomId != null ? String(roomId) : null;
+      const targetDid = rId
+        ? callDeviceOwnership.getActiveDeviceId(rId, targetID)
+        : null;
+      const payload = {
         fromUserId: String(fromUserId || socket.alanyaID),
         answer,
         roomId,
-      });
+      };
+      if (targetDid) emitToDevice(io, targetID, targetDid, 'group_answer', payload);
+      else emitToUser(io, targetID, 'group_answer', payload);
     } catch (error) {
       console.error('[Socket group_answer]', error.message);
     }
@@ -1550,12 +1812,20 @@ const groupIceCandidate = (io, socket, userSockets) => {
       const { toUserId, fromUserId, candidate, roomId } = data;
       const targetID = toInt(toUserId);
       if (!targetID || !candidate) return;
-
-      emitToUser(io, targetID, 'group_ice_candidate', {
+      const rId = roomId != null ? String(roomId) : null;
+      const targetDid = rId
+        ? callDeviceOwnership.getActiveDeviceId(rId, targetID)
+        : null;
+      const payload = {
         fromUserId: String(fromUserId || socket.alanyaID),
         candidate,
         roomId,
-      });
+      };
+      if (targetDid) {
+        emitToDevice(io, targetID, targetDid, 'group_ice_candidate', payload);
+      } else {
+        emitToUser(io, targetID, 'group_ice_candidate', payload);
+      }
     } catch (error) {
       console.error('[Socket group_ice_candidate]', error.message);
     }

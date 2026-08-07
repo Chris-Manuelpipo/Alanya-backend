@@ -198,6 +198,18 @@ function twoWay() {
   callSessions.promotePending(s7.sessionId);
   callState.setInCall(NADIA, { peerId: CHRIS, callId: s7.sessionId });
 
+  // Ownership : B (AWA) est le device média actif pour call_conf_ready.
+  const callDeviceOwnership = require('../state/callDeviceOwnership');
+  callDeviceOwnership._reset();
+  callDeviceOwnership.setCalling(s7.sessionId, CHRIS, {
+    activeDeviceId: 'dev-A',
+    activeSocketId: 'sa',
+  });
+  const eA = callDeviceOwnership.getEntry(s7.sessionId, CHRIS);
+  if (eA) eA.state = 'active';
+  callDeviceOwnership.tryClaim(s7.sessionId, AWA, 'dev-B', 'sb');
+  callDeviceOwnership.tryClaim(s7.sessionId, NADIA, 'dev-C', 'sc');
+
   const io7 = fakeIo();
   const scheduled = [];
   const realSetTimeout = global.setTimeout;
@@ -228,6 +240,7 @@ function twoWay() {
     const fakeSocket = {
       authenticated: true,
       alanyaID: AWA,
+      deviceId: 'dev-B',
       on(event, fn) {
         handlers[event] = fn;
       },
@@ -241,7 +254,7 @@ function twoWay() {
     });
 
     assert.ok(
-      io7.eventsFor(CHRIS).includes('call_transfer_armed'),
+      io7.sent.some((e) => e.event === 'call_transfer_armed'),
       'initiateur reçoit call_transfer_armed',
     );
     const armed = callSessions.get(s7.sessionId);

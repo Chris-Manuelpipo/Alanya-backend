@@ -1,6 +1,9 @@
 /**
- * Registre multi-socket par utilisateur + helpers d'émission via room user_*.
+ * Registre multi-socket par utilisateur + helpers d'émission via room user_*
+ * et rooms account-scoped user_<id>_device_<deviceId>.
  */
+
+const { normalizeDeviceId, deviceRoom } = require('./deviceId');
 
 function createUserSocketRegistry() {
   return new Map();
@@ -41,6 +44,55 @@ function emitToUser(io, alanyaID, event, payload) {
   io.to(`user_${Number(alanyaID)}`).emit(event, payload);
 }
 
+function emitToSocket(io, socketId, event, payload) {
+  if (!io || !socketId) return;
+  io.to(socketId).emit(event, payload);
+}
+
+/**
+ * Émet vers la room account-scoped d'un appareil.
+ * @returns {boolean} true si room valide et emit tenté
+ */
+function emitToDevice(io, userId, deviceId, event, payload) {
+  if (!io) return false;
+  const room = deviceRoom(userId, deviceId);
+  if (!room) return false;
+  io.to(room).emit(event, payload);
+  return true;
+}
+
+/**
+ * Émet à tous les sockets du compte sauf ceux du device exclu.
+ * Primitive primaire pour stopper les appareils frères (CallKit / média).
+ */
+function emitToUserExceptDevice(io, userId, excludedDeviceId, event, payload) {
+  if (!io || userId == null) return;
+  const room = io.sockets?.adapter?.rooms?.get(`user_${Number(userId)}`);
+  if (!room) return;
+  const excluded = normalizeDeviceId(excludedDeviceId);
+  for (const sid of room) {
+    const s = io.sockets.sockets.get(sid);
+    if (!s) continue;
+    const did = normalizeDeviceId(s.deviceId);
+    if (excluded && did && did === excluded) continue;
+    s.emit(event, payload);
+  }
+}
+
+/**
+ * Émet à tous sauf un socketId (actions locales uniquement — pas pour stop CallKit).
+ */
+function emitToUserExceptSocket(io, userId, exceptSocketId, event, payload) {
+  if (!io || userId == null) return;
+  const room = io.sockets?.adapter?.rooms?.get(`user_${Number(userId)}`);
+  if (!room) return;
+  for (const sid of room) {
+    if (exceptSocketId && sid === exceptSocketId) continue;
+    const s = io.sockets.sockets.get(sid);
+    if (s) s.emit(event, payload);
+  }
+}
+
 function isUserOnline(io, alanyaID) {
   if (!io?.sockets?.adapter?.rooms) return false;
   const room = io.sockets.adapter.rooms.get(`user_${Number(alanyaID)}`);
@@ -49,13 +101,6 @@ function isUserOnline(io, alanyaID) {
 
 /**
  * Vrai si AU MOINS UNE socket du compte se déclare au premier plan.
- *
- * C'est la définition de la présence « en ligne » : une socket ouverte ne
- * suffit pas (l'app peut être en arrière-plan tout en gardant sa socket), il
- * faut que le client l'ait explicitement signalé via `presence:online`.
- * L'agrégation sur toute la room gère le multi-appareil : un téléphone qui
- * passe en arrière-plan ne doit pas éteindre la présence si la tablette est
- * encore active.
  */
 function hasForegroundSocket(io, alanyaID) {
   if (!io?.sockets?.adapter?.rooms) return false;
@@ -69,16 +114,6 @@ function hasForegroundSocket(io, alanyaID) {
 
 /**
  * Ferme les sockets d'un appareil précis, à sa révocation.
- *
- * L'event `auth:device_revoked` demande au client de se déconnecter lui-même ;
- * ceci ne dépend pas de sa coopération. Sans cette fermeture, un appareil
- * révoqué continuerait de recevoir messages, appels et présence en temps réel
- * tant qu'il garde sa socket ouverte — la révocation ne mordrait que sur REST.
- *
- * La clé est `appareilId` (porté par le JWT), pas `device_id` : les sockets
- * s'authentifient avec l'UUID applicatif du client, distinct de l'identifiant
- * matériel stocké dans `appareils.device_id`.
- *
  * @returns {number} nombre de sockets fermées
  */
 function disconnectAppareilSockets(io, alanyaID, appareilId) {
@@ -86,7 +121,6 @@ function disconnectAppareilSockets(io, alanyaID, appareilId) {
   const room = io.sockets.adapter.rooms.get(`user_${Number(alanyaID)}`);
   if (!room) return 0;
   let closed = 0;
-  // Copie : `disconnect` retire la socket de la room pendant l'itération.
   for (const sid of [...room]) {
     const s = io.sockets.sockets.get(sid);
     if (s && s.appareilId != null && Number(s.appareilId) === Number(appareilId)) {
@@ -97,7 +131,7 @@ function disconnectAppareilSockets(io, alanyaID, appareilId) {
   return closed;
 }
 
-/** device_id des sockets authentifiés dans user_{alanyaID}. */
+/** deviceId normalisés des sockets authentifiés dans user_{alanyaID}. */
 function getConnectedDeviceIds(io, alanyaID) {
   const ids = new Set();
   if (!io?.sockets?.adapter?.rooms) return ids;
@@ -105,8 +139,8 @@ function getConnectedDeviceIds(io, alanyaID) {
   if (!room) return ids;
   for (const sid of room) {
     const s = io.sockets.sockets.get(sid);
-    const did = s?.deviceId;
-    if (did && did !== 'INDEFINI') ids.add(String(did));
+    const did = normalizeDeviceId(s?.deviceId);
+    if (did) ids.add(did);
   }
   return ids;
 }
@@ -118,7 +152,13 @@ module.exports = {
   hasUserSockets,
   hasForegroundSocket,
   emitToUser,
+  emitToSocket,
+  emitToDevice,
+  emitToUserExceptDevice,
+  emitToUserExceptSocket,
   isUserOnline,
   getConnectedDeviceIds,
   disconnectAppareilSockets,
+  deviceRoom,
+  normalizeDeviceId,
 };

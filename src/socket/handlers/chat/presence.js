@@ -4,6 +4,9 @@ const pendingCalls = require('../../state/pendingCalls');
 const meetingMuteStates = require('../../state/meetingMuteStates');
 const callState = require('../../state/callState');
 const { endActiveCallForUser, cleanupGroupRoomOnDisconnect } = require('../calls');
+const callDeviceOwnership = require('../../state/callDeviceOwnership');
+const meetingDevicePresence = require('../../state/meetingDevicePresence');
+const { normalizeDeviceId } = require('../../../utils/deviceId');
 const {
   unregisterUserSocket,
   hasForegroundSocket,
@@ -82,36 +85,36 @@ const handleDisconnect = async (io, socket, userSockets) => {
 
   const lastSocket = unregisterUserSocket(userSockets, userID, socket.id);
 
-  // Appel actif : on nettoie/arme la grâce quand le DERNIER socket du compte part,
-  // OU quand le socket qui se déconnecte est précisément celui engagé dans l'appel
-  // (socket.currentCallID, posé côté appelant dans call_user et côté destinataire
-  // dans answer_call). Sinon un kill multi-appareil laisserait l'état « in_call »
-  // orphelin et l'utilisateur apparaîtrait occupé à tort (false-busy).
+  // Appel actif : impact média seulement si ce socket/device est propriétaire,
+  // ou dernier socket du compte sans ownership (legacy).
   const entry = callState.getEntry(userID);
-  const inCallOnThisSocket = socket.currentCallID != null;
+  const callKey = entry?.callId != null ? String(entry.callId) : null;
+  const deviceId = normalizeDeviceId(socket.deviceId);
+  const isMediaOwner = callKey
+    ? (callDeviceOwnership.isOwnerDevice(callKey, userID, deviceId)
+      || callDeviceOwnership.isOwnerSocket(callKey, userID, socket.id)
+      || !callDeviceOwnership.getActiveDeviceId(callKey, userID))
+    : (socket.currentCallID != null);
   const hasActiveCall =
     !!entry && (entry.status === 'in_call' || entry.status === 'ringing');
 
-  if (hasActiveCall && (lastSocket || inCallOnThisSocket)) {
+  if (hasActiveCall && isMediaOwner && (lastSocket || socket.currentCallID != null)) {
     try {
       if (entry.status === 'in_call') {
-        // Grace period : laisser le temps au client de se reconnecter après kill.
         callState.scheduleDisconnectGrace(userID, async () => {
           try {
             await endActiveCallForUser(io, userSockets, userID, 'disconnect_grace_expired');
+            if (callKey) callDeviceOwnership.release(callKey);
           } catch (e) {
             console.warn('[Socket disconnect] grace endActiveCallForUser failed:', e.message);
           }
         });
         console.log(`[Socket disconnect] Grace period armée user=${userID} callId=${entry.callId ?? 'none'}`);
       } else {
-        // Sonnerie : grâce courte plutôt que fin immédiate. Le destinataire qui
-        // accepte depuis une notification app tuée démarre à froid et sa
-        // première socket peut tomber avant `answer_call` — terminer ici rendait
-        // l'accept cold-start irrécupérable. Le timer no-answer reste le filet.
         callState.scheduleRingingDisconnectGrace(userID, async () => {
           try {
             await endActiveCallForUser(io, userSockets, userID, 'ringing_disconnect_grace_expired');
+            if (callKey) callDeviceOwnership.release(callKey);
           } catch (e) {
             console.warn('[Socket disconnect] ringing grace endActiveCallForUser failed:', e.message);
           }
@@ -135,21 +138,29 @@ const handleDisconnect = async (io, socket, userSockets) => {
 
   const meetingID = socket.currentMeetingID;
   if (meetingID) {
-    socket.to(`meeting_${meetingID}`).emit('meeting:user_left', {
-      meetingID,
-      userID: String(userID),
-    });
-    meetingMuteStates.removeUser(meetingID, userID);
-    try {
-      await pool.execute(
-        `UPDATE participant
-         SET connecte = 0,
-             duree = TIMESTAMPDIFF(SECOND, start_time, NOW())
-         WHERE idMeeting = ? AND IDparticipant = ?`,
-        [meetingID, userID],
-      );
-    } catch (e) {
-      console.warn('[Socket disconnect] participant cleanup failed:', e.message);
+    const mID = Number(meetingID);
+    const isMeetingOwner = meetingDevicePresence.isOwnerDevice(mID, userID, deviceId)
+      || !meetingDevicePresence.getActiveDeviceId(mID, userID);
+
+    if (isMeetingOwner) {
+      meetingDevicePresence.armDisconnectGrace(mID, userID, async () => {
+        try {
+          io.to(`meeting_${meetingID}`).emit('meeting:user_left', {
+            meetingID,
+            userID: String(userID),
+          });
+          meetingMuteStates.removeUser(meetingID, userID);
+          await pool.execute(
+            `UPDATE participant
+             SET connecte = 0,
+                 duree = TIMESTAMPDIFF(SECOND, start_time, NOW())
+             WHERE idMeeting = ? AND IDparticipant = ?`,
+            [meetingID, userID],
+          );
+        } catch (e) {
+          console.warn('[Socket disconnect] meeting grace cleanup failed:', e.message);
+        }
+      });
     }
     socket.currentMeetingID = null;
   }
