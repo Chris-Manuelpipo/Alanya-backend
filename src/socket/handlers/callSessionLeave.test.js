@@ -163,6 +163,17 @@ function threeWaySession() {
   assert.strictEqual(callSessions.hasAddRight(NADIA), false, 'droit toujours consommé');
   assert.strictEqual(callSessions.get(live.sessionId).addRight, 'consumed');
 
+  // ── 2ᵉ leave après hangup : no-op (filet anti double end_call CallKit) ──────
+  // Le client peut renvoyer end_call ; leaveCallSession doit renvoyer false et
+  // l'émetteur doit rester idle sans toucher Awa/Nadia.
+  io = fakeIo();
+  assert.strictEqual(await leaveCallSession(io, null, CHRIS, 'hangup'), false);
+  assert.strictEqual(callState.get(CHRIS), 'idle');
+  assert.strictEqual(callState.get(AWA), 'in_call');
+  assert.strictEqual(callState.get(NADIA), 'in_call');
+  assert.ok(!io.sent.some((e) => e.event === 'call_ended'), '2ᵉ leave : pas de call_ended');
+  assert.ok(!io.sent.some((e) => e.event === 'call_conf_left'), '2ᵉ leave : pas de conf_left');
+
   // ── Le second départ termine réellement l'appel ─────────────────────────────
   io = fakeIo();
   assert.strictEqual(await leaveCallSession(io, null, AWA, 'hangup'), true);

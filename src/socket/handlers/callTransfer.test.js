@@ -252,7 +252,12 @@ function fireConfReady(io, sessionId) {
       assert.strictEqual(callState.get(AWA), 'in_call');
       assert.strictEqual(callState.get(NADIA), 'in_call');
       assert.ok(io.eventsFor(CHRIS).includes('call_transfer_done'));
-      assert.ok(io.eventsFor(CHRIS).includes('call_ended'));
+      // call_ended socket volontairement omis (transfer_done + FCM suffisent) ;
+      // évite un raccrochage parasite côté restants.
+      assert.ok(!io.eventsFor(AWA).includes('call_ended'));
+      assert.ok(!io.eventsFor(NADIA).includes('call_ended'));
+      assert.ok(io.eventsFor(AWA).includes('call_conf_left'));
+      assert.ok(io.eventsFor(NADIA).includes('call_conf_left'));
     } catch (e) {
       timers.restore();
       throw e;

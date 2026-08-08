@@ -418,8 +418,9 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
   }
 
   // Auto-transfert : FCM pour couper CallKit si l'app de l'initiateur est en BG/kill.
+  // Pas de call_ended socket ici : call_transfer_done suffit en foreground, et un
+  // call_ended socket risquait d'être mal interprété / doublé avec le leave.
   if (reason === 'transfer') {
-    emitToUser(io, userID, 'call_ended', { callId: sessionId });
     notifyCallEnded(userID, remaining[0] ?? null, 'Correspondant', sessionId)
       .catch((err) => console.warn('[Socket leaveCallSession] FCM transfer:', err.message));
   }
@@ -1020,9 +1021,22 @@ const endCall = (io, socket, userSockets) => {
         return;
       }
 
+      // Déjà hors appel (ex. 2ᵉ end_call CallKit après leaveCallSession) :
+      // ne pas retomber en teardown 1-à-1 vers targetUserId — sinon on envoie
+      // call_ended à l'inviteur alors que les deux restants continuent.
+      const selfStillActive = callState.getEntry(callerID);
+      if (
+        !selfStillActive ||
+        (selfStillActive.status !== 'ringing' && selfStillActive.status !== 'in_call')
+      ) {
+        socket.currentCallID     = null;
+        socket.currentCallTarget = null;
+        return;
+      }
+
       // Préférer le callId d'état (fiable) avant clear — évite un FCM call_ended
       // sans callId qui ne pourrait pas bloquer un FCM `call` tardif.
-      const selfEntry = callState.getEntry(callerID);
+      const selfEntry = selfStillActive;
       const peerEntry = targetID ? callState.getEntry(targetID) : null;
       let endedCallID =
         (selfEntry?.callId != null ? selfEntry.callId : null) ??
