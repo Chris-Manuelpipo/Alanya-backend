@@ -50,7 +50,8 @@ const {
   confReady,
   createGroupCall, joinGroupCall, leaveGroupCall, endGroupCall,
   groupOffer, groupAnswer, groupIceCandidate,
-  callMuteState, groupMuteState, callVideoState, groupVideoState, callRejoin,
+  callMuteState, groupMuteState, callVideoState, groupVideoState,
+  callResumeHandshake, callRejoin,
 } = require('./src/socket/handlers/calls');
 
 const {
@@ -160,6 +161,7 @@ io.on('connection', (socket) => {
   groupMuteState(io, socket, userSockets);
   callVideoState(io, socket, userSockets);
   groupVideoState(io, socket, userSockets);
+  callResumeHandshake(io, socket, userSockets);
   callRejoin(io, socket, userSockets);
   meetingCreate(io, socket, userSockets);
   meetingJoinRoom(io, socket, userSockets);

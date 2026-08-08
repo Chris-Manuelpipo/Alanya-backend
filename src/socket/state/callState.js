@@ -8,13 +8,15 @@
 // Statuts possibles : 'idle' (implicite, absent de la map) | 'ringing' | 'in_call'
 //
 // Chaque entrée : { status, callId, peerId, noAnswerTimer, disconnectTimer,
-//                   lastAnswer, isVideo, ringingSince }
+//                   resumeAckTimer, lastAnswer, isVideo, ringingSince }
 
 const DISCONNECT_GRACE_MS = 45 * 1000;
 // Grâce courte quand une socket tombe pendant la sonnerie (reconnexion cold-start).
 const RINGING_DISCONNECT_GRACE_MS = 10 * 1000;
 // Marge au-delà du timer no-answer (45 s) pour purger un état « ringing » fantôme.
 const STALE_RINGING_MS = 50 * 1000;
+// Délai pour recevoir call_resume_ack après auth (sinon l'appel in_call est soldé).
+const RESUME_ACK_MS = 8 * 1000;
 
 const _states = new Map(); // userId(Number) -> entry
 
@@ -110,6 +112,10 @@ function _clearTimers(entry) {
     clearTimeout(entry.disconnectTimer);
     entry.disconnectTimer = null;
   }
+  if (entry.resumeAckTimer) {
+    clearTimeout(entry.resumeAckTimer);
+    entry.resumeAckTimer = null;
+  }
 }
 
 // Marque [userId] comme « ringing ». [timer] (optionnel) est le handle du délai
@@ -123,12 +129,16 @@ function setRinging(userId, { callId = null, peerId = null, timer = null, isVide
   if (prev?.disconnectTimer) {
     clearTimeout(prev.disconnectTimer);
   }
+  if (prev?.resumeAckTimer) {
+    clearTimeout(prev.resumeAckTimer);
+  }
   _states.set(userId, {
     status: 'ringing',
     callId: callId != null ? String(callId) : (prev?.callId ?? null),
     peerId: peerId != null ? peerId : (prev?.peerId ?? null),
     noAnswerTimer: timer,
     disconnectTimer: null,
+    resumeAckTimer: null,
     lastAnswer: prev?.lastAnswer ?? null,
     isVideo: isVideo != null ? !!isVideo : !!prev?.isVideo,
     ringingSince: Date.now(),
@@ -145,6 +155,7 @@ function setInCall(userId, { callId = null, peerId = null, lastAnswer = undefine
     peerId: peerId != null ? peerId : (prev?.peerId ?? null),
     noAnswerTimer: null,
     disconnectTimer: null,
+    resumeAckTimer: null,
     lastAnswer: lastAnswer !== undefined ? lastAnswer : (prev?.lastAnswer ?? null),
     isVideo: isVideo !== undefined ? !!isVideo : !!prev?.isVideo,
     ringingSince: null,
@@ -180,6 +191,33 @@ function cancelDisconnectGrace(userId) {
   if (!entry?.disconnectTimer) return;
   clearTimeout(entry.disconnectTimer);
   entry.disconnectTimer = null;
+}
+
+function cancelResumeAck(userId) {
+  const entry = getEntry(userId);
+  if (!entry?.resumeAckTimer) return;
+  clearTimeout(entry.resumeAckTimer);
+  entry.resumeAckTimer = null;
+}
+
+/**
+ * Confirme une reprise client (call_resume_ack ou call_rejoin implicite) :
+ * annule la grâce de déconnexion et le timeout d'ack.
+ */
+function confirmResume(userId) {
+  cancelResumeAck(userId);
+  cancelDisconnectGrace(userId);
+}
+
+function scheduleResumeAck(userId, onExpire, ms = RESUME_ACK_MS) {
+  if (userId == null || typeof onExpire !== 'function') return;
+  const entry = getEntry(userId);
+  if (!entry || entry.status !== 'in_call') return;
+  cancelResumeAck(userId);
+  entry.resumeAckTimer = setTimeout(() => {
+    entry.resumeAckTimer = null;
+    onExpire();
+  }, ms);
 }
 
 function scheduleDisconnectGrace(userId, onExpire) {
@@ -222,9 +260,13 @@ module.exports = {
   setPeer,
   clear,
   cancelDisconnectGrace,
+  cancelResumeAck,
+  confirmResume,
   scheduleDisconnectGrace,
   scheduleRingingDisconnectGrace,
+  scheduleResumeAck,
   DISCONNECT_GRACE_MS,
   RINGING_DISCONNECT_GRACE_MS,
   STALE_RINGING_MS,
+  RESUME_ACK_MS,
 };

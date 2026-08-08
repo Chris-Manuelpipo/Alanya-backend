@@ -80,21 +80,15 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
   if (dRoom) socket.join(dRoom);
   socket.emit('auth:verified', { success: true, alanyaID });
 
-  // Reconnexion pendant un appel en cours (grace period après kill app).
-  callState.cancelDisconnectGrace(alanyaID);
+  // Reconnexion pendant un appel : ne PAS annuler la grâce disconnect tant que
+  // le client n'a pas confirmé (call_resume_ack). Sinon un auth:login idle
+  // ressuscite un in_call fantôme et bloque les nouveaux appels (CALLER_BUSY).
   const activeCall = callState.getEntry(alanyaID);
   if (activeCall?.status === 'in_call') {
-    const peerId = activeCall.peerId;
-    const payload = {
-      callId: activeCall.callId,
-      peerId: peerId != null ? String(peerId) : null,
-      status: 'in_call',
-      isVideo: !!activeCall.isVideo,
-      role: activeCall.lastAnswer != null ? 'caller' : 'callee',
-      answer: activeCall.lastAnswer ?? null,
-    };
-    console.log(`[Socket] call_resume user=${alanyaID} callId=${payload.callId ?? 'none'}`);
-    socket.emit('call_resume', payload);
+    const { offerCallResume } = require('./calls');
+    offerCallResume(io, socket, userSockets, alanyaID);
+  } else {
+    callState.cancelDisconnectGrace(alanyaID);
   }
 
   // Rejeu d'un appel entrant en attente : si l'utilisateur vient d'être réveillé

@@ -26,6 +26,8 @@ const {
 //   reject_call   { callerId, callId? }
 //   end_call      { targetUserId, mode? }
 //   ice_candidate { targetUserId, candidate }
+//   call_resume_ack    { callId }  — client confirme reprise après call_resume
+//   call_resume_reject { callId, reason? } — client idle sans session locale
 //
 // Serveur → Client :
 //   incoming_call { callId, callerId, callerName, callerPhoto, isVideo, offer }
@@ -37,6 +39,7 @@ const {
 //                 code CALL_SELF : la cible est l'appelant lui-même.
 //                 code CALL_ID_UNAVAILABLE : pas d'appel sans callId serveur.
 //   call_busy     { callId, targetId, reason:'busy' }   — cible déjà ringing / in_call
+//   call_resume   { callId, peerId, status, isVideo, role, answer? }
 //
 // Ownership média : callDeviceOwnership (par callId/sessionId/roomId + userId → device).
 // Rooms signaling : user_<alanyaID>_device_<normalizedDeviceId> (jamais device_<id> global).
@@ -48,6 +51,8 @@ const {
 //                 deux participants passent « ringing » + timer no-answer (45 s).
 //  - answer_call: les deux participants passent « in_call ».
 //  - reject/end/timeout/disconnect : les deux repassent « idle ».
+//  - auth:login in_call : call_resume + timeout ack (8 s) ; grâce disconnect conservée
+//    jusqu'à call_resume_ack (ou call_rejoin implicite). Reject/timeout → endActiveCall.
 //  - Tous les états terminaux émettent le FCM call_ended (avec callId) nécessaire pour
 //    couper la sonnerie/CallKit du destinataire réveillé en arrière-plan.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -990,6 +995,10 @@ const iceCandidate = (io, socket, userSockets) => {
       const callKey = selfEntry?.callId != null ? String(selfEntry.callId) : null;
       if (!callKey || !deviceId || !callDeviceOwnership.isOwnerDevice(callKey, selfId, deviceId)) {
         return;
+      }
+      // Signal média = preuve de session locale (clients sans call_resume_ack).
+      if (selfEntry.resumeAckTimer) {
+        callState.confirmResume(selfId);
       }
       const targetDeviceId = callDeviceOwnership.getActiveDeviceId(callKey, targetID);
       if (!targetDeviceId) {
@@ -2014,6 +2023,98 @@ const groupVideoState = (io, socket, userSockets) => {
 };
 
 // Renégociation WebRTC après reconnexion (kill app en appel connecté).
+/**
+ * Émet call_resume et arme le timeout d'ack SANS annuler la grâce disconnect.
+ * Auth ne doit plus appeler cancelDisconnectGrace pour un in_call.
+ */
+function offerCallResume(io, socket, userSockets, userID) {
+  const entry = callState.getEntry(userID);
+  if (!entry || entry.status !== 'in_call') return false;
+
+  const peerId = entry.peerId;
+  const callKey = entry.callId != null ? String(entry.callId) : null;
+  const payload = {
+    callId: entry.callId,
+    peerId: peerId != null ? String(peerId) : null,
+    status: 'in_call',
+    isVideo: !!entry.isVideo,
+    role: entry.lastAnswer != null ? 'caller' : 'callee',
+    answer: entry.lastAnswer ?? null,
+  };
+  console.log(`[Socket] call_resume user=${userID} callId=${payload.callId ?? 'none'}`);
+  socket.emit('call_resume', payload);
+
+  callState.scheduleResumeAck(userID, async () => {
+    try {
+      console.log(
+        `[Socket] call_resume_ack timeout user=${userID} callId=${callKey ?? 'none'}`,
+      );
+      await endActiveCallForUser(io, userSockets, userID, 'resume_ack_timeout');
+      if (callKey) callDeviceOwnership.release(callKey);
+    } catch (e) {
+      console.warn('[Socket] resume_ack_timeout endActiveCallForUser failed:', e.message);
+    }
+  });
+  return true;
+}
+
+async function _settleResumeReject(io, userSockets, userID, callId, reason) {
+  const entry = callState.getEntry(userID);
+  if (!entry || entry.status !== 'in_call') return false;
+  if (callId != null && entry.callId != null && String(entry.callId) !== String(callId)) {
+    return false;
+  }
+  const callKey = entry.callId != null ? String(entry.callId) : null;
+  console.log(
+    `[Socket] call_resume_reject user=${userID} callId=${callKey ?? 'none'} reason=${reason}`,
+  );
+  await endActiveCallForUser(io, userSockets, userID, reason);
+  if (callKey) callDeviceOwnership.release(callKey);
+  return true;
+}
+
+const callResumeHandshake = (io, socket, userSockets) => {
+  socket.on('call_resume_ack', (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const userID = socket.alanyaID;
+      const callId = data?.callId != null ? String(data.callId) : null;
+      const entry = callState.getEntry(userID);
+      if (!entry || entry.status !== 'in_call') return;
+      if (callId != null && entry.callId != null && String(entry.callId) !== callId) {
+        console.warn(
+          `[Socket call_resume_ack] callId mismatch user=${userID} got=${callId} expected=${entry.callId}`,
+        );
+        return;
+      }
+      callState.confirmResume(userID);
+      console.log(
+        `[Socket] call_resume_ack user=${userID} callId=${entry.callId ?? 'none'}`,
+      );
+    } catch (error) {
+      console.error('[Socket call_resume_ack]', error.message);
+    }
+  });
+
+  socket.on('call_resume_reject', async (data) => {
+    try {
+      if (!socket.authenticated) return;
+      const userID = socket.alanyaID;
+      const callId = data?.callId != null ? String(data.callId) : null;
+      const reason = data?.reason != null ? String(data.reason) : 'no_local_call_state';
+      await _settleResumeReject(
+        io,
+        userSockets,
+        userID,
+        callId,
+        reason === 'no_local_call_state' ? 'resume_rejected' : `resume_rejected:${reason}`,
+      );
+    } catch (error) {
+      console.error('[Socket call_resume_reject]', error.message);
+    }
+  });
+};
+
 const callRejoin = (io, socket, userSockets) => {
   socket.on('call_rejoin', async (data) => {
     try {
@@ -2024,10 +2125,13 @@ const callRejoin = (io, socket, userSockets) => {
       if (!targetID || !offer) return;
 
       const entry = callState.getEntry(userID);
-      if (!entry || entry.status !== 'in_call' || entry.peerId !== targetID) {
+      if (!entry || entry.status !== 'in_call' || Number(entry.peerId) !== targetID) {
         socket.emit('call_failed', { reason: 'Aucun appel actif à reprendre', code: 'CALL_REJOIN_INVALID' });
         return;
       }
+
+      // Clients anciens : call_rejoin vaut confirmation de reprise.
+      callState.confirmResume(userID);
 
       emitToUser(io, targetID, 'call_rejoin_offer', {
         callId: entry.callId,
@@ -2048,9 +2152,11 @@ const callRejoin = (io, socket, userSockets) => {
       if (!targetID || !answer) return;
 
       const entry = callState.getEntry(userID);
-      if (!entry || entry.status !== 'in_call' || entry.peerId !== targetID) {
+      if (!entry || entry.status !== 'in_call' || Number(entry.peerId) !== targetID) {
         return;
       }
+
+      callState.confirmResume(userID);
 
       emitToUser(io, targetID, 'call_rejoin_answer', {
         callId: entry.callId,
@@ -2065,6 +2171,7 @@ const callRejoin = (io, socket, userSockets) => {
 
 module.exports = {
   reclaimStaleBusy,
+  offerCallResume,
   callUser,
   answerCall,
   rejectCall,
@@ -2091,5 +2198,6 @@ module.exports = {
   groupMuteState,
   callVideoState,
   groupVideoState,
+  callResumeHandshake,
   callRejoin,
 };
