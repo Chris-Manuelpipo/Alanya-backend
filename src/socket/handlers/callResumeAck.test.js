@@ -1,9 +1,11 @@
 // Reprise d'appel : call_resume exige un ack client ; reject/timeout soldent
 // l'in_call fantôme (régression CALLER_BUSY après auth:login idle).
+// Owner-only : pas de broadcast ; non-owner ignore reject ; owner absent → timer dédié.
 const assert = require('assert');
 const callState = require('../state/callState');
 const callDeviceOwnership = require('../state/callDeviceOwnership');
 const pendingCalls = require('../state/pendingCalls');
+const { deviceRoom } = require('../../utils/deviceId');
 const {
   offerCallResume,
   callResumeHandshake,
@@ -19,14 +21,14 @@ function reset() {
   callDeviceOwnership.release('2000');
 }
 
-function fakeSocket(userId) {
+function fakeSocket(userId, deviceId = `dev_${userId}`) {
   const emitted = [];
   const handlers = {};
   return {
     id: `sock_${userId}`,
     alanyaID: userId,
     authenticated: true,
-    deviceId: `dev_${userId}`,
+    deviceId,
     emit(event, payload) {
       emitted.push({ event, payload });
     },
@@ -43,10 +45,18 @@ function fakeSocket(userId) {
 }
 
 function fakeIo() {
+  const roomEmits = [];
   return {
     sockets: { adapter: { rooms: new Map() } },
-    to() {
-      return { emit() {} };
+    to(room) {
+      return {
+        emit(event, payload) {
+          roomEmits.push({ room, event, payload });
+        },
+      };
+    },
+    get roomEmits() {
+      return roomEmits;
     },
   };
 }
@@ -55,42 +65,106 @@ function wait(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function setOwner(callId, userId, deviceId) {
+  callDeviceOwnership.setCalling(callId, userId, {
+    activeDeviceId: deviceId,
+    activeSocketId: `s_${userId}`,
+  });
+  const e = callDeviceOwnership.getEntry(callId, userId);
+  e.state = 'active';
+}
+
 async function main() {
-  // 1) offerCallResume émet call_resume et conserve disconnect grace.
+  // 1) offerCallResume émet call_resume vers le device owner et conserve disconnect grace.
   reset();
   callState.setInCall(10, { callId: '1329', peerId: 77, isVideo: false });
   callState.setInCall(77, { callId: '1329', peerId: 10, isVideo: false });
+  setOwner('1329', 10, 'dev_10');
   const graceFired = { n: 0 };
   callState.scheduleDisconnectGrace(10, () => {
     graceFired.n += 1;
   });
-  const sock10 = fakeSocket(10);
+  const sock10 = fakeSocket(10, 'dev_10');
   const io = fakeIo();
   const userSockets = new Map();
   assert.strictEqual(offerCallResume(io, sock10, userSockets, 10), true);
-  assert.strictEqual(sock10.emitted[0]?.event, 'call_resume');
-  assert.strictEqual(sock10.emitted[0]?.payload?.callId, '1329');
+  const resumeEmit = io.roomEmits.find((e) => e.event === 'call_resume');
+  assert.ok(resumeEmit, 'call_resume émis via emitToDevice');
+  assert.strictEqual(resumeEmit.room, deviceRoom(10, 'dev_10'));
+  assert.strictEqual(resumeEmit.payload?.callId, '1329');
   assert.ok(callState.getEntry(10)?.disconnectTimer, 'grâce disconnect conservée');
   assert.ok(callState.getEntry(10)?.resumeAckTimer, 'timeout ack armé');
   assert.strictEqual(graceFired.n, 0, 'grâce pas encore expirée');
 
+  // 1b) Socket non-owner : pas d'émission, pas de reject path.
+  reset();
+  callState.setInCall(10, { callId: '1329', peerId: 77 });
+  callState.setInCall(77, { callId: '1329', peerId: 10 });
+  setOwner('1329', 10, 'dev_10');
+  const sockSecondary = fakeSocket(10, 'dev_secondary');
+  const io2 = fakeIo();
+  assert.strictEqual(offerCallResume(io2, sockSecondary, userSockets, 10), false);
+  assert.strictEqual(
+    io2.roomEmits.filter((e) => e.event === 'call_resume').length,
+    0,
+    'pas de call_resume vers non-owner',
+  );
+  assert.strictEqual(callState.getEntry(10)?.resumeAckTimer, null, 'pas de timeout ack sur secondary');
+
+  // 1c) Owner absent : pas d'emitToUser, timer dédié puis endActiveCall.
+  reset();
+  callState.setInCall(10, { callId: '1329', peerId: 77 });
+  callState.setInCall(77, { callId: '1329', peerId: 10 });
+  // pas de setOwner
+  const io3 = fakeIo();
+  const sockNoOwner = fakeSocket(10, 'dev_10');
+  assert.strictEqual(offerCallResume(io3, sockNoOwner, userSockets, 10), false);
+  assert.strictEqual(io3.roomEmits.length, 0, 'aucun resume sans owner');
+  assert.ok(callState.getEntry(10)?.resumeOwnerMissingTimer, 'timer owner missing armé');
+  callState.cancelResumeOwnerMissing(10);
+  callState.scheduleResumeOwnerMissing(10, async () => {
+    await endActiveCallForUser(io3, userSockets, 10, 'resume_owner_missing');
+    callDeviceOwnership.release('1329');
+  }, 20);
+  await wait(60);
+  assert.strictEqual(callState.get(10), 'idle', 'owner missing nettoie caller');
+  assert.strictEqual(callState.get(77), 'idle', 'owner missing nettoie peer');
+
   // 2) call_resume_ack confirme et annule grâce + timeout.
-  callResumeHandshake(io, sock10, userSockets);
-  await sock10.trigger('call_resume_ack', { callId: '1329' });
+  reset();
+  callState.setInCall(10, { callId: '1329', peerId: 77, isVideo: false });
+  callState.setInCall(77, { callId: '1329', peerId: 10, isVideo: false });
+  setOwner('1329', 10, 'dev_10');
+  callState.scheduleDisconnectGrace(10, () => {});
+  const sockAck = fakeSocket(10, 'dev_10');
+  offerCallResume(fakeIo(), sockAck, userSockets, 10);
+  callResumeHandshake(fakeIo(), sockAck, userSockets);
+  await sockAck.trigger('call_resume_ack', { callId: '1329' });
   assert.strictEqual(callState.get(10), 'in_call', 'appel conservé après ack');
   assert.strictEqual(callState.getEntry(10)?.disconnectTimer, null, 'grâce annulée');
   assert.strictEqual(callState.getEntry(10)?.resumeAckTimer, null, 'timeout ack annulé');
 
-  // 3) call_resume_reject soldé l'appel fantôme des deux côtés.
+  // 2b) Non-owner reject ignoré — appel reste actif.
   reset();
   callState.setInCall(10, { callId: '1329', peerId: 77 });
   callState.setInCall(77, { callId: '1329', peerId: 10 });
-  callDeviceOwnership.setCalling('1329', 10, {
-    activeDeviceId: 'dev_10',
-    activeSocketId: 's1',
+  setOwner('1329', 10, 'dev_10');
+  const sockRejectSecondary = fakeSocket(10, 'dev_other');
+  callResumeHandshake(fakeIo(), sockRejectSecondary, userSockets);
+  await sockRejectSecondary.trigger('call_resume_reject', {
+    callId: '1329',
+    reason: 'no_local_call_state',
   });
-  const sockReject = fakeSocket(10);
-  callResumeHandshake(io, sockReject, userSockets);
+  assert.strictEqual(callState.get(10), 'in_call', 'reject non-owner n\'arrête pas l\'appel');
+  assert.strictEqual(callState.get(77), 'in_call');
+
+  // 3) call_resume_reject owner soldé l'appel fantôme des deux côtés.
+  reset();
+  callState.setInCall(10, { callId: '1329', peerId: 77 });
+  callState.setInCall(77, { callId: '1329', peerId: 10 });
+  setOwner('1329', 10, 'dev_10');
+  const sockReject = fakeSocket(10, 'dev_10');
+  callResumeHandshake(fakeIo(), sockReject, userSockets);
   await sockReject.trigger('call_resume_reject', {
     callId: '1329',
     reason: 'no_local_call_state',
@@ -107,11 +181,12 @@ async function main() {
   reset();
   callState.setInCall(10, { callId: '1329', peerId: 77 });
   callState.setInCall(77, { callId: '1329', peerId: 10 });
-  const sockTimeout = fakeSocket(10);
-  offerCallResume(io, sockTimeout, userSockets, 10);
+  setOwner('1329', 10, 'dev_10');
+  const sockTimeout = fakeSocket(10, 'dev_10');
+  offerCallResume(fakeIo(), sockTimeout, userSockets, 10);
   callState.cancelResumeAck(10);
   callState.scheduleResumeAck(10, async () => {
-    await endActiveCallForUser(io, userSockets, 10, 'resume_ack_timeout');
+    await endActiveCallForUser(fakeIo(), userSockets, 10, 'resume_ack_timeout');
     callDeviceOwnership.release('1329');
   }, 20);
   await wait(60);
@@ -122,9 +197,10 @@ async function main() {
   reset();
   callState.setInCall(10, { callId: '2000', peerId: 77 });
   callState.setInCall(77, { callId: '2000', peerId: 10 });
-  const sockLive = fakeSocket(10);
-  offerCallResume(io, sockLive, userSockets, 10);
-  callResumeHandshake(io, sockLive, userSockets);
+  setOwner('2000', 10, 'dev_10');
+  const sockLive = fakeSocket(10, 'dev_10');
+  offerCallResume(fakeIo(), sockLive, userSockets, 10);
+  callResumeHandshake(fakeIo(), sockLive, userSockets);
   await sockLive.trigger('call_resume_ack', { callId: '2000' });
   assert.strictEqual(
     callState.isBusyForNewCall(10, 99, pendingCalls),

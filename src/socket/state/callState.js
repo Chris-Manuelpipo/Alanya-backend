@@ -8,7 +8,7 @@
 // Statuts possibles : 'idle' (implicite, absent de la map) | 'ringing' | 'in_call'
 //
 // Chaque entrée : { status, callId, peerId, noAnswerTimer, disconnectTimer,
-//                   resumeAckTimer, lastAnswer, isVideo, ringingSince }
+//                   resumeAckTimer, resumeOwnerMissingTimer, lastAnswer, isVideo, ringingSince }
 
 const DISCONNECT_GRACE_MS = 45 * 1000;
 // Grâce courte quand une socket tombe pendant la sonnerie (reconnexion cold-start).
@@ -17,6 +17,8 @@ const RINGING_DISCONNECT_GRACE_MS = 10 * 1000;
 const STALE_RINGING_MS = 50 * 1000;
 // Délai pour recevoir call_resume_ack après auth (sinon l'appel in_call est soldé).
 const RESUME_ACK_MS = 8 * 1000;
+// in_call sans activeOwnerDeviceId : timeout dédié (indépendant de disconnectGrace).
+const RESUME_OWNER_MISSING_TIMEOUT_MS = 8 * 1000;
 
 const _states = new Map(); // userId(Number) -> entry
 
@@ -116,6 +118,10 @@ function _clearTimers(entry) {
     clearTimeout(entry.resumeAckTimer);
     entry.resumeAckTimer = null;
   }
+  if (entry.resumeOwnerMissingTimer) {
+    clearTimeout(entry.resumeOwnerMissingTimer);
+    entry.resumeOwnerMissingTimer = null;
+  }
 }
 
 // Marque [userId] comme « ringing ». [timer] (optionnel) est le handle du délai
@@ -132,6 +138,9 @@ function setRinging(userId, { callId = null, peerId = null, timer = null, isVide
   if (prev?.resumeAckTimer) {
     clearTimeout(prev.resumeAckTimer);
   }
+  if (prev?.resumeOwnerMissingTimer) {
+    clearTimeout(prev.resumeOwnerMissingTimer);
+  }
   _states.set(userId, {
     status: 'ringing',
     callId: callId != null ? String(callId) : (prev?.callId ?? null),
@@ -139,6 +148,7 @@ function setRinging(userId, { callId = null, peerId = null, timer = null, isVide
     noAnswerTimer: timer,
     disconnectTimer: null,
     resumeAckTimer: null,
+    resumeOwnerMissingTimer: null,
     lastAnswer: prev?.lastAnswer ?? null,
     isVideo: isVideo != null ? !!isVideo : !!prev?.isVideo,
     ringingSince: Date.now(),
@@ -156,6 +166,7 @@ function setInCall(userId, { callId = null, peerId = null, lastAnswer = undefine
     noAnswerTimer: null,
     disconnectTimer: null,
     resumeAckTimer: null,
+    resumeOwnerMissingTimer: null,
     lastAnswer: lastAnswer !== undefined ? lastAnswer : (prev?.lastAnswer ?? null),
     isVideo: isVideo !== undefined ? !!isVideo : !!prev?.isVideo,
     ringingSince: null,
@@ -200,12 +211,20 @@ function cancelResumeAck(userId) {
   entry.resumeAckTimer = null;
 }
 
+function cancelResumeOwnerMissing(userId) {
+  const entry = getEntry(userId);
+  if (!entry?.resumeOwnerMissingTimer) return;
+  clearTimeout(entry.resumeOwnerMissingTimer);
+  entry.resumeOwnerMissingTimer = null;
+}
+
 /**
  * Confirme une reprise client (call_resume_ack ou call_rejoin implicite) :
  * annule la grâce de déconnexion et le timeout d'ack.
  */
 function confirmResume(userId) {
   cancelResumeAck(userId);
+  cancelResumeOwnerMissing(userId);
   cancelDisconnectGrace(userId);
 }
 
@@ -214,8 +233,25 @@ function scheduleResumeAck(userId, onExpire, ms = RESUME_ACK_MS) {
   const entry = getEntry(userId);
   if (!entry || entry.status !== 'in_call') return;
   cancelResumeAck(userId);
+  cancelResumeOwnerMissing(userId);
   entry.resumeAckTimer = setTimeout(() => {
     entry.resumeAckTimer = null;
+    onExpire();
+  }, ms);
+}
+
+/**
+ * in_call sans device owner : timer dédié (ne pas réutiliser disconnectGrace).
+ * Armé même si aucune socket owner n'est connectée.
+ */
+function scheduleResumeOwnerMissing(userId, onExpire, ms = RESUME_OWNER_MISSING_TIMEOUT_MS) {
+  if (userId == null || typeof onExpire !== 'function') return;
+  const entry = getEntry(userId);
+  if (!entry || entry.status !== 'in_call') return;
+  if (entry.resumeOwnerMissingTimer) return; // déjà armé
+  cancelResumeAck(userId);
+  entry.resumeOwnerMissingTimer = setTimeout(() => {
+    entry.resumeOwnerMissingTimer = null;
     onExpire();
   }, ms);
 }
@@ -261,12 +297,15 @@ module.exports = {
   clear,
   cancelDisconnectGrace,
   cancelResumeAck,
+  cancelResumeOwnerMissing,
   confirmResume,
   scheduleDisconnectGrace,
   scheduleRingingDisconnectGrace,
   scheduleResumeAck,
+  scheduleResumeOwnerMissing,
   DISCONNECT_GRACE_MS,
   RINGING_DISCONNECT_GRACE_MS,
   STALE_RINGING_MS,
   RESUME_ACK_MS,
+  RESUME_OWNER_MISSING_TIMEOUT_MS,
 };

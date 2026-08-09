@@ -1005,7 +1005,11 @@ const iceCandidate = (io, socket, userSockets) => {
         console.warn(`[Socket ice_candidate] pas de device cible user=${targetID} — drop`);
         return;
       }
-      emitToDevice(io, targetID, targetDeviceId, 'ice_candidate', { candidate });
+      emitToDevice(io, targetID, targetDeviceId, 'ice_candidate', {
+        candidate,
+        ...(data?.generation != null ? { generation: data.generation } : {}),
+        ...(data?.callId != null ? { callId: data.callId } : {}),
+      });
     } catch (error) {
       console.error('[Socket ice_candidate]', error.message);
     }
@@ -1878,6 +1882,7 @@ const groupOffer = (io, socket, userSockets) => {
         fromUserId: String(socket.alanyaID),
         offer,
         roomId: rId,
+        ...(data?.generation != null ? { generation: data.generation } : {}),
       });
     } catch (error) {
       console.error('[Socket group_offer]', error.message);
@@ -1906,6 +1911,7 @@ const groupAnswer = (io, socket, userSockets) => {
         fromUserId: String(socket.alanyaID),
         answer,
         roomId: rId,
+        ...(data?.generation != null ? { generation: data.generation } : {}),
       });
     } catch (error) {
       console.error('[Socket group_answer]', error.message);
@@ -1934,6 +1940,7 @@ const groupIceCandidate = (io, socket, userSockets) => {
         fromUserId: String(socket.alanyaID),
         candidate,
         roomId: rId,
+        ...(data?.generation != null ? { generation: data.generation } : {}),
       });
     } catch (error) {
       console.error('[Socket group_ice_candidate]', error.message);
@@ -2024,8 +2031,9 @@ const groupVideoState = (io, socket, userSockets) => {
 
 // Renégociation WebRTC après reconnexion (kill app en appel connecté).
 /**
- * Émet call_resume et arme le timeout d'ack SANS annuler la grâce disconnect.
+ * Émet call_resume UNIQUEMENT vers le device owner.
  * Auth ne doit plus appeler cancelDisconnectGrace pour un in_call.
+ * Pas d'owner → pas d'emitToUser de secours ; timer RESUME_OWNER_MISSING dédié.
  */
 function offerCallResume(io, socket, userSockets, userID) {
   const entry = callState.getEntry(userID);
@@ -2033,6 +2041,36 @@ function offerCallResume(io, socket, userSockets, userID) {
 
   const peerId = entry.peerId;
   const callKey = entry.callId != null ? String(entry.callId) : null;
+  const ownerDeviceId = callKey
+    ? callDeviceOwnership.getActiveDeviceId(callKey, userID)
+    : null;
+
+  if (!ownerDeviceId) {
+    console.log(
+      `[Socket] call_resume skipped (no owner) user=${userID} callId=${callKey ?? 'none'}`,
+    );
+    callState.scheduleResumeOwnerMissing(userID, async () => {
+      try {
+        console.log(
+          `[Socket] resume_owner_missing timeout user=${userID} callId=${callKey ?? 'none'}`,
+        );
+        await endActiveCallForUser(io, userSockets, userID, 'resume_owner_missing');
+        if (callKey) callDeviceOwnership.release(callKey);
+      } catch (e) {
+        console.warn('[Socket] resume_owner_missing endActiveCallForUser failed:', e.message);
+      }
+    });
+    return false;
+  }
+
+  const socketDid = normalizeDeviceId(socket.deviceId);
+  if (!socketDid || socketDid !== ownerDeviceId) {
+    console.log(
+      `[Socket] call_resume skipped (non-owner socket) user=${userID} device=${socketDid ?? 'none'} owner=${ownerDeviceId}`,
+    );
+    return false;
+  }
+
   const payload = {
     callId: entry.callId,
     peerId: peerId != null ? String(peerId) : null,
@@ -2041,8 +2079,8 @@ function offerCallResume(io, socket, userSockets, userID) {
     role: entry.lastAnswer != null ? 'caller' : 'callee',
     answer: entry.lastAnswer ?? null,
   };
-  console.log(`[Socket] call_resume user=${userID} callId=${payload.callId ?? 'none'}`);
-  socket.emit('call_resume', payload);
+  console.log(`[Socket] call_resume user=${userID} callId=${payload.callId ?? 'none'} device=${ownerDeviceId}`);
+  emitToDevice(io, userID, ownerDeviceId, 'call_resume', payload);
 
   callState.scheduleResumeAck(userID, async () => {
     try {
@@ -2087,6 +2125,19 @@ const callResumeHandshake = (io, socket, userSockets) => {
         );
         return;
       }
+      const callKey = entry.callId != null ? String(entry.callId) : null;
+      const deviceId = normalizeDeviceId(socket.deviceId);
+      // Seul le device owner peut confirmer la reprise.
+      if (
+        callKey &&
+        callDeviceOwnership.getActiveDeviceId(callKey, userID) &&
+        (!deviceId || !callDeviceOwnership.isOwnerDevice(callKey, userID, deviceId))
+      ) {
+        console.log(
+          `[Socket] call_resume_ack ignored (non-owner) user=${userID} device=${deviceId ?? 'none'}`,
+        );
+        return;
+      }
       callState.confirmResume(userID);
       console.log(
         `[Socket] call_resume_ack user=${userID} callId=${entry.callId ?? 'none'}`,
@@ -2102,6 +2153,21 @@ const callResumeHandshake = (io, socket, userSockets) => {
       const userID = socket.alanyaID;
       const callId = data?.callId != null ? String(data.callId) : null;
       const reason = data?.reason != null ? String(data.reason) : 'no_local_call_state';
+      const entry = callState.getEntry(userID);
+      if (!entry || entry.status !== 'in_call') return;
+      const callKey = entry.callId != null ? String(entry.callId) : null;
+      const deviceId = normalizeDeviceId(socket.deviceId);
+      // Non-owner : ignore — ne jamais solder un appel actif sur le device owner.
+      if (
+        callKey &&
+        callDeviceOwnership.getActiveDeviceId(callKey, userID) &&
+        (!deviceId || !callDeviceOwnership.isOwnerDevice(callKey, userID, deviceId))
+      ) {
+        console.log(
+          `[Socket] call_resume_reject ignored (non-owner) user=${userID} device=${deviceId ?? 'none'}`,
+        );
+        return;
+      }
       await _settleResumeReject(
         io,
         userSockets,
@@ -2133,11 +2199,21 @@ const callRejoin = (io, socket, userSockets) => {
       // Clients anciens : call_rejoin vaut confirmation de reprise.
       callState.confirmResume(userID);
 
-      emitToUser(io, targetID, 'call_rejoin_offer', {
+      const targetDeviceId = callDeviceOwnership.getActiveDeviceId(
+        entry.callId != null ? String(entry.callId) : '',
+        targetID,
+      );
+      const payload = {
         callId: entry.callId,
         peerId: String(userID),
         offer,
-      });
+        ...(data?.generation != null ? { generation: data.generation } : {}),
+      };
+      if (targetDeviceId) {
+        emitToDevice(io, targetID, targetDeviceId, 'call_rejoin_offer', payload);
+      } else {
+        emitToUser(io, targetID, 'call_rejoin_offer', payload);
+      }
     } catch (error) {
       console.error('[Socket call_rejoin]', error.message);
     }
@@ -2158,11 +2234,21 @@ const callRejoin = (io, socket, userSockets) => {
 
       callState.confirmResume(userID);
 
-      emitToUser(io, targetID, 'call_rejoin_answer', {
+      const targetDeviceId = callDeviceOwnership.getActiveDeviceId(
+        entry.callId != null ? String(entry.callId) : '',
+        targetID,
+      );
+      const payload = {
         callId: entry.callId,
         peerId: String(userID),
         answer,
-      });
+        ...(data?.generation != null ? { generation: data.generation } : {}),
+      };
+      if (targetDeviceId) {
+        emitToDevice(io, targetID, targetDeviceId, 'call_rejoin_answer', payload);
+      } else {
+        emitToUser(io, targetID, 'call_rejoin_answer', payload);
+      }
     } catch (error) {
       console.error('[Socket call_rejoin_answer]', error.message);
     }
