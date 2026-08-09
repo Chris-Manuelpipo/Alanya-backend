@@ -2196,24 +2196,37 @@ const callRejoin = (io, socket, userSockets) => {
         return;
       }
 
+      const callKey = entry.callId != null ? String(entry.callId) : null;
+      const sourceDeviceId = normalizeDeviceId(socket.deviceId);
+      if (
+        !callKey ||
+        !sourceDeviceId ||
+        !callDeviceOwnership.isOwnerDevice(callKey, userID, sourceDeviceId)
+      ) {
+        console.log(
+          `[Socket call_rejoin] ignored (non-owner) user=${userID} device=${sourceDeviceId ?? 'none'}`,
+        );
+        return;
+      }
+
       // Clients anciens : call_rejoin vaut confirmation de reprise.
       callState.confirmResume(userID);
 
-      const targetDeviceId = callDeviceOwnership.getActiveDeviceId(
-        entry.callId != null ? String(entry.callId) : '',
-        targetID,
-      );
+      const targetDeviceId = callDeviceOwnership.getActiveDeviceId(callKey, targetID);
+      if (!targetDeviceId) {
+        console.warn(
+          `[Socket call_rejoin] pas de device cible user=${targetID} callId=${callKey} — drop (pas emitToUser)`,
+        );
+        return;
+      }
+
       const payload = {
         callId: entry.callId,
         peerId: String(userID),
         offer,
         ...(data?.generation != null ? { generation: data.generation } : {}),
       };
-      if (targetDeviceId) {
-        emitToDevice(io, targetID, targetDeviceId, 'call_rejoin_offer', payload);
-      } else {
-        emitToUser(io, targetID, 'call_rejoin_offer', payload);
-      }
+      emitToDevice(io, targetID, targetDeviceId, 'call_rejoin_offer', payload);
     } catch (error) {
       console.error('[Socket call_rejoin]', error.message);
     }
@@ -2232,23 +2245,36 @@ const callRejoin = (io, socket, userSockets) => {
         return;
       }
 
+      const callKey = entry.callId != null ? String(entry.callId) : null;
+      const sourceDeviceId = normalizeDeviceId(socket.deviceId);
+      if (
+        !callKey ||
+        !sourceDeviceId ||
+        !callDeviceOwnership.isOwnerDevice(callKey, userID, sourceDeviceId)
+      ) {
+        console.log(
+          `[Socket call_rejoin_answer] ignored (non-owner) user=${userID} device=${sourceDeviceId ?? 'none'}`,
+        );
+        return;
+      }
+
       callState.confirmResume(userID);
 
-      const targetDeviceId = callDeviceOwnership.getActiveDeviceId(
-        entry.callId != null ? String(entry.callId) : '',
-        targetID,
-      );
+      const targetDeviceId = callDeviceOwnership.getActiveDeviceId(callKey, targetID);
+      if (!targetDeviceId) {
+        console.warn(
+          `[Socket call_rejoin_answer] pas de device cible user=${targetID} callId=${callKey} — drop (pas emitToUser)`,
+        );
+        return;
+      }
+
       const payload = {
         callId: entry.callId,
         peerId: String(userID),
         answer,
         ...(data?.generation != null ? { generation: data.generation } : {}),
       };
-      if (targetDeviceId) {
-        emitToDevice(io, targetID, targetDeviceId, 'call_rejoin_answer', payload);
-      } else {
-        emitToUser(io, targetID, 'call_rejoin_answer', payload);
-      }
+      emitToDevice(io, targetID, targetDeviceId, 'call_rejoin_answer', payload);
     } catch (error) {
       console.error('[Socket call_rejoin_answer]', error.message);
     }
