@@ -835,6 +835,23 @@ socket.on('connect', () => console.log('Connected!'));
 
 ---
 
+## 🎨 Conception UX — Trajets de confiance
+
+Cette branche contient les livrables de conception, sans implémentation backend
+ou Flutter :
+
+- [`docs/TRAJETS_CONFIANCE.md`](docs/TRAJETS_CONFIANCE.md) — dossier produit,
+  parcours, états, règles UX et plan d'intégration ;
+- [`docs/maquettes/trajets-confiance.html`](docs/maquettes/trajets-confiance.html)
+  — planche UI principale ;
+- [`docs/maquettes/trajets-confiance-workflow.html`](docs/maquettes/trajets-confiance-workflow.html)
+  — workflow complet avec les écrans intermédiaires, erreurs, permissions,
+  alertes et vue admin ;
+- [`design-system/alanya-trajets-de-confiance/MASTER.md`](design-system/alanya-trajets-de-confiance/MASTER.md)
+  — tokens visuels et règles d'interaction.
+
+---
+
 ## 📝 Logs & Debugging
 
 Activer plus de logs :
