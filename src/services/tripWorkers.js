@@ -28,6 +28,7 @@ const {
   logEvent,
   updateTripCards,
 } = require('./tripService');
+const { notifyTripAlert, notifyTripClosed } = require('./notificationService');
 
 const KINDS = [
   'trip_eta_soon',
@@ -147,6 +148,21 @@ const transition = async (tripId, state, { reason = null, actorId = null } = {})
       ? 'trip:alert'
       : (terminal ? 'trip:closed' : 'trip:state');
     _io.to(cibles).emit(evenement, payload);
+  }
+
+  // La notification poussée, EN PLUS du socket. C'est la règle du volet : une
+  // alerte ne transite jamais par la seule room. Un destinataire dont
+  // l'application est fermée n'a aucune socket — et c'est précisément celui
+  // qu'il faut prévenir.
+  try {
+    const ids = (await loadWatchers(tripId)).map((w) => w.alanyaID);
+    if (policy.ALERT_STATES.has(state)) {
+      await notifyTripAlert(trip, ids, { io: _io, isSos: state === 'sos' });
+    } else if (terminal) {
+      await notifyTripClosed(trip, ids, { io: _io });
+    }
+  } catch (e) {
+    console.error('[Trip] notification de transition échouée:', e.message);
   }
 
   if (terminal) await disarmAll(tripId);

@@ -155,11 +155,43 @@ const ingest = async (io, socket, trip, raw) => {
     });
   }
 
+  // Détection d'arrivée. Elle POSE LA QUESTION — elle ne clôt jamais. Le coût
+  // d'un faux positif est alors une question à balayer, pas un filet rompu.
+  if (trip.state === 'active' && trip.dest_lat != null) {
+    const arrive = tripState.checkArrival(
+      trip.id,
+      p,
+      { lat: Number(trip.dest_lat), lng: Number(trip.dest_lng) },
+      {
+        radiusM: Number(trip.dest_radius_m) || policy.CONTRACT.destRadiusM,
+        hysteresisS: policy.CONTRACT.arrivalHysteresisS,
+        maxSpeedKmh: policy.CONTRACT.arrivalMaxSpeedKmh,
+        maxAccuracyM: policy.MAX_ACCURACY_M,
+      },
+    );
+    if (arrive) {
+      // Chargé paresseusement : `tripWorkers` requiert `tripService`, qui n'a
+      // pas besoin de ce fichier — un require en tête créerait un cycle.
+      const { transition } = require('../../services/tripWorkers');
+      await logEvent(trip.id, 'arrival_detected', {
+        meta: { lat: p.lat, lng: p.lng },
+      });
+      await transition(trip.id, 'awaiting_confirm');
+      return;
+    }
+  }
+
   // Ré-arme la péremption à chaque contact. Le régime — donc le délai — suit
-  // la proximité de l'échéance.
+  // la proximité de l'échéance, ET la distance au but si elle est connue.
   const msToEta = trip.eta_at ? new Date(trip.eta_at).getTime() - Date.now() : null;
-  tripState.setRegime(trip.id,
-    policy.regimeFor({ state: trip.state, msToEta, batteryPct: p.battery }).name);
+  const distDest = trip.dest_lat == null ? null : tripState.distanceM(
+    { lat: Number(trip.dest_lat), lng: Number(trip.dest_lng) }, p);
+  tripState.setRegime(trip.id, policy.regimeFor({
+    state: trip.state,
+    msToEta,
+    distanceToDestM: distDest,
+    batteryPct: p.battery,
+  }).name);
   tripState.armStale(trip.id, onStale(io));
 };
 

@@ -10,7 +10,10 @@ const {
   logTokenStale,
   hashForLog,
 } = require('../notifications/notificationLogger');
-const { buildMessagePayload } = require('../notifications/notificationContract');
+const {
+  buildMessagePayload,
+  buildTripPayload,
+} = require('../notifications/notificationContract');
 const { getMessagePushOptions } = require('../notifications/notificationPolicy');
 const { DEVICE_REGISTRY_V2, ANDROID_NATIVE_V2, IOS_RICH_NSE, IOS_VOIP_V2 } = require('../notifications/notificationFlags');
 const { resolvePushTargets, resolveCallPushTargets } = require('../notifications/pushDeviceRegistry');
@@ -798,7 +801,75 @@ const notifyMessageReadSync = async (alanyaID, conversationID, msgID = null) => 
   await sendToUser(alanyaID, payload, getMessagePushOptions());
 };
 
+
+/**
+ * Alerte de trajet — le moment pour lequel toute la fonctionnalité existe.
+ *
+ * Trois écarts délibérés avec `notifyNewMessage` :
+ *
+ *  1. **Data-only et priorité haute**, comme un appel entrant : le client doit
+ *     pouvoir rendre un plein écran, et le faire application fermée.
+ *  2. **TTL de 120 s.** Une alerte de sûreté vieille de trois heures est du
+ *     bruit — et elle décrédibilise les suivantes.
+ *  3. **Aucun filtrage par les préférences ni par « Ne pas déranger ».** C'est
+ *     le seul endroit de l'application où l'on s'autorise cela, et cela ne vaut
+ *     que pour `trip_alert` et `trip_sos`. Une alerte qu'un réglage de silence
+ *     peut étouffer n'est pas une alerte.
+ */
+const notifyTripAlert = async (trip, watcherIds, { io = null, isSos = false } = {}) => {
+  if (!Array.isArray(watcherIds) || watcherIds.length === 0) return;
+
+  let ownerName = '';
+  try {
+    const pool = require('../config/db');
+    const [rows] = await pool.execute(
+      'SELECT nom, pseudo FROM users WHERE alanyaID = ?', [trip.owner_id],
+    );
+    ownerName = rows[0]?.nom || rows[0]?.pseudo || '';
+  } catch { /* le nom est un confort, pas une condition */ }
+
+  const type = isSos ? 'trip_sos' : 'trip_alert';
+  const data = buildTripPayload({
+    type,
+    tripId: Number(trip.id),
+    state: trip.state,
+    ownerId: Number(trip.owner_id),
+    ownerName,
+    lastLat: trip.last_lat == null ? null : Number(trip.last_lat),
+    lastLng: trip.last_lng == null ? null : Number(trip.last_lng),
+    lastAt: trip.last_at || null,
+  });
+
+  await Promise.allSettled(watcherIds.map((id) =>
+    sendToUser(Number(id), data, {
+      io,
+      // Surtout PAS `skipIfDeviceOnline` : un destinataire dont l'écran est
+      // allumé sur une autre application ne verrait rien passer.
+      skipIfDeviceOnline: false,
+      android: { priority: 'high', ttl: 120_000 },
+      apns: { headers: { 'apns-priority': '10', 'apns-push-type': 'alert' } },
+    })));
+
+  console.log(`[Trip] ${type} poussé à ${watcherIds.length} destinataire(s)`);
+};
+
+/** Clôture — silencieuse, et c'est voulu : « bien arrivée » rassure, mais ne
+ *  doit réveiller personne. */
+const notifyTripClosed = async (trip, watcherIds, { io = null } = {}) => {
+  if (!Array.isArray(watcherIds) || watcherIds.length === 0) return;
+  const data = buildTripPayload({
+    type: 'trip_closed',
+    tripId: Number(trip.id),
+    state: trip.state,
+    ownerId: Number(trip.owner_id),
+  });
+  await Promise.allSettled(watcherIds.map((id) =>
+    sendToUser(Number(id), data, { io, android: { priority: 'normal' } })));
+};
+
 module.exports = {
+  notifyTripAlert,
+  notifyTripClosed,
   sendDataOnlyNotification,
   sendToUser,
   sendToUserDevices,

@@ -15,6 +15,12 @@ const NOTIFICATION_TYPES = Object.freeze([
   'status_view',
   'qr_contact_scanned',
   'broadcast',
+  // Trajets de confiance. `trip_alert` et `trip_sos` sont les deux seuls types
+  // de toute l'application qui passent outre « Ne pas déranger » : une alerte de
+  // sûreté qu'un réglage de silence peut étouffer n'est pas une alerte.
+  'trip_alert',
+  'trip_sos',
+  'trip_closed',
 ]);
 
 /**
@@ -143,9 +149,48 @@ const normalizeIncomingPayload = (raw = {}) => {
  */
 const isV2Payload = (data) => asString(data?.schemaVersion) === SCHEMA_VERSION;
 
+
+/**
+ * Charge utile d'une alerte de trajet.
+ *
+ * Data-only et haute priorité, comme les appels : le client doit pouvoir rendre
+ * un plein écran plutôt qu'une bannière, et le faire même application fermée.
+ *
+ * TTL court — deux minutes. Une alerte de sûreté affichée trois heures après
+ * coup est du bruit, et surtout elle décrédibilise les suivantes.
+ */
+const buildTripPayload = (input = {}) => {
+  const {
+    type = 'trip_alert',
+    tripId,
+    state,
+    ownerId,
+    ownerName = '',
+    lastLat = null,
+    lastLng = null,
+    lastAt = null,
+    eventId = null,
+  } = input;
+
+  return stringifyData({
+    schemaVersion: '2',
+    type,
+    eventId: eventId || `${type}_${tripId}_${Date.now()}`,
+    tripId,
+    state,
+    ownerId,
+    ownerName,
+    lastLat,
+    lastLng,
+    lastAt,
+    deeplink: `alanya://trips/${tripId}`,
+  });
+};
+
 module.exports = {
   SCHEMA_VERSION,
   NOTIFICATION_TYPES,
+  buildTripPayload,
   generateEventId,
   stringifyData,
   buildMessagePayload,
