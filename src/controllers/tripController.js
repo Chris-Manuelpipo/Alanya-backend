@@ -23,6 +23,7 @@ const {
   toSqlDate,
 } = require('../utils/tripInput');
 const {
+  TRIP_MESSAGE_TYPE,
   loadTrustCircle,
   tripRow,
   findTripById,
@@ -34,9 +35,11 @@ const {
   loadEvents,
   logEvent,
   postTripCard,
+  broadcastTripCards,
 } = require('../services/tripService');
 const { arm, transition, dedupe } = require('../services/tripWorkers');
 const { enqueue, isJobWorkerEnabled } = require('../services/jobQueue');
+const { notifyNewMessage } = require('../services/notificationService');
 
 // ---------------------------------------------------------------------------
 // POST /api/trips
@@ -109,6 +112,7 @@ const createTrip = async (req, res) => {
 
     const conn = await pool.getConnection();
     let tripId;
+    const cartes = [];
     try {
       await conn.beginTransaction();
 
@@ -132,11 +136,12 @@ const createTrip = async (req, res) => {
 
       // Instantané de l'audience, puis la carte chez chacun.
       for (const member of circle) {
-        const { msgID, conversID } = await postTripCard(conn, trip, Number(member.alanyaID));
+        const carte = await postTripCard(conn, trip, Number(member.alanyaID));
+        cartes.push(carte);
         await conn.execute(
           `INSERT INTO trip_watcher (trip_id, alanyaID, msgID, conversID, notified_at)
            VALUES (?, ?, ?, ?, NOW())`,
-          [tripId, Number(member.alanyaID), msgID, conversID],
+          [tripId, Number(member.alanyaID), carte.msgID, carte.conversID],
         );
       }
 
@@ -163,15 +168,35 @@ const createTrip = async (req, res) => {
     await arm(trip);
 
     // Hors du chemin critique : la réponse ne doit pas attendre le fan-out.
-    setImmediate(() => {
+    setImmediate(async () => {
       try {
+        // 1. La carte de conversation, en temps réel. C'est CE message que le
+        //    destinataire voit ; `trip:started` ne porte que le trajet et ne
+        //    touche pas au cache de messages.
+        broadcastTripCards(io, alanyaID, cartes);
+
+        // 2. L'état du trajet, pour les écrans de suivi déjà ouverts.
         if (io) {
           io.to(watchers.map((w) => `user_${w.alanyaID}`)).emit('trip:started', {
             trip: tripRow(trip, { isOwner: false }),
           });
         }
+
+        // 3. La notification poussée — indispensable : un destinataire dont
+        //    l'application est fermée n'a aucune socket, et c'est précisément
+        //    celui qu'il faut prévenir.
+        const nom = req.user?.nom || req.user?.pseudo || '';
+        for (const c of cartes) {
+          if (!c?.message) continue;
+          await notifyNewMessage(c.conversID, alanyaID, nom, {
+            content: c.message.content,
+            type: TRIP_MESSAGE_TYPE,
+            msgID: c.msgID,
+            senderAvatar: c.message.sender_avatar,
+          });
+        }
       } catch (err) {
-        console.error('[Trip] fan-out trip:started échoué:', err.message);
+        console.error('[Trip] diffusion du démarrage échouée:', err.message);
       }
     });
 

@@ -19,23 +19,27 @@
 const pool = require('../config/db');
 const { ensureDirectConversation } = require('./broadcastService');
 const { OPEN_STATES, TERMINAL_STATES } = require('../constants/tripPolicy');
+const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 
 const TRIP_MESSAGE_TYPE = 9;
 
-// Aperçu affiché dans la liste des conversations. Ne jamais exposer le content
-// brut — même règle que pour le type 5 (`messagePreview.js`).
-const CARD_PREVIEW = {
-  active:            '🧭 Trajet en cours',
-  awaiting_confirm:  '🧭 Arrivée à confirmer',
-  alert:             '🆘 Alerte trajet',
-  sos:               '🆘 SOS',
-  closed_confirmed:  '✅ Bien arrivé·e',
-  closed_cancelled:  '🧭 Trajet arrêté',
-  closed_expired:    '🧭 Trajet expiré',
-  closed_unwatched:  '🧭 Trajet arrêté',
-};
+/** Aperçu de la liste des conversations. On délègue à `messagePreview`, seule
+ *  définition du libellé par état — une constante locale aurait divergé du jour
+ *  où l'on ajoute un état, et `messagePreview` serait resté du code mort. */
+const cardPreview = (trip) =>
+  resolveLastMessagePreview({ content: cardContent(trip), type: TRIP_MESSAGE_TYPE });
 
-const cardPreview = (state) => CARD_PREVIEW[state] || CARD_PREVIEW.active;
+/** Même projection que `MSG_SELECT` (systemMessage.js / messageSend.js). C'est
+ *  le format qu'attend `onMessageReceived` côté Flutter : sans les colonnes
+ *  jointes, le client rejette la ligne. */
+const MSG_SELECT = `
+  SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo,
+         u.avatar_url AS sender_avatar,
+         p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
+  FROM message m
+  JOIN users u ON m.senderID = u.alanyaID
+  LEFT JOIN pays p ON u.idPays = p.idPays
+`;
 
 /** Contenu du message de type 9. Versionné : un client plus ancien doit pouvoir
  *  reconnaître qu'il ne sait pas lire, plutôt qu'afficher du JSON brut. */
@@ -246,7 +250,7 @@ const postTripCard = async (conn, trip, watcherId) => {
         SET lastMessage = ?, lastMessageAt = NOW(),
             lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
       WHERE conversID = ?`,
-    [cardPreview(trip.state), trip.owner_id, TRIP_MESSAGE_TYPE, conversID],
+    [cardPreview(trip), trip.owner_id, TRIP_MESSAGE_TYPE, conversID],
   );
 
   await conn.execute(
@@ -255,7 +259,31 @@ const postTripCard = async (conn, trip, watcherId) => {
     [conversID, watcherId],
   );
 
-  return { msgID, conversID };
+  // On relit dans la MÊME transaction, mais on n'émet pas ici : `postTripCard`
+  // tourne dans la transaction de `createTrip`, et un client qui recevrait le
+  // message avant le commit interrogerait une base qui ne le connaît pas encore.
+  // C'est l'appelant qui diffuse, après le commit.
+  const [rows] = await conn.execute(`${MSG_SELECT} WHERE m.msgID = ?`, [msgID]);
+
+  return { msgID, conversID, watcherId, message: rows[0] || null };
+};
+
+/**
+ * Diffuse les cartes fraîchement posées. **À appeler après le commit.**
+ *
+ * Sans cette diffusion, le message existait en base mais n'atteignait le
+ * destinataire qu'au prochain sync HTTP — d'où une carte qui « arrive en
+ * retard ». Le motif est celui de `postSystemMessage` : on vise les rooms de
+ * COMPTE (`user_<id>`) et non `conversation_<id>`, car un destinataire posé sur
+ * la liste des discussions n'a pas rejoint la conversation.
+ */
+const broadcastTripCards = (io, ownerId, cartes) => {
+  if (!io) return;
+  for (const c of cartes) {
+    if (!c?.message) continue;
+    io.to([`user_${Number(ownerId)}`, `user_${Number(c.watcherId)}`])
+      .emit('message:received', c.message);
+  }
 };
 
 /**
@@ -278,7 +306,7 @@ const updateTripCards = async (trip, { io = null } = {}, executor = pool) => {
   if (!rows.length) return 0;
 
   const content = cardContent(trip);
-  const preview = cardPreview(trip.state);
+  const preview = cardPreview(trip);
 
   for (const r of rows) {
     await executor.execute('UPDATE message SET content = ? WHERE msgID = ?', [content, r.msgID]);
@@ -302,6 +330,7 @@ const updateTripCards = async (trip, { io = null } = {}, executor = pool) => {
 
 module.exports = {
   TRIP_MESSAGE_TYPE,
+  broadcastTripCards,
   cardPreview,
   cardContent,
   loadTrustCircle,

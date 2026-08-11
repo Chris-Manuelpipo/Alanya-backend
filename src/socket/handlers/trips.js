@@ -141,6 +141,10 @@ const ingest = async (io, socket, trip, raw) => {
   }
 
   if (broadcast) {
+    if (process.env.TRIP_DEBUG === 'true') {
+      const n = io.sockets.adapter.rooms.get(room(trip.id))?.size ?? 0;
+      console.log(`[Trip] position diffusée · trajet ${trip.id} · ${n} socket(s) dans la room`);
+    }
     io.to(room(trip.id)).emit('trip:position', {
       tripId: Number(trip.id),
       lat: p.lat,
@@ -176,17 +180,28 @@ const onStale = (io) => async (tripId, lastPoint) => {
 const tripPosition = (io, socket) => {
   socket.on('trip:position', async (data) => {
     try {
-      if (!socket.authenticated) return;
+      if (!socket.authenticated) {
+        // Fenêtre réelle après chaque reconnexion : la socket est ouverte mais
+        // `auth:login` n'a pas encore été validé.
+        console.warn('[Trip] position ignorée — socket non authentifiée');
+        return;
+      }
       const tripId = Number(data?.tripId);
       if (!tripId) return;
 
       const trip = await findTripById(tripId);
-      if (!trip) return;
+      if (!trip) {
+        console.warn(`[Trip] position ignorée — trajet ${tripId} introuvable`);
+        return;
+      }
       // Seul le propriétaire émet — et seulement depuis l'appareil porteur.
       if (Number(trip.owner_id) !== Number(socket.alanyaID)) {
         return socket.emit('trip:error', { tripId, code: 'FORBIDDEN' });
       }
-      if (!policy.OPEN_STATES.has(trip.state)) return;
+      if (!policy.OPEN_STATES.has(trip.state)) {
+        console.warn(`[Trip] position ignorée — trajet ${tripId} en état ${trip.state}`);
+        return;
+      }
       if (trip.owner_device && socket.deviceId &&
           String(trip.owner_device) !== String(socket.deviceId)) {
         return socket.emit('trip:error', { tripId, code: 'DEVICE_NOT_OWNER' });
