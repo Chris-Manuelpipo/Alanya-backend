@@ -57,7 +57,30 @@ const resolveEta = ({ etaAt, durationMin } = {}, maxDurationH = 12, now = Date.n
     return { etaAt: new Date(t) };
   }
 
+  // Ni heure ni durée : acceptable UNIQUEMENT si une destination borne le
+  // trajet. Sans l'une ni l'autre, rien ne déclencherait jamais la confirmation
+  // et le filet n'existerait pas.
   return { error: 'etaAt ou durationMin est requis' };
+};
+
+/**
+ * Destination facultative. Renvoie `null` si absente, `{error}` si mal formée.
+ *
+ * Le libellé est géocodé **une seule fois**, côté client, à la création — jamais
+ * sur la trace : géocoder chaque position enverrait le déplacement complet de
+ * l'utilisateur à un tiers (Nominatim).
+ */
+const resolveDestination = ({ destLat, destLng, destLabel } = {}) => {
+  if (destLat == null && destLng == null) return null;
+  const lat = Number(destLat);
+  const lng = Number(destLng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { error: 'destination invalide' };
+  }
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return { error: 'destination hors bornes' };
+  }
+  return { lat, lng, label: clean(destLabel, 160) };
 };
 
 /** Format DATETIME MySQL, en UTC — la colonne ne porte pas de fuseau. */
@@ -72,5 +95,6 @@ module.exports = {
   parseTripId,
   parseKind,
   resolveEta,
+  resolveDestination,
   toSqlDate,
 };

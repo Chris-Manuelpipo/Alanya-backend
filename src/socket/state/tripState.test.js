@@ -173,4 +173,57 @@ test('un identifiant en chaîne désigne le même trajet qu’en nombre', () => 
   assert.ok(s.getEntry('1') !== null, 'la clé doit être normalisée');
 });
 
+
+// --- détection d'arrivée ----------------------------------------------------
+
+const DEST = { lat: 3.849000, lng: 11.502100 };
+const REGLES = { radiusM: 150, hysteresisS: 60, maxSpeedKmh: 15, maxAccuracyM: 100 };
+// A est à ~111 m de DEST : dans le rayon. Un point lointain pour les contrastes.
+const LOIN = pt(3.860000, 11.502100);
+
+test('arriver demande de RESTER : le premier point dans le rayon ne suffit pas', () => {
+  assert.strictEqual(s.checkArrival(1, { ...A }, DEST, REGLES, T0), false);
+});
+
+test('après l’hystérésis, l’arrivée est détectée', () => {
+  s.checkArrival(1, { ...A }, DEST, REGLES, T0);
+  const r = s.checkArrival(1, { ...A }, DEST, REGLES, T0 + 61_000);
+  assert.strictEqual(r, true);
+});
+
+test('passer devant sans s’arrêter ne déclenche rien', () => {
+  s.checkArrival(1, { ...A }, DEST, REGLES, T0);
+  // On ressort de la zone : le compteur repart de zéro.
+  s.checkArrival(1, { ...LOIN }, DEST, REGLES, T0 + 20_000);
+  const r = s.checkArrival(1, { ...A }, DEST, REGLES, T0 + 61_000);
+  assert.strictEqual(r, false, 'le faux positif numéro un doit être écarté');
+});
+
+test('rouler vite dans le rayon ne compte pas comme une arrivée', () => {
+  const roule = { ...A, speedKmh: 50 };
+  s.checkArrival(1, roule, DEST, REGLES, T0);
+  const r = s.checkArrival(1, roule, DEST, REGLES, T0 + 61_000);
+  assert.strictEqual(r, false);
+});
+
+test('un relevé trop imprécis est ignoré sans annuler l’attente en cours', () => {
+  s.checkArrival(1, { ...A }, DEST, REGLES, T0);
+  // Mesure floue au milieu : elle ne doit ni valider, ni remettre à zéro.
+  s.checkArrival(1, { ...A, accuracyM: 400 }, DEST, REGLES, T0 + 30_000);
+  const r = s.checkArrival(1, { ...A }, DEST, REGLES, T0 + 61_000);
+  assert.strictEqual(r, true, 'une seule mesure floue ne doit pas tout annuler');
+});
+
+test('l’arrivée n’est signalée qu’une fois', () => {
+  s.checkArrival(1, { ...A }, DEST, REGLES, T0);
+  assert.strictEqual(s.checkArrival(1, { ...A }, DEST, REGLES, T0 + 61_000), true);
+  assert.strictEqual(s.checkArrival(1, { ...A }, DEST, REGLES, T0 + 90_000), false);
+});
+
+test('sans destination, aucune détection', () => {
+  assert.strictEqual(s.checkArrival(1, { ...A }, null, REGLES, T0), false);
+  assert.strictEqual(
+    s.checkArrival(1, { ...A }, { lat: null, lng: null }, REGLES, T0), false);
+});
+
 console.log(`tripState : ${ok} tests passés`);

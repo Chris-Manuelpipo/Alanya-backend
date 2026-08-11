@@ -99,6 +99,11 @@ const CONTRACT = {
   graceMinutes: readInt('TRIP_GRACE_MIN', 10, { min: 2, max: 60 }),
   maxDurationH: readInt('TRIP_MAX_DURATION_H', 12, { min: 1, max: 48 }),
   destRadiusM: readInt('TRIP_DEST_RADIUS_M', 150, { min: 30, max: 2000 }),
+  // Hystérésis : il faut RESTER dans le rayon. Passer devant sa rue sans
+  // s'arrêter est le faux positif numéro un.
+  arrivalHysteresisS: readInt('TRIP_ARRIVAL_HYSTERESIS_S', 60, { min: 10, max: 600 }),
+  // Portillon de vitesse : on n'arrive pas à 60 km/h.
+  arrivalMaxSpeedKmh: readInt('TRIP_ARRIVAL_MAX_SPEED_KMH', 15, { min: 3, max: 60 }),
   // Relances au propriétaire SEUL, en minutes après l'échéance.
   reminderOffsetsMin: [0, 3, 7],
   // Rappel silencieux avant l'échéance, au propriétaire seul.

@@ -51,6 +51,8 @@ function ensure(tripId) {
       seenSeqs: new Set(),
       staleTimer: null,
       stale: false,
+      inZoneSince: null,
+      arrived: false,
     };
     _trips.set(k, e);
   }
@@ -125,6 +127,58 @@ function setRegime(tripId, regime) {
   ensure(tripId).regime = regime || 'nominal';
 }
 
+// ---------------------------------------------------------------------------
+// Détection d'arrivée
+// ---------------------------------------------------------------------------
+
+/**
+ * L'utilisateur est-il arrivé ? Trois conditions cumulatives, et une
+ * conséquence.
+ *
+ *   1. être dans le rayon ;
+ *   2. y **rester** — l'hystérésis. Passer devant sa rue sans s'arrêter est le
+ *      faux positif numéro un ;
+ *   3. rouler lentement — le portillon de vitesse.
+ *
+ * Les relevés trop imprécis ne comptent pas : en canyon urbain, une erreur de
+ * 300 m ferait « arriver » quelqu'un qui est encore loin.
+ *
+ * Et la conséquence, qui n'est pas négociable : **une arrivée détectée ne clôt
+ * rien.** Elle pose la question. Le coût d'un faux positif devient une question
+ * à balayer, jamais un filet rompu.
+ *
+ * @returns {boolean} vrai la PREMIÈRE fois que l'hystérésis est satisfaite.
+ */
+function checkArrival(tripId, point, dest, { radiusM, hysteresisS, maxSpeedKmh, maxAccuracyM }, now = Date.now()) {
+  const e = ensure(tripId);
+  if (!dest || dest.lat == null || dest.lng == null) return false;
+  if (e.arrived) return false;
+
+  // Un relevé trop flou ne peut ni confirmer ni infirmer : on l'ignore, sans
+  // remettre le compteur à zéro — sinon une seule mesure imprécise annulerait
+  // une minute d'attente légitime.
+  if (point.accuracyM != null && point.accuracyM > maxAccuracyM) return false;
+
+  const dedans = distanceM(dest, point) <= radiusM;
+  const lent = point.speedKmh == null || point.speedKmh <= maxSpeedKmh;
+
+  if (!dedans || !lent) {
+    e.inZoneSince = null;
+    return false;
+  }
+
+  if (e.inZoneSince == null) {
+    e.inZoneSince = now;
+    return false;
+  }
+
+  if (now - e.inZoneSince >= hysteresisS * 1000) {
+    e.arrived = true;
+    return true;
+  }
+  return false;
+}
+
 function getRegime(tripId) {
   return getEntry(tripId)?.regime ?? 'nominal';
 }
@@ -189,6 +243,7 @@ module.exports = {
   admit,
   setRegime,
   getRegime,
+  checkArrival,
   armStale,
   isStale,
   clear,
