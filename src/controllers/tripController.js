@@ -35,6 +35,8 @@ const {
   logEvent,
   postTripCard,
 } = require('../services/tripService');
+const { arm, transition, dedupe } = require('../services/tripWorkers');
+const { enqueue, isJobWorkerEnabled } = require('../services/jobQueue');
 
 // ---------------------------------------------------------------------------
 // POST /api/trips
@@ -57,6 +59,18 @@ const createTrip = async (req, res) => {
   }
 
   const note = clean(req.body?.note, NOTE_MAX);
+
+  // Refus explicite plutôt que promesse silencieuse. Sans le worker, aucune
+  // échéance ne se déclenche : le trajet resterait « actif » indéfiniment et
+  // personne ne serait jamais prévenu. Mieux vaut ne pas partir que partir sans
+  // filet en croyant en avoir un.
+  if (!isJobWorkerEnabled()) {
+    console.error('[Trip] refus de création : le worker de jobs ne tourne pas');
+    return res.status(503).json({
+      error: 'Service temporairement indisponible',
+      code: 'JOB_WORKER_DOWN',
+    });
+  }
 
   try {
     // Idempotence : un réseau qui bafouille ne doit pas créer deux trajets.
@@ -142,6 +156,11 @@ const createTrip = async (req, res) => {
     const trip = await findTripById(tripId);
     const watchers = await loadWatchers(tripId);
     const body = tripRow(trip, { watchers, isOwner: true });
+
+    // Armement APRÈS le commit : un job déclenché pendant la transaction ne
+    // verrait pas encore le trajet. C'est ici que naît la garantie du volet —
+    // sans cet appel, un trajet ne s'achèverait jamais tout seul.
+    await arm(trip);
 
     // Hors du chemin critique : la réponse ne doit pas attendre le fan-out.
     setImmediate(() => {
@@ -229,8 +248,290 @@ const getTrip = async (req, res) => {
   }
 };
 
+
+// ---------------------------------------------------------------------------
+// Actions du propriétaire
+// ---------------------------------------------------------------------------
+
+/** Charge un trajet ouvert dont je suis propriétaire, ou renvoie l'erreur HTTP
+ *  qui convient. Facteur commun de toutes les actions ci-dessous. */
+const monTrajetOuvert = async (req, res) => {
+  const tripId = parseTripId(req.params.tripId);
+  if (!tripId) {
+    res.status(400).json({ error: 'tripId invalide' });
+    return null;
+  }
+  const trip = await findTripById(tripId);
+  if (!trip || Number(trip.owner_id) !== Number(req.user.alanyaID)) {
+    res.status(404).json({ error: 'Trajet introuvable' });
+    return null;
+  }
+  if (!policy.OPEN_STATES.has(trip.state)) {
+    res.status(409).json({ error: 'Trajet déjà clos', code: 'TRIP_TERMINAL' });
+    return null;
+  }
+  return trip;
+};
+
+/** Confirmer son arrivée. Possible même APRÈS une alerte — mais celle-ci reste
+ *  au journal : une alerte émise se résout, elle ne s'efface pas. */
+const confirmTrip = async (req, res) => {
+  try {
+    const trip = await monTrajetOuvert(req, res);
+    if (!trip) return;
+    const apresAlerte = policy.ALERT_STATES.has(trip.state);
+    await transition(trip.id, 'closed_confirmed', {
+      reason: apresAlerte ? 'confirmed_after_alert' : 'confirmed',
+      actorId: req.user.alanyaID,
+    });
+    return res.json({ trip: tripRow(await findTripById(trip.id), { isOwner: true }) });
+  } catch (error) {
+    console.error('[Trip] confirmTrip:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+/**
+ * Prolonger. Illimité — un embouteillage ne doit pas coûter une alerte.
+ * Chaque prolongation écrit un événement visible du cercle : cela rassure sans
+ * alerter, et c'est ce qui rend le geste préférable au silence.
+ */
+const extendTrip = async (req, res) => {
+  try {
+    const trip = await monTrajetOuvert(req, res);
+    if (!trip) return;
+
+    const minutes = Number(req.body?.minutes);
+    if (!Number.isFinite(minutes) || minutes < 1 || minutes > 240) {
+      return res.status(400).json({ error: 'minutes invalide', code: 'INVALID_EXTENSION' });
+    }
+
+    // On repart de l'échéance actuelle, pas de maintenant : prolonger de 15 min
+    // à T+3 doit donner T+15, pas T+18.
+    const base = trip.eta_at ? new Date(trip.eta_at) : new Date();
+    const nouvelle = new Date(base.getTime() + minutes * 60_000);
+    const plafond = new Date(
+      new Date(trip.started_at).getTime() + Number(trip.max_duration_h) * 3600_000,
+    );
+    if (nouvelle > plafond) {
+      return res.status(409).json({
+        error: 'La durée maximale serait dépassée',
+        code: 'MAX_DURATION_REACHED',
+      });
+    }
+
+    await pool.execute(
+      `UPDATE trip
+          SET eta_at = ?, extensions = extensions + 1,
+              state = 'active', prompted_at = NULL
+        WHERE id = ?`,
+      [toSqlDate(nouvelle), trip.id],
+    );
+    const majeur = await findTripById(trip.id);
+    await logEvent(trip.id, 'extended', {
+      actorId: req.user.alanyaID,
+      meta: { minutes, etaAt: nouvelle.toISOString() },
+    });
+
+    // Ré-armement complet. `arm` commence par désarmer : sans ce DELETE,
+    // l'ancienne échéance survivrait et l'alerte partirait à l'heure initiale.
+    await arm(majeur);
+    await transition(trip.id, 'active', { actorId: req.user.alanyaID });
+
+    return res.json({ trip: tripRow(await findTripById(trip.id), { isOwner: true }) });
+  } catch (error) {
+    console.error('[Trip] extendTrip:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+/**
+ * Arrêter le partage. Toujours autorisé, sans confirmation.
+ *
+ * Le message envoyé au cercle est délibérément NEUTRE. Si arrêter paraissait
+ * suspect, arrêter deviendrait punissable par quelqu'un qui regarde
+ * par-dessus l'épaule — et la fonctionnalité se retournerait contre la personne
+ * qu'elle protège.
+ */
+const cancelTrip = async (req, res) => {
+  try {
+    const trip = await monTrajetOuvert(req, res);
+    if (!trip) return;
+    await transition(trip.id, 'closed_cancelled', {
+      reason: 'stopped_by_owner',
+      actorId: req.user.alanyaID,
+    });
+    return res.json({ trip: tripRow(await findTripById(trip.id), { isOwner: true }) });
+  } catch (error) {
+    console.error('[Trip] cancelTrip:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+/** Révoquer un destinataire. Si c'était le dernier, un job clôt le trajet cinq
+ *  minutes plus tard : un trajet sans témoin n'est plus de la sécurité. */
+const revokeWatcher = async (req, res) => {
+  try {
+    const trip = await monTrajetOuvert(req, res);
+    if (!trip) return;
+    const cible = parseTripId(req.params.alanyaID);
+    if (!cible) return res.status(400).json({ error: 'alanyaID invalide' });
+
+    const [r] = await pool.execute(
+      `UPDATE trip_watcher
+          SET state = 'revoked', revoke_reason = 'removed', revoked_at = NOW()
+        WHERE trip_id = ? AND alanyaID = ? AND state = 'active'`,
+      [trip.id, cible],
+    );
+    if (r.affectedRows === 0) {
+      return res.status(404).json({ error: 'Destinataire introuvable' });
+    }
+    await logEvent(trip.id, 'watcher_revoked', { actorId: req.user.alanyaID });
+
+    const restants = await loadWatchers(trip.id);
+    if (restants.length === 0) {
+      await enqueue('trip_no_watcher', { tripId: Number(trip.id) }, {
+        dedupeKey: dedupe(trip.id),
+        runAfter: new Date(Date.now() + policy.CONTRACT.noWatcherGraceMin * 60_000),
+      });
+    }
+    return res.json({ watchers: restants });
+  } catch (error) {
+    console.error('[Trip] revokeWatcher:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Historique et trace
+// ---------------------------------------------------------------------------
+
+/** Mes trajets passés. Réservé au propriétaire : un destinataire n'a PAS
+ *  d'historique — c'est ce qui empêche « où étais-tu mardi » d'exister. */
+const getHistory = async (req, res) => {
+  try {
+    const alanyaID = req.user.alanyaID;
+    const limite = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const curseur = parseInt(req.query.cursor, 10);
+
+    const [rows] = await pool.execute(
+      `SELECT t.id, t.owner_id, t.kind, t.state, t.eta_at, t.grace_minutes,
+              t.max_duration_h, t.extensions, t.note, t.dest_label,
+              t.dest_lat, t.dest_lng, t.dest_radius_m,
+              t.last_lat, t.last_lng, t.last_acc_m, t.last_battery, t.last_at,
+              t.stale, t.started_at, t.prompted_at, t.alerted_at,
+              t.closed_at, t.close_reason, t.owner_device, t.last_seen_at,
+              (SELECT COUNT(*) FROM trip_watcher w WHERE w.trip_id = t.id) AS wc
+         FROM trip t
+        WHERE t.owner_id = ? ${Number.isFinite(curseur) ? 'AND t.id < ?' : ''}
+        ORDER BY t.id DESC
+        LIMIT ${limite}`,
+      Number.isFinite(curseur) ? [alanyaID, curseur] : [alanyaID],
+    );
+
+    return res.json({
+      trips: rows.map((r) => ({
+        ...tripRow(r, { isOwner: true }),
+        watcherCount: Number(r.wc) || 0,
+      })),
+      nextCursor: rows.length === limite ? Number(rows[rows.length - 1].id) : null,
+    });
+  } catch (error) {
+    console.error('[Trip] getHistory:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+/** La trace, pour rejouer un trajet. Vide après la purge — c'est normal, et
+ *  l'écran doit le dire plutôt que d'afficher une carte muette. */
+const getPoints = async (req, res) => {
+  try {
+    const tripId = parseTripId(req.params.tripId);
+    if (!tripId) return res.status(400).json({ error: 'tripId invalide' });
+
+    const trip = await findTripById(tripId);
+    if (!trip) return res.status(404).json({ error: 'Trajet introuvable' });
+    const isOwner = Number(trip.owner_id) === Number(req.user.alanyaID);
+    if (!isOwner && !(await isActiveWatcher(tripId, req.user.alanyaID))) {
+      return res.status(404).json({ error: 'Trajet introuvable' });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT lat, lng, acc_m, battery, recorded_at
+         FROM trip_point WHERE trip_id = ?
+        ORDER BY recorded_at ASC LIMIT 2000`,
+      [tripId],
+    );
+    return res.json({
+      points: rows.map((r) => ({
+        lat: Number(r.lat),
+        lng: Number(r.lng),
+        accuracyM: r.acc_m == null ? null : Number(r.acc_m),
+        batteryPct: r.battery == null ? null : Number(r.battery),
+        recordedAt: r.recorded_at,
+      })),
+      purged: trip.points_purged_at != null,
+    });
+  } catch (error) {
+    console.error('[Trip] getPoints:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+/**
+ * Supprimer un trajet de son historique.
+ *
+ * ⚠ Un trajet clos sur une ALERTE est verrouillé pendant 30 jours. Ce n'est pas
+ * une contrainte technique : c'est une mesure anti-coercition. Personne ne doit
+ * pouvoir contraindre un proche à effacer la trace d'un incident dans la
+ * minute qui suit.
+ */
+const deleteTrip = async (req, res) => {
+  try {
+    const tripId = parseTripId(req.params.tripId);
+    if (!tripId) return res.status(400).json({ error: 'tripId invalide' });
+
+    const trip = await findTripById(tripId);
+    if (!trip || Number(trip.owner_id) !== Number(req.user.alanyaID)) {
+      return res.status(404).json({ error: 'Trajet introuvable' });
+    }
+    if (policy.OPEN_STATES.has(trip.state)) {
+      return res.status(409).json({
+        error: 'Arrêtez le trajet avant de le supprimer',
+        code: 'TRIP_STILL_OPEN',
+      });
+    }
+
+    if (trip.alerted_at) {
+      const verrouJusque = new Date(new Date(trip.alerted_at).getTime()
+        + policy.RETENTION.incidentDeleteLockDays * 86_400_000);
+      if (verrouJusque > new Date()) {
+        return res.status(423).json({
+          error: 'Ce trajet est conservé après une alerte',
+          code: 'TRIP_INCIDENT_LOCKED',
+          lockedUntil: verrouJusque.toISOString(),
+        });
+      }
+    }
+
+    // Le CASCADE emporte points, destinataires et événements.
+    await pool.execute('DELETE FROM trip WHERE id = ?', [tripId]);
+    return res.json({ deleted: true });
+  } catch (error) {
+    console.error('[Trip] deleteTrip:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
 module.exports = {
   createTrip,
   getActiveTrips,
   getTrip,
+  confirmTrip,
+  extendTrip,
+  cancelTrip,
+  revokeWatcher,
+  getHistory,
+  getPoints,
+  deleteTrip,
 };

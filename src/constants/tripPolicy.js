@@ -182,6 +182,17 @@ const regimeFor = ({ state, msToEta = null, distanceToDestM = null, batteryPct =
 const publicPolicy = () => ({
   version: 1,
   regimes: REGIMES,
+  // Valeurs de contrat exposées en LECTURE : l'écran de composition doit
+  // pouvoir écrire « si vous n'avez pas confirmé à 21:55, vos proches seront
+  // prévenus » AVANT que le trajet n'existe. Sans elles, il devrait supposer la
+  // grâce — et la phrase deviendrait fausse dès qu'on règle TRIP_GRACE_MIN.
+  // Le client ne les envoie jamais : c'est le serveur qui les fige à la
+  // création, dans la ligne `trip`.
+  contract: {
+    graceMinutes: CONTRACT.graceMinutes,
+    maxDurationH: CONTRACT.maxDurationH,
+    etaSoonMin: CONTRACT.etaSoonMin,
+  },
   staleFactor: STALE_FACTOR,
   staleMarginS: STALE_MARGIN_S,
   maxAccuracyM: MAX_ACCURACY_M,

@@ -46,6 +46,11 @@ const {
 } = require('./src/socket/handlers/chat');
 
 const {
+  tripSubscribe, tripUnsubscribe, tripPosition, tripPositionBatch,
+  tripClaimDevice, tripSignal, tripSeen,
+} = require('./src/socket/handlers/trips');
+
+const {
   callUser, answerCall, rejectCall, iceCandidate, endCall,
   addParticipant, cancelAddParticipant, confJoin, confReject,
   confReady,
@@ -72,6 +77,9 @@ const { purgeExpiredWelcomeStatuses } = require('./src/services/welcomeService')
 const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
 const { startVerificationScheduler, stopVerificationScheduler } = require('./src/services/verificationScheduler');
 const { withLease } = require('./src/services/schedulerLease');
+const {
+  registerTripJobHandlers, setIo: setTripIo, runNightlyTripPurge,
+} = require('./src/services/tripWorkers');
 
 let stopAccountLifecycleSchedulers = () => {};
 
@@ -142,6 +150,13 @@ io.on('connection', (socket) => {
   typingStop(io, socket, userSockets);
   messageDelivered(io, socket, userSockets);
   messageRead(io, socket, userSockets);
+  tripSubscribe(io, socket, userSockets);
+  tripUnsubscribe(io, socket, userSockets);
+  tripPosition(io, socket, userSockets);
+  tripPositionBatch(io, socket, userSockets);
+  tripClaimDevice(io, socket, userSockets);
+  tripSignal(io, socket, userSockets);
+  tripSeen(io, socket, userSockets);
   callUser(io, socket, userSockets);
   answerCall(io, socket, userSockets);
   rejectCall(io, socket, userSockets);
@@ -212,6 +227,10 @@ server.listen(PORT, () => {
   resetStalePresence();
   registerBroadcastJobHandlers();
   registerWelcomeJobHandlers();
+  // Les jobs de trajet tournent hors requête : ils n'ont pas accès à
+  // req.app.get('io'), il faut donc le leur donner explicitement.
+  setTripIo(io);
+  registerTripJobHandlers();
   initBroadcastCache().catch((e) => console.error('[Broadcast] init cache:', e.message));
   startJobWorker();
   startMeetingScheduler();
@@ -227,6 +246,12 @@ server.listen(PORT, () => {
     // le supprimait.
     withLease('welcome_status_purge', () => purgeExpiredWelcomeStatuses()).catch(
       (e) => console.error('[Welcome] purge statuts:', e.message),
+    );
+    // Trace GPS : 24 h après clôture, 30 jours si le trajet s'est clos sur une
+    // alerte. Sans cette purge, `trip_point` deviendrait un registre permanent
+    // des déplacements de tous les utilisateurs.
+    withLease('trip_nightly_purge', () => runNightlyTripPurge()).catch(
+      (e) => console.error('[Trips] purge:', e.message),
     );
   }, 24 * 60 * 60 * 1000);
 });

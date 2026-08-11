@@ -165,8 +165,37 @@ function mediaTypeLabel(type, { isViewOnce = false, mediaName } = {}) {
       return '📍 Position';
     case 7:
       return '👤 Contact';
+    case 9:
+      return '🧭 Trajet de confiance';
     default:
       return mediaName ?? 'Média';
+  }
+}
+
+
+/**
+ * Aperçu d'une carte de trajet (type 9). Le libellé suit l'ÉTAT : la carte est
+ * réécrite à chaque transition, et la liste des conversations doit suivre.
+ *
+ * Ne jamais exposer le content brut — même règle que pour les types 5 et 7.
+ */
+function tripPreviewFromContent(content) {
+  try {
+    const data = JSON.parse(content);
+    if (!data || typeof data !== 'object') return null;
+    switch (String(data.state || '')) {
+      case 'awaiting_confirm': return '🧭 Arrivée à confirmer';
+      case 'alert':            return '🆘 Alerte trajet';
+      case 'sos':              return '🆘 SOS';
+      case 'closed_confirmed': return '✅ Bien arrivé·e';
+      case 'closed_cancelled':
+      case 'closed_expired':
+      case 'closed_unwatched': return '🧭 Trajet arrêté';
+      case 'active':           return '🧭 Trajet en cours';
+      default:                 return null;
+    }
+  } catch {
+    return null;
   }
 }
 
@@ -192,6 +221,11 @@ function messagePreview({
   if (t === 5) {
     const loc = locationPreviewFromContent(content);
     return loc || mediaTypeLabel(5);
+  }
+
+  // type=9 : JSON de trajet — l'aperçu suit l'état de la carte.
+  if (t === 9) {
+    return tripPreviewFromContent(content) || mediaTypeLabel(9);
   }
 
   // type=7 : JSON contact — ne jamais exposer le content brut.
@@ -230,6 +264,7 @@ function messagePreview({
 }
 
 module.exports = {
+  tripPreviewFromContent,
   albumPreviewFromContent,
   mediaTypeLabel,
   messagePreview,

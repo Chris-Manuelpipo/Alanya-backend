@@ -126,9 +126,25 @@ async function processOneJob(conn) {
   return true;
 }
 
+/**
+ * Le worker est-il actif ?
+ *
+ * Historiquement `BROADCAST_WORKER_ENABLED` : la file ne servait qu'aux
+ * diffusions. Elle porte désormais les échéances des trajets de confiance, où
+ * l'enjeu n'est plus le même — sans worker, aucune alerte ne partirait jamais,
+ * et on promettrait un filet qui n'existe pas.
+ *
+ * `JOB_WORKER_ENABLED` est le nom qui convient ; l'ancien reste accepté pour ne
+ * pas casser les déploiements en place.
+ */
+function isJobWorkerEnabled() {
+  const v = process.env.JOB_WORKER_ENABLED ?? process.env.BROADCAST_WORKER_ENABLED;
+  return v === 'true' || v === '1';
+}
+
 async function tickWorker() {
   if (running) return;
-  if (process.env.BROADCAST_WORKER_ENABLED !== 'true') return;
+  if (!isJobWorkerEnabled()) return;
   running = true;
   try {
     await reclaimOrphans();
@@ -149,8 +165,11 @@ async function tickWorker() {
 }
 
 function startJobWorker() {
-  if (process.env.BROADCAST_WORKER_ENABLED !== 'true') {
-    console.log('[JobQueue] Worker désactivé (BROADCAST_WORKER_ENABLED != true)');
+  if (!isJobWorkerEnabled()) {
+    console.warn(
+      '[JobQueue] Worker DÉSACTIVÉ (JOB_WORKER_ENABLED != true) — '
+      + 'les échéances de trajet ne se déclencheront pas.',
+    );
     return;
   }
   console.log('[JobQueue] Worker démarré');
@@ -167,6 +186,7 @@ function stopJobWorker() {
 
 module.exports = {
   enqueue,
+  isJobWorkerEnabled,
   registerJobHandler,
   startJobWorker,
   stopJobWorker,
