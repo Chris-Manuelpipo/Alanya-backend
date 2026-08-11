@@ -14,6 +14,7 @@
         "test:qr": "node src/socket/state/qrLoginSessions.test.js && node src/socket/state/qrContactTokens.test.js",
         "test:conversations": "node src/utils/conversationParticipantsBatch.test.js && node src/utils/directConversation.test.js && node src/utils/groupHistoryJoinAck.test.js",
         "test:presence": "node src/utils/userSocketRegistry.test.js",
+        "test:trips": "node src/constants/tripPolicy.test.js && node src/utils/tripInput.test.js",
         "test:notifications:full": "npm run test:notifications && npm run test:calls && node scripts/bench/push-queue-bench.js",
         "bench:push": "node scripts/bench/push-queue-bench.js"
     },
