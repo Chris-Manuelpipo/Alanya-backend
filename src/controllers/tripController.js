@@ -20,6 +20,7 @@ const {
   parseTripId,
   parseKind,
   resolveEta,
+  resolveDestination,
   toSqlDate,
 } = require('../utils/tripInput');
 const {
@@ -56,9 +57,11 @@ const createTrip = async (req, res) => {
 
   const kind = parseKind(req.body?.kind);
   if (kind === 'sos') {
-    // Le SOS est un autre parcours : il crée un trajet déjà en alerte, sans
-    // échéance. Hors périmètre du lot 1.
-    return res.status(501).json({ error: 'SOS non disponible', code: 'SOS_NOT_AVAILABLE' });
+    // Le SOS a son propre parcours : pas d'échéance, alerte immédiate.
+    return res.status(400).json({
+      error: 'Utilisez POST /api/trips/sos',
+      code: 'USE_SOS_ENDPOINT',
+    });
   }
 
   const note = clean(req.body?.note, NOTE_MAX);
@@ -95,10 +98,24 @@ const createTrip = async (req, res) => {
       });
     }
 
+    const dest = resolveDestination(req.body ?? {});
+    if (dest?.error) {
+      return res.status(400).json({ error: dest.error, code: 'INVALID_DESTINATION' });
+    }
+
+    // Avec une destination, l'heure d'arrivée devient facultative : le rayon
+    // suffit à poser la question. Sans ni l'une ni l'autre, rien ne
+    // déclencherait jamais la confirmation — le filet n'existerait pas.
     const eta = resolveEta(req.body ?? {}, policy.CONTRACT.maxDurationH);
-    if (eta.error) {
+    if (eta.error && !dest) {
       return res.status(400).json({ error: eta.error, code: 'INVALID_ETA' });
     }
+    // Sans échéance explicite, on pose quand même un plafond : un trajet ne
+    // reste pas ouvert indéfiniment parce que la destination n'a pas été
+    // atteinte.
+    const etaAt = eta.error
+      ? new Date(Date.now() + policy.CONTRACT.maxDurationH * 3600_000)
+      : eta.etaAt;
 
     // L'audience n'est PAS un paramètre de la requête : le serveur lit la liste
     // Confiance du porteur du jeton. Le cercle est l'audience, en entier.
@@ -119,12 +136,17 @@ const createTrip = async (req, res) => {
       const [ins] = await conn.execute(
         `INSERT INTO trip
            (owner_id, client_id, kind, state, eta_at,
-            grace_minutes, max_duration_h, dest_radius_m, note, owner_device)
-         VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+            grace_minutes, max_duration_h,
+            dest_lat, dest_lng, dest_label, dest_radius_m,
+            note, owner_device)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          alanyaID, clientId, kind, toSqlDate(eta.etaAt),
+          alanyaID, clientId, kind, toSqlDate(etaAt),
           policy.CONTRACT.graceMinutes,
           policy.CONTRACT.maxDurationH,
+          dest ? dest.lat : null,
+          dest ? dest.lng : null,
+          dest ? dest.label : null,
           policy.CONTRACT.destRadiusM,
           note,
           clean(req.body?.deviceId, DEVICE_ID_MAX),
@@ -427,6 +449,182 @@ const revokeWatcher = async (req, res) => {
   }
 };
 
+
+// ---------------------------------------------------------------------------
+// SOS
+// ---------------------------------------------------------------------------
+
+/** Trois SOS par 24 h. Au-delà, on refuse : un bouton d'alarme qui part sans
+ *  cesse cesse d'être écouté, et c'est le cercle qui en paie le prix. */
+const SOS_MAX_24H = 3;
+
+const sosDepassement = async (alanyaID) => {
+  const [rows] = await pool.execute(
+    `SELECT COUNT(*) AS n
+       FROM trip_event e
+       JOIN trip t ON t.id = e.trip_id
+      WHERE t.owner_id = ? AND e.kind = 'sos'
+        AND e.created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)`,
+    [alanyaID],
+  );
+  return Number(rows[0]?.n || 0) >= SOS_MAX_24H;
+};
+
+/**
+ * SOS autonome — sans trajet en cours.
+ *
+ * Le danger n'attend pas un trajet planifié : exiger « démarrez d'abord un
+ * trajet » rendrait le SOS inutile dans le seul cas où il compte. On crée donc
+ * un trajet à la volée, sans destination ni échéance, **immédiatement en
+ * alerte**. Un seul objet métier, une seule machine à états.
+ *
+ * Si un trajet est déjà ouvert, on l'escalade au lieu d'en créer un second.
+ */
+const createSosTrip = async (req, res) => {
+  const alanyaID = req.user.alanyaID;
+  const io = req.app.get('io');
+
+  try {
+    if (await sosDepassement(alanyaID)) {
+      return res.status(429).json({
+        error: 'Trop de SOS sur les dernières 24 heures',
+        code: 'SOS_RATE_LIMITED',
+      });
+    }
+
+    // Un trajet est déjà ouvert : on l'escalade. Créer un second trajet
+    // dédoublerait l'alerte et brouillerait le message reçu par le cercle.
+    const ouvert = await findOpenTripByOwner(alanyaID);
+    if (ouvert) {
+      await transition(ouvert.id, 'sos', { reason: 'sos', actorId: alanyaID });
+      await logEvent(ouvert.id, 'sos', { actorId: alanyaID });
+      return res.json({
+        trip: tripRow(await findTripById(ouvert.id), { isOwner: true }),
+        escalated: true,
+      });
+    }
+
+    const circle = await loadTrustCircle(alanyaID);
+    if (circle.length === 0) {
+      return res.status(409).json({
+        error: 'Votre cercle de confiance est vide',
+        code: 'TRUST_LIST_EMPTY',
+      });
+    }
+
+    const clientId = clean(req.body?.clientId, CLIENT_ID_MAX)
+      || `sos_${Date.now()}`;
+    const dejaVu = await findTripByClientId(alanyaID, clientId);
+    if (dejaVu) {
+      return res.json({ trip: tripRow(dejaVu, { isOwner: true }) });
+    }
+
+    const conn = await pool.getConnection();
+    let tripId;
+    const cartes = [];
+    try {
+      await conn.beginTransaction();
+
+      // Pas d'échéance à confirmer : l'alerte est déjà partie. `eta_at` reste
+      // nulle, seul le plafond de durée bornera le trajet.
+      const [ins] = await conn.execute(
+        `INSERT INTO trip
+           (owner_id, client_id, kind, state, eta_at,
+            grace_minutes, max_duration_h, dest_radius_m, owner_device, alerted_at)
+         VALUES (?, ?, 'sos', 'sos', NULL, ?, ?, ?, ?, NOW())`,
+        [
+          alanyaID, clientId,
+          policy.CONTRACT.graceMinutes,
+          policy.CONTRACT.maxDurationH,
+          policy.CONTRACT.destRadiusM,
+          clean(req.body?.deviceId, DEVICE_ID_MAX),
+        ],
+      );
+      tripId = ins.insertId;
+      const trip = await findTripById(tripId, conn);
+
+      for (const member of circle) {
+        const carte = await postTripCard(conn, trip, Number(member.alanyaID));
+        cartes.push(carte);
+        await conn.execute(
+          `INSERT INTO trip_watcher (trip_id, alanyaID, msgID, conversID, notified_at)
+           VALUES (?, ?, ?, ?, NOW())`,
+          [tripId, Number(member.alanyaID), carte.msgID, carte.conversID],
+        );
+      }
+
+      await logEvent(tripId, 'sos', { actorId: alanyaID }, conn);
+      await conn.commit();
+    } catch (e) {
+      await conn.rollback();
+      throw e;
+    } finally {
+      conn.release();
+    }
+
+    const trip = await findTripById(tripId);
+    // Le plafond de durée seul : il n'y a pas d'échéance à armer.
+    await arm(trip);
+
+    const watchers = await loadWatchers(tripId);
+    setImmediate(async () => {
+      try {
+        broadcastTripCards(io, alanyaID, cartes);
+        if (io) {
+          io.to(watchers.map((w) => `user_${w.alanyaID}`)).emit('trip:alert', {
+            tripId: Number(tripId),
+            state: 'sos',
+            lastPoint: null,
+          });
+        }
+        const nom = req.user?.nom || req.user?.pseudo || '';
+        for (const c of cartes) {
+          if (!c?.message) continue;
+          await notifyNewMessage(c.conversID, alanyaID, nom, {
+            content: c.message.content,
+            type: TRIP_MESSAGE_TYPE,
+            msgID: c.msgID,
+            senderAvatar: c.message.sender_avatar,
+          });
+        }
+      } catch (err) {
+        console.error('[Trip] diffusion SOS échouée:', err.message);
+      }
+    });
+
+    return res.status(201).json({
+      trip: tripRow(trip, { watchers, isOwner: true }),
+      policy: policy.publicPolicy(),
+    });
+  } catch (error) {
+    console.error('[Trip] createSosTrip:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+/** Escalade un trajet ouvert en SOS. */
+const triggerSos = async (req, res) => {
+  try {
+    const trip = await monTrajetOuvert(req, res);
+    if (!trip) return;
+    if (trip.state === 'sos') {
+      return res.json({ trip: tripRow(trip, { isOwner: true }) });
+    }
+    if (await sosDepassement(req.user.alanyaID)) {
+      return res.status(429).json({
+        error: 'Trop de SOS sur les dernières 24 heures',
+        code: 'SOS_RATE_LIMITED',
+      });
+    }
+    await logEvent(trip.id, 'sos', { actorId: req.user.alanyaID });
+    await transition(trip.id, 'sos', { reason: 'sos', actorId: req.user.alanyaID });
+    return res.json({ trip: tripRow(await findTripById(trip.id), { isOwner: true }) });
+  } catch (error) {
+    console.error('[Trip] triggerSos:', error.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Historique et trace
 // ---------------------------------------------------------------------------
@@ -554,6 +752,8 @@ module.exports = {
   getTrip,
   confirmTrip,
   extendTrip,
+  createSosTrip,
+  triggerSos,
   cancelTrip,
   revokeWatcher,
   getHistory,

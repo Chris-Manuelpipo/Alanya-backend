@@ -7,6 +7,8 @@ const {
   getTrip,
   confirmTrip,
   extendTrip,
+  createSosTrip,
+  triggerSos,
   cancelTrip,
   revokeWatcher,
   getHistory,
@@ -127,6 +129,34 @@ router.get('/history', auth, getHistory);
 
 /**
  * @swagger
+ * /api/trips/sos:
+ *   post:
+ *     summary: Déclencher un SOS
+ *     description: >
+ *       Fonctionne **sans trajet en cours** : le danger n'attend pas un trajet
+ *       planifié. Crée alors un trajet sans destination ni échéance,
+ *       immédiatement en alerte. Si un trajet est déjà ouvert, il est escaladé
+ *       plutôt que dédoublé.
+ *     tags: [Trips]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               clientId: { type: string, maxLength: 64 }
+ *               deviceId: { type: string }
+ *     responses:
+ *       201: { description: SOS déclenché }
+ *       200: { description: Trajet existant escaladé }
+ *       409: { description: "`TRUST_LIST_EMPTY`" }
+ *       429: { description: "`SOS_RATE_LIMITED` — 3 par 24 h au plus" }
+ */
+router.post('/sos', auth, createSosTrip);
+
+/**
+ * @swagger
  * /api/trips/{tripId}:
  *   get:
  *     summary: Détail d'un trajet et sa frise d'événements
@@ -224,6 +254,24 @@ router.post('/:tripId/extend', auth, extendTrip);
  *       200: { description: Trajet arrêté }
  */
 router.post('/:tripId/cancel', auth, cancelTrip);
+
+/**
+ * @swagger
+ * /api/trips/{tripId}/sos:
+ *   post:
+ *     summary: Escalader un trajet en SOS
+ *     tags: [Trips]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: tripId
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200: { description: Trajet passé en SOS }
+ *       429: { description: "`SOS_RATE_LIMITED`" }
+ */
+router.post('/:tripId/sos', auth, triggerSos);
 
 /**
  * @swagger
