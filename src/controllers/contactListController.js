@@ -183,6 +183,24 @@ const deleteList = async (req, res) => {
       return res.status(400).json({ error: 'Invalid list ID' });
     }
 
+    // Les listes système ne se suppriment pas. `updateList` protégeait déjà leur
+    // nom, mais pas leur existence : la suppression réussissait, et
+    // `ensureDefaultContactLists` recréait la liste VIDE au prochain GET — les
+    // membres partaient avec elle (CASCADE sur fk_clm_list). Sans gravité pour
+    // un rangement ; inacceptable pour « Confiance », qui est désormais
+    // l'audience des trajets. Un cercle de sécurité ne doit pas pouvoir se vider
+    // par un appui malheureux.
+    const existing = await findOwnedList(idList, alanyaID);
+    if (!existing) {
+      return res.status(404).json({ error: 'List not found' });
+    }
+    if (isSystemListKind(existing.kind)) {
+      return res.status(403).json({
+        error: 'System list cannot be deleted',
+        code: 'SYSTEM_LIST_READONLY',
+      });
+    }
+
     const [result] = await pool.execute(
       'DELETE FROM contact_list WHERE idList = ? AND alanyaID = ?',
       [idList, alanyaID]
@@ -231,8 +249,17 @@ const getListMembers = async (req, res) => {
        JOIN users u ON clm.idFriend = u.alanyaID
        LEFT JOIN pays p ON u.idPays = p.idPays
        WHERE clm.idList = ?
+         -- Exclusion des blocages, DANS LES DEUX SENS. On masquait jusqu'ici la
+         -- présence (maskPresenceIfBlocked) sans retirer la ligne : la liste
+         -- « Confiance » proposait donc de confier sa sécurité à quelqu'un qui
+         -- vous a bloqué. Même filtre que loadTrustCircle (tripService.js).
+         AND NOT EXISTS (
+               SELECT 1 FROM blocked b
+                WHERE (b.alanyaID = ?          AND b.idCallerBlock = u.alanyaID)
+                   OR (b.alanyaID = u.alanyaID AND b.idCallerBlock = ?)
+             )
        ORDER BY u.nom ASC`,
-      [idList]
+      [idList, alanyaID, alanyaID]
     );
 
     const members = [];
