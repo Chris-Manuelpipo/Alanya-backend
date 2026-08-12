@@ -29,12 +29,31 @@ const test = (nom, fn) => {
 
 // --- Régimes par défaut ----------------------------------------------------
 
-test('les défauts sont ceux du dossier de conception', () => {
-  assert.strictEqual(policy.REGIMES.nominal.filterM, 75);
-  assert.strictEqual(policy.REGIMES.nominal.floorS, 15);
-  assert.strictEqual(policy.REGIMES.nominal.beatS, 90);
-  assert.strictEqual(policy.REGIMES.approach.filterM, 30);
+test('les défauts sont ceux du réglage réactif', () => {
+  assert.strictEqual(policy.REGIMES.nominal.filterM, 25);
+  assert.strictEqual(policy.REGIMES.nominal.floorS, 5);
+  assert.strictEqual(policy.REGIMES.nominal.beatS, 45);
+  assert.strictEqual(policy.REGIMES.approach.filterM, 15);
   assert.strictEqual(policy.REGIMES.alert.beatS, 15);
+});
+
+test('aucun régime ne demande une précision dégradée', () => {
+  // `medium` chez geolocator annonce 100–500 m : une précision de quartier.
+  // Le régime nominal l'avait demandée, ce qui rendait le pin inutilisable et
+  // la détection d'arrivée impossible. Ce test verrouille la correction.
+  for (const [nom, r] of Object.entries(policy.REGIMES)) {
+    assert.ok(['balanced', 'high', 'best'].includes(r.accuracy),
+      `${nom} : précision « ${r.accuracy} » non autorisée`);
+    assert.notStrictEqual(r.accuracy, 'medium', `${nom} ne doit jamais être medium`);
+    assert.notStrictEqual(r.accuracy, 'low', `${nom} ne doit jamais être low`);
+  }
+});
+
+test('la rediffusion reste sous le seuil de perception', () => {
+  // Au-delà de ~3 s, le pin saute au lieu de glisser et le suivi ne ressemble
+  // plus à du temps réel.
+  assert.ok(policy.BROADCAST_MIN_S <= 3,
+    'la décimation de diffusion ne doit pas se voir à l’œil nu');
 });
 
 test('chaque régime a un plancher — sans lui le débit suit la vitesse', () => {
@@ -146,7 +165,7 @@ test('une valeur d’environnement absurde retombe sur le défaut', () => {
   process.env.TRIP_FILTER_M_NOMINAL = 'beaucoup';
   process.env.TRIP_BEAT_S_NOMINAL = '999999';   // au-dessus du plafond
   const p2 = require('./tripPolicy');
-  assert.strictEqual(p2.REGIMES.nominal.filterM, 75, 'NaN doit retomber sur le défaut');
+  assert.strictEqual(p2.REGIMES.nominal.filterM, 25, 'NaN doit retomber sur le défaut');
   assert.strictEqual(p2.REGIMES.nominal.beatS, 900, 'la valeur doit être bornée');
   delete process.env.TRIP_FILTER_M_NOMINAL;
   delete process.env.TRIP_BEAT_S_NOMINAL;

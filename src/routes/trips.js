@@ -151,7 +151,7 @@ router.get('/history', auth, getHistory);
  *       201: { description: SOS déclenché }
  *       200: { description: Trajet existant escaladé }
  *       409: { description: "`TRUST_LIST_EMPTY`" }
- *       429: { description: "`SOS_RATE_LIMITED` — 3 par 24 h au plus" }
+ *       429: { description: "`SOS_RATE_LIMITED` — plafond `TRIP_SOS_MAX_24H` / 24 h" }
  */
 router.post('/sos', auth, createSosTrip);
 

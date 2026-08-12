@@ -48,17 +48,21 @@ const readInt = (name, defaultValue, { min, max }) => {
 //              dernier point connu avec son horodatage de capture réel.
 
 const REGIMES = {
+  // ⚠ `balanced` désigne l'équilibre batterie/cadence, PAS une précision
+  // dégradée : le client le traduit en `LocationAccuracy.high`. Demander
+  // `medium` reviendrait à 100–500 m — une précision de quartier, inutilisable
+  // pour retrouver quelqu'un comme pour détecter une arrivée.
   nominal: {
     accuracy: 'balanced',
-    filterM: readInt('TRIP_FILTER_M_NOMINAL', 75, { min: 10, max: 500 }),
-    floorS: readInt('TRIP_FLOOR_S_NOMINAL', 15, { min: 1, max: 300 }),
-    beatS: readInt('TRIP_BEAT_S_NOMINAL', 90, { min: 15, max: 900 }),
+    filterM: readInt('TRIP_FILTER_M_NOMINAL', 25, { min: 10, max: 500 }),
+    floorS: readInt('TRIP_FLOOR_S_NOMINAL', 5, { min: 1, max: 300 }),
+    beatS: readInt('TRIP_BEAT_S_NOMINAL', 45, { min: 15, max: 900 }),
   },
   approach: {
     accuracy: 'high',
-    filterM: readInt('TRIP_FILTER_M_APPROACH', 30, { min: 5, max: 300 }),
-    floorS: readInt('TRIP_FLOOR_S_APPROACH', 8, { min: 1, max: 120 }),
-    beatS: readInt('TRIP_BEAT_S_APPROACH', 30, { min: 10, max: 300 }),
+    filterM: readInt('TRIP_FILTER_M_APPROACH', 15, { min: 5, max: 300 }),
+    floorS: readInt('TRIP_FLOOR_S_APPROACH', 4, { min: 1, max: 120 }),
+    beatS: readInt('TRIP_BEAT_S_APPROACH', 20, { min: 10, max: 300 }),
   },
   // ⚠ Le seul régime où la précision sert vraiment. À ne pas relâcher.
   alert: {
@@ -81,8 +85,11 @@ const staleAfterSeconds = (regimeName) =>
 // ---------------------------------------------------------------------------
 // Décimation serveur
 // ---------------------------------------------------------------------------
-const BROADCAST_MIN_S = readInt('TRIP_BROADCAST_MIN_S', 5, { min: 1, max: 60 });
-const PERSIST_MIN_S = readInt('TRIP_PERSIST_MIN_S', 30, { min: 5, max: 300 });
+// 2 s : au-delà, le pin saute d'un bond au lieu de glisser, et le suivi ne
+// ressemble plus à du temps réel. Le coût reste borné — c'est un plafond, pas
+// une cadence garantie.
+const BROADCAST_MIN_S = readInt('TRIP_BROADCAST_MIN_S', 2, { min: 1, max: 60 });
+const PERSIST_MIN_S = readInt('TRIP_PERSIST_MIN_S', 20, { min: 5, max: 300 });
 
 /** Au-delà de cette imprécision, le relevé est ignoré POUR LA DÉTECTION
  *  d'arrivée — mais reste affiché, grisé, avec son cercle de précision. Mieux
@@ -135,6 +142,11 @@ const RETENTION = {
   // effacer la trace d'un incident dans la minute.
   incidentDeleteLockDays: readInt('TRIP_INCIDENT_LOCK_D', 30, { min: 0, max: 365 }),
 };
+
+/** Plafond de SOS par fenêtre glissante de 24 h. Au-delà, on refuse : un bouton
+ *  d'alarme qui part sans cesse cesse d'être écouté, et c'est le cercle qui en
+ *  paie le prix. */
+const SOS_MAX_24H = readInt('TRIP_SOS_MAX_24H', 10, { min: 1, max: 100 });
 
 // ---------------------------------------------------------------------------
 // Choix du régime — fonction PURE, c'est elle que testent les tests unitaires
@@ -211,6 +223,7 @@ module.exports = {
   REGIMES,
   CONTRACT,
   RETENTION,
+  SOS_MAX_24H,
   STALE_FACTOR,
   STALE_MARGIN_S,
   BROADCAST_MIN_S,
