@@ -162,7 +162,21 @@ async function finalizeCallAndNotify(io, userSockets, callID) {
     // notifie quand même le journal d'appels.
     if (conversID != null) {
       const isVideo = call.type === 1;
-      const lastMessageType = isVideo ? 6 : 5; // 5=appel audio, 6=appel vidéo (réservés)
+
+      // ⚠ Ces valeurs étaient 5 et 6, annotées « réservés ». Elles ne l'étaient
+      // pas : **5 = localisation** et **6 = message système**. Un appel vocal
+      // terminé marquait donc la conversation comme portant une position, et un
+      // appel vidéo comme portant un événement de groupe — deux types dont le
+      // client sait qu'ils contiennent du JSON, et qu'il essaie de décoder.
+      //
+      // 20 et 21 : hors de portée des types de messages (0 à 9), pour qu'aucune
+      // extension future du fil ne vienne les reprendre. Miroir de
+      // `lib/core/utils/call_log_preview.dart` côté Talky.
+      const lastMessageType = isVideo ? 21 : 20;
+
+      // Chaîne de repli, en français. Le client la remplace par sa propre
+      // traduction à partir du type : il n'a pas besoin de ce texte, seulement
+      // d'un aperçu correct pour les surfaces qui ne savent pas le reconstruire.
       const preview = isVideo ? '📹 Appel vidéo' : '📞 Appel vocal';
 
       await pool.execute(
