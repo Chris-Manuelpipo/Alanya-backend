@@ -36,11 +36,15 @@ const {
   loadEvents,
   logEvent,
   postTripCard,
+  postIncidentLine,
   broadcastTripCards,
 } = require('../services/tripService');
 const { arm, transition, dedupe } = require('../services/tripWorkers');
 const { enqueue, isJobWorkerEnabled } = require('../services/jobQueue');
-const { notifyNewMessage } = require('../services/notificationService');
+const {
+  notifyNewMessage,
+  notifyTripAlert,
+} = require('../services/notificationService');
 
 // ---------------------------------------------------------------------------
 // POST /api/trips
@@ -404,8 +408,19 @@ const cancelTrip = async (req, res) => {
   try {
     const trip = await monTrajetOuvert(req, res);
     if (!trip) return;
+
+    // « Fausse alerte, je vais bien » emprunte le même chemin qu'un arrêt
+    // ordinaire — mais le cercle ne doit pas lire la même phrase. Après une
+    // alerte, « a arrêté le partage » est la pire formulation possible : elle
+    // laisse le proche avec son inquiétude et sans réponse.
+    //
+    // Le motif n'est accepté que là où il a un sens : depuis un état d'alerte.
+    // Ailleurs, il permettrait d'habiller un arrêt banal en démenti.
+    const fausseAlerte = req.body?.reason === 'false_alarm'
+      && policy.ALERT_STATES.has(trip.state);
+
     await transition(trip.id, 'closed_cancelled', {
-      reason: 'stopped_by_owner',
+      reason: fausseAlerte ? 'false_alarm' : 'stopped_by_owner',
       actorId: req.user.alanyaID,
     });
     return res.json({ trip: tripRow(await findTripById(trip.id), { isOwner: true }) });
@@ -454,10 +469,8 @@ const revokeWatcher = async (req, res) => {
 // SOS
 // ---------------------------------------------------------------------------
 
-/** Trois SOS par 24 h. Au-delà, on refuse : un bouton d'alarme qui part sans
- *  cesse cesse d'être écouté, et c'est le cercle qui en paie le prix. */
-const SOS_MAX_24H = 3;
-
+/** Plafond SOS / 24 h : `TRIP_SOS_MAX_24H` (défaut 10). Au-delà, on refuse :
+ *  un bouton d'alarme qui part sans cesse cesse d'être écouté. */
 const sosDepassement = async (alanyaID) => {
   const [rows] = await pool.execute(
     `SELECT COUNT(*) AS n
@@ -467,7 +480,7 @@ const sosDepassement = async (alanyaID) => {
         AND e.created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)`,
     [alanyaID],
   );
-  return Number(rows[0]?.n || 0) >= SOS_MAX_24H;
+  return Number(rows[0]?.n || 0) >= policy.SOS_MAX_24H;
 };
 
 /**
@@ -543,6 +556,22 @@ const createSosTrip = async (req, res) => {
       tripId = ins.insertId;
       const trip = await findTripById(tripId, conn);
 
+      // ⚠ L'ALERTE D'ABORD. Résoudre cinq conversations, insérer cinq messages
+      // et incrémenter cinq compteurs sur une base distante prend une à deux
+      // secondes — au pire moment possible. Le socket part donc AVANT, sur les
+      // seuls identifiants du cercle, qu'on connaît déjà.
+      //
+      // La carte de conversation est un confort d'archivage ; l'alerte est la
+      // raison d'être du bouton.
+      if (io) {
+        io.to(circle.map((m) => `user_${Number(m.alanyaID)}`))
+          .emit('trip:alert', {
+            tripId: Number(tripId),
+            state: 'sos',
+            lastPoint: null,
+          });
+      }
+
       for (const member of circle) {
         const carte = await postTripCard(conn, trip, Number(member.alanyaID));
         cartes.push(carte);
@@ -567,16 +596,15 @@ const createSosTrip = async (req, res) => {
     await arm(trip);
 
     const watchers = await loadWatchers(tripId);
+    // La notification poussée AVANT tout le reste : un destinataire dont
+    // l'application est fermée n'a aucune socket, et c'est celui qu'il faut
+    // atteindre le plus vite.
     setImmediate(async () => {
       try {
+        await notifyTripAlert(trip, watchers.map((w) => w.alanyaID),
+          { io, isSos: true });
+
         broadcastTripCards(io, alanyaID, cartes);
-        if (io) {
-          io.to(watchers.map((w) => `user_${w.alanyaID}`)).emit('trip:alert', {
-            tripId: Number(tripId),
-            state: 'sos',
-            lastPoint: null,
-          });
-        }
         const nom = req.user?.nom || req.user?.pseudo || '';
         for (const c of cartes) {
           if (!c?.message) continue;
@@ -587,6 +615,12 @@ const createSosTrip = async (req, res) => {
             senderAvatar: c.message.sender_avatar,
           });
         }
+
+        // La ligne d'incident, en dernier. Un SOS autonome naît directement en
+        // état `sos` sans passer par `transition()` : sans cet appel, le seul
+        // parcours où l'archive compte le plus serait le seul à ne rien
+        // archiver.
+        await postIncidentLine(trip, { io });
       } catch (err) {
         console.error('[Trip] diffusion SOS échouée:', err.message);
       }

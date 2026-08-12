@@ -118,6 +118,16 @@ function systemPreviewFromContent(content) {
         : `${who} a retiré des droits d'administrateur`;
     case 'settings_changed':
       return `${who} a modifié les réglages du groupe`;
+
+    // Lignes d'incident d'un trajet de confiance. Elles ne remontent pas la
+    // conversation d'elles-mêmes (`postSystemMessage` ne touche pas à
+    // `lastMessageAt`), mais si elles sont le dernier message du fil, l'aperçu
+    // doit dire l'incident — pas « Le groupe a été mis à jour ».
+    case 'trip_alert':
+      return `⚠️ ${who} n'a pas confirmé son arrivée`;
+    case 'trip_sos':
+      return `🆘 ${who} a déclenché un SOS`;
+
     default:
       // Événement inconnu : un libellé neutre vaut mieux que du JSON brut.
       return 'Le groupe a été mis à jour';
@@ -183,7 +193,29 @@ function tripPreviewFromContent(content) {
   try {
     const data = JSON.parse(content);
     if (!data || typeof data !== 'object') return null;
-    switch (String(data.state || '')) {
+
+    // ⚠ Ces libellés doivent rester mot pour mot identiques à
+    // `TripCardPayload.previewLabel` (trip_payload.dart, clés `tripsPreview*`).
+    //
+    // Deux écrivains se partagent `conversation.lastMessage` : le serveur à
+    // chaque transition, le client à chaque resynchronisation du message. Quand
+    // ils ne disaient pas la même chose, l'aperçu changeait de texte tout seul
+    // selon celui qui avait écrit en dernier — « ✅ Bien arrivé·e » puis
+    // « Arrivée confirmée » pour un même trajet.
+    //
+    // Cette chaîne reste un **repli** : elle est en français, alors que le
+    // client rend dans la langue du lecteur. Le client la corrige dès qu'il
+    // dispose du message ; l'alignement garantit qu'entre-temps rien ne saute
+    // aux yeux.
+    const etat = String(data.state || '');
+
+    // Un démenti après une alerte n'est pas un arrêt de partage. Sans ce cas,
+    // le cercle qu'on vient d'alarmer lirait « Trajet arrêté » dans sa liste.
+    if (etat === 'closed_cancelled' && data.closeReason === 'false_alarm') {
+      return '✅ Fausse alerte';
+    }
+
+    switch (etat) {
       case 'awaiting_confirm': return '🧭 Arrivée à confirmer';
       case 'alert':            return '🆘 Alerte trajet';
       case 'sos':              return '🆘 SOS';
