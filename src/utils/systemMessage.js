@@ -70,6 +70,15 @@ const MSG_SELECT = `
  *                                       courants — typiquement l'exclu, qui
  *                                       n'est déjà plus dans conv_participants
  *                                       au moment de l'émission.
+ * @param {boolean}  [opts.essential]    contourne le coupe-circuit
+ *                                       `GROUP_SYSTEM_MESSAGES`. Réservé aux
+ *                                       traces qui ne sont pas du confort de
+ *                                       groupe : la ligne d'incident d'un
+ *                                       trajet de confiance est la seule chose
+ *                                       qui survive à la purge de la trace, et
+ *                                       un drapeau destiné aux messages « X a
+ *                                       ajouté Y » n'a aucune raison de
+ *                                       l'effacer.
  * @returns {Promise<object|null>} le message inséré, ou null si l'écriture a
  *                                 échoué (l'appelant continue quand même).
  */
@@ -80,8 +89,9 @@ async function postSystemMessage({
   payload = {},
   io = null,
   notifyExtra = [],
+  essential = false,
 }) {
-  if (!SYSTEM_MESSAGES_ENABLED) return null;
+  if (!SYSTEM_MESSAGES_ENABLED && !essential) return null;
   try {
     const actorName = await loadUserName(actorID);
 

@@ -20,6 +20,7 @@ const pool = require('../config/db');
 const { ensureDirectConversation } = require('./broadcastService');
 const { OPEN_STATES, TERMINAL_STATES } = require('../constants/tripPolicy');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
+const { postSystemMessage } = require('../utils/systemMessage');
 
 const TRIP_MESSAGE_TYPE = 9;
 
@@ -51,6 +52,34 @@ const cardContent = (trip) => JSON.stringify({
   etaAt: trip.eta_at,
   destLabel: trip.dest_label ?? null,
   note: trip.note ?? null,
+  // Le motif de clôture, parce que `closed_cancelled` recouvre deux choses très
+  // différentes pour qui reçoit la carte : « j'ai arrêté le partage » et « c'était
+  // une fausse alerte, je vais bien ». Sans lui, un cercle qu'on vient d'alarmer
+  // lirait « a arrêté le partage » — la pire phrase possible à ce moment-là.
+  //
+  // Champ ajouté sans changer `v` : un client plus ancien l'ignore et rend
+  // exactement ce qu'il rendait avant.
+  closeReason: trip.close_reason ?? null,
+
+  // Instantané de position, pour la vignette de la carte.
+  //
+  // ⚠ Écrit **uniquement aux transitions**, jamais à chaque point. La règle du
+  // volet ne change pas d'un iota : la carte porte l'état, le socket porte le
+  // mouvement. Réécrire ce message à chaque position remonterait la conversation
+  // en tête de liste, rallumerait le compteur de non-lus et déclencherait une
+  // notification — toutes les cinq secondes.
+  //
+  // Une position figée à l'instant d'une transition n'est pas du mouvement :
+  // c'est de l'état. C'est elle qui permet à une carte d'alerte de tenir sa
+  // promesse — « voir la dernière position » — même une fois la trace purgée,
+  // et à un destinataire hors ligne d'ouvrir une vignette qui montre quelque
+  // chose plutôt qu'un carré vide.
+  //
+  // Entre deux transitions, le client anime la vignette depuis le flux temps
+  // réel, sans aucune écriture.
+  lastLat: trip.last_lat == null ? null : Number(trip.last_lat),
+  lastLng: trip.last_lng == null ? null : Number(trip.last_lng),
+  lastAt: trip.last_at ?? null,
 });
 
 // ---------------------------------------------------------------------------
@@ -328,9 +357,71 @@ const updateTripCards = async (trip, { io = null } = {}, executor = pool) => {
   return rows.length;
 };
 
+// ---------------------------------------------------------------------------
+// La ligne d'incident
+// ---------------------------------------------------------------------------
+
+/** État du trajet → événement système écrit dans le fil. */
+const INCIDENT_EVENTS = { alert: 'trip_alert', sos: 'trip_sos' };
+
+/**
+ * Écrit une **seconde ligne** dans le fil, en plus de la carte, quand le cercle
+ * a été prévenu.
+ *
+ * La carte est réécrite sur place à chaque transition : au bout du compte elle
+ * dira « a arrêté le partage » ou « est bien arrivé·e », et l'incident aura
+ * disparu du fil. La trace GPS, elle, est purgée au bout de trente jours. Sans
+ * cette ligne, il ne resterait donc **rien** de la nuit où l'alerte est partie —
+ * ni pour le proche qui veut vérifier ce qu'il a vu, ni pour la personne qui
+ * doit prouver ce qui s'est passé.
+ *
+ * Deux lignes au maximum par trajet : une alerte, puis un SOS. C'est
+ * `transition()` qui garantit l'unicité en n'appelant qu'aux vrais changements
+ * d'état.
+ *
+ * Ni non-lu, ni notification poussée : l'alerte a déjà été poussée par
+ * `notifyTripAlert`, et faire sonner deux fois le même téléphone pour le même
+ * fait n'apprend rien à personne. Cette ligne est une archive, pas une alarme.
+ *
+ * Un échec n'interrompt jamais l'escalade : l'alerte est déjà partie, elle
+ * prime sur sa propre trace.
+ */
+const postIncidentLine = async (trip, { io = null } = {}) => {
+  const event = INCIDENT_EVENTS[trip.state];
+  if (!event) return 0;
+
+  try {
+    const [rows] = await pool.execute(
+      `SELECT alanyaID, conversID FROM trip_watcher
+        WHERE trip_id = ? AND state = 'active' AND conversID IS NOT NULL`,
+      [trip.id],
+    );
+
+    let ecrites = 0;
+    for (const r of rows) {
+      const msg = await postSystemMessage({
+        conversationID: Number(r.conversID),
+        actorID: Number(trip.owner_id),
+        event,
+        payload: { tripId: Number(trip.id) },
+        io,
+        // Le coupe-circuit des messages de groupe ne doit pas pouvoir effacer
+        // une trace d'incident.
+        essential: true,
+      });
+      if (msg) ecrites += 1;
+    }
+    return ecrites;
+  } catch (e) {
+    console.error('[Trip] ligne d\'incident échouée:', e.message);
+    return 0;
+  }
+};
+
 module.exports = {
   TRIP_MESSAGE_TYPE,
   broadcastTripCards,
+  postIncidentLine,
   cardPreview,
   cardContent,
   loadTrustCircle,

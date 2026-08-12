@@ -26,6 +26,7 @@ const {
   findTripById,
   loadWatchers,
   logEvent,
+  postIncidentLine,
   updateTripCards,
 } = require('./tripService');
 const { notifyTripAlert, notifyTripClosed } = require('./notificationService');
@@ -106,6 +107,13 @@ const disarmAll = disarm;
  */
 const transition = async (tripId, state, { reason = null, actorId = null } = {}) => {
   const terminal = policy.TERMINAL_STATES.has(state);
+
+  // L'état AVANT la bascule. Il ne sert qu'à une chose, mais elle compte : ne
+  // pas écrire deux fois la ligne d'incident si `transition` est rejouée sur le
+  // même état — un job repris après incident, un SOS déclenché deux fois. Le
+  // fil du proche doit porter une trace par fait, pas une par tentative.
+  const avant = await findTripById(tripId);
+
   await pool.execute(
     `UPDATE trip
         SET state = ?,
@@ -124,6 +132,13 @@ const transition = async (tripId, state, { reason = null, actorId = null } = {})
 
   await logEvent(tripId, _eventKind(state), { actorId, meta: reason ? { reason } : null });
   await updateTripCards(trip, { io: _io });
+
+  // La seconde ligne du fil, quand le cercle vient d'être prévenu. La carte
+  // finira par dire « arrêté » ou « bien arrivé·e » et la trace sera purgée :
+  // cette ligne-là, on ne l'efface pas.
+  if (policy.ALERT_STATES.has(state) && avant?.state !== state) {
+    await postIncidentLine(trip, { io: _io });
+  }
 
   if (_io) {
     const watchers = await loadWatchers(tripId);
