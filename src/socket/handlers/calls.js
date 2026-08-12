@@ -1971,8 +1971,12 @@ const callMuteState = (io, socket, userSockets) => {
   });
 };
 
-// Appel de groupe : diffuse l'état micro à tous les autres participants de la
-// room (l'émetteur est exclu via `socket.to`).
+// Appel de groupe : diffuse l'état micro à tous les autres participants.
+// Les groupes classiques sont dans la room Socket.IO `group_<roomId>`. Une
+// conférence créée par « Ajouter un participant » utilise au contraire une
+// callSession et un routage média par appareil ; ses participants ne rejoignent
+// pas cette room. On relaie donc cette session vers les seuls appareils owners,
+// sans changer le chemin historique des groupes classiques.
 const groupMuteState = (io, socket, userSockets) => {
   socket.on('group:mute_state', (data) => {
     try {
@@ -1980,11 +1984,28 @@ const groupMuteState = (io, socket, userSockets) => {
       const rId = (data && data.roomId) || socket.currentGroupRoom;
       if (!rId) return;
 
-      socket.to(`group_${rId}`).emit('group:mute_state', {
-        roomId:  rId,
-        userId:  String(socket.alanyaID),
+      const payload = {
+        roomId: String(rId),
+        userId: String(socket.alanyaID),
         isMuted: !!(data && data.isMuted),
-      });
+      };
+
+      const session = callSessions.getByUser(socket.alanyaID);
+      if (session && String(session.sessionId) === String(rId)) {
+        for (const participantId of callSessions.participantIds(session)) {
+          if (Number(participantId) === Number(socket.alanyaID)) continue;
+          const deviceId = callDeviceOwnership.getActiveDeviceId(
+            session.sessionId,
+            participantId,
+          );
+          if (deviceId) {
+            emitToDevice(io, participantId, deviceId, 'group:mute_state', payload);
+          }
+        }
+        return;
+      }
+
+      socket.to(`group_${rId}`).emit('group:mute_state', payload);
     } catch (error) {
       console.error('[Socket group:mute_state]', error.message);
     }
