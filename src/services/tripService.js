@@ -348,7 +348,13 @@ const updateTripCards = async (trip, { io = null } = {}, executor = pool) => {
   }
 
   if (io) {
-    io.to(rows.map((r) => `user_${Number(r.alanyaID)}`)).emit('trip:card_update', {
+    // L'owner a aussi la bulle (même msgID) : sans `trip:card_update` vers sa
+    // room, son cache Drift reste sur l'état initial (« Suivre en direct »).
+    const rooms = [
+      ...rows.map((r) => `user_${Number(r.alanyaID)}`),
+      `user_${Number(trip.owner_id)}`,
+    ];
+    io.to([...new Set(rooms)]).emit('trip:card_update', {
       tripId: Number(trip.id),
       state: trip.state,
       content,

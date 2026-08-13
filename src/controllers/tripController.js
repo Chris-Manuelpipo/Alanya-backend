@@ -283,9 +283,17 @@ const getTrip = async (req, res) => {
 
     // Le propriétaire voit qui suit ; un destinataire ne voit que le nombre —
     // cela rassure sans exposer le carnet d'adresses de quelqu'un d'autre.
-    const watchers = await loadWatchers(tripId);
+    // Sur un trajet clos, on inclut aussi les révoqués : le récap doit montrer
+    // tout le cercle figé au départ, avec qui a réellement ouvert.
+    const terminal = policy.TERMINAL_STATES.has(trip.state);
+    const watchers = await loadWatchers(tripId, { activeOnly: !terminal });
+    const seen = watchers.filter((w) => w.seenAt != null).length;
     const body = isOwner
-      ? tripRow(trip, { watchers, isOwner: true })
+      ? {
+          ...tripRow(trip, { watchers, isOwner: true }),
+          watcherCount: watchers.length,
+          watchersSeenCount: seen,
+        }
       : { ...tripRow(trip, { isOwner: false }), watcherCount: watchers.length };
 
     return res.json({
@@ -434,21 +442,47 @@ const cancelTrip = async (req, res) => {
  *  minutes plus tard : un trajet sans témoin n'est plus de la sécurité. */
 const revokeWatcher = async (req, res) => {
   try {
-    const trip = await monTrajetOuvert(req, res);
-    if (!trip) return;
+    const moi = Number(req.user.alanyaID);
     const cible = parseTripId(req.params.alanyaID);
     if (!cible) return res.status(400).json({ error: 'alanyaID invalide' });
 
+    const tripId = parseTripId(req.params.tripId);
+    if (!tripId) return res.status(400).json({ error: 'tripId invalide' });
+    const trip = await findTripById(tripId);
+    // 404 indifférencié : on ne révèle pas l'existence du trajet d'un autre.
+    if (!trip) return res.status(404).json({ error: 'Trajet introuvable' });
+    if (!policy.OPEN_STATES.has(trip.state)) {
+      return res.status(409).json({ error: 'Trajet déjà clos', code: 'TRIP_TERMINAL' });
+    }
+
+    // Deux gestes distincts partagent cette route, et c'est voulu — le résultat
+    // en base est le même, seul l'auteur change :
+    //
+    //  • le PORTEUR retire quelqu'un de son trajet en cours ;
+    //  • un DESTINATAIRE se retire lui-même.
+    //
+    // Le second doit exister. Sans lui, quelqu'un ajouté à un cercle suit tous
+    // les trajets de cette personne sans aucune sortie de son côté, et se fait
+    // réveiller la nuit par des alertes qu'il n'a pas demandé à recevoir. La
+    // liste Confiance appartient à son porteur ; la décision de suivre ou non
+    // appartient à celui qu'on y a mis.
+    const estPorteur = Number(trip.owner_id) === moi;
+    const seRetire = cible === moi;
+    if (!estPorteur && !seRetire) {
+      return res.status(404).json({ error: 'Trajet introuvable' });
+    }
+
     const [r] = await pool.execute(
       `UPDATE trip_watcher
-          SET state = 'revoked', revoke_reason = 'removed', revoked_at = NOW()
+          SET state = 'revoked', revoke_reason = ?, revoked_at = NOW()
         WHERE trip_id = ? AND alanyaID = ? AND state = 'active'`,
-      [trip.id, cible],
+      [seRetire ? 'left' : 'removed', trip.id, cible],
     );
     if (r.affectedRows === 0) {
       return res.status(404).json({ error: 'Destinataire introuvable' });
     }
-    await logEvent(trip.id, 'watcher_revoked', { actorId: req.user.alanyaID });
+    await logEvent(trip.id, seRetire ? 'watcher_left' : 'watcher_revoked',
+      { actorId: moi });
 
     const restants = await loadWatchers(trip.id);
     if (restants.length === 0) {
@@ -457,7 +491,10 @@ const revokeWatcher = async (req, res) => {
         runAfter: new Date(Date.now() + policy.CONTRACT.noWatcherGraceMin * 60_000),
       });
     }
-    return res.json({ watchers: restants });
+    // Le porteur reçoit la liste à jour ; celui qui part n'a rien à savoir de
+    // qui reste — ce serait lui donner le carnet d'adresses de quelqu'un
+    // d'autre au moment précis où il cesse d'y avoir droit.
+    return res.json(estPorteur ? { watchers: restants } : { left: true });
   } catch (error) {
     console.error('[Trip] revokeWatcher:', error.message);
     return res.status(500).json({ error: 'Erreur serveur' });
@@ -678,7 +715,9 @@ const getHistory = async (req, res) => {
               t.last_lat, t.last_lng, t.last_acc_m, t.last_battery, t.last_at,
               t.stale, t.started_at, t.prompted_at, t.alerted_at,
               t.closed_at, t.close_reason, t.owner_device, t.last_seen_at,
-              (SELECT COUNT(*) FROM trip_watcher w WHERE w.trip_id = t.id) AS wc
+              (SELECT COUNT(*) FROM trip_watcher w WHERE w.trip_id = t.id) AS wc,
+              (SELECT COUNT(*) FROM trip_watcher w
+                WHERE w.trip_id = t.id AND w.seen_at IS NOT NULL) AS seen_wc
          FROM trip t
         WHERE t.owner_id = ? ${Number.isFinite(curseur) ? 'AND t.id < ?' : ''}
         ORDER BY t.id DESC
@@ -690,6 +729,8 @@ const getHistory = async (req, res) => {
       trips: rows.map((r) => ({
         ...tripRow(r, { isOwner: true }),
         watcherCount: Number(r.wc) || 0,
+        // Qui a réellement ouvert le suivi — pas la taille du cercle figé.
+        watchersSeenCount: Number(r.seen_wc) || 0,
       })),
       nextCursor: rows.length === limite ? Number(rows[rows.length - 1].id) : null,
     });

@@ -105,7 +105,7 @@ const MAX_ACCURACY_M = readInt('TRIP_MAX_ACCURACY_M', 100, { min: 20, max: 1000 
 const CONTRACT = {
   graceMinutes: readInt('TRIP_GRACE_MIN', 10, { min: 2, max: 60 }),
   maxDurationH: readInt('TRIP_MAX_DURATION_H', 12, { min: 1, max: 48 }),
-  destRadiusM: readInt('TRIP_DEST_RADIUS_M', 150, { min: 30, max: 2000 }),
+  destRadiusM: readInt('TRIP_DEST_RADIUS_M', 100, { min: 30, max: 2000 }),
   // Hystérésis : il faut RESTER dans le rayon. Passer devant sa rue sans
   // s'arrêter est le faux positif numéro un.
   arrivalHysteresisS: readInt('TRIP_ARRIVAL_HYSTERESIS_S', 60, { min: 10, max: 600 }),
