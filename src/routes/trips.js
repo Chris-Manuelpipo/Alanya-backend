@@ -260,6 +260,12 @@ router.post('/:tripId/cancel', auth, cancelTrip);
  * /api/trips/{tripId}/sos:
  *   post:
  *     summary: Escalader un trajet en SOS
+ *     description: >
+ *       Non utilisé par l'application, qui passe toujours par `POST /trips/sos` —
+ *       celui-ci escalade déjà le trajet ouvert s'il y en a un, ce qui évite au
+ *       client de devoir le connaître avant d'appuyer. Conservé parce qu'il est
+ *       la forme REST correcte (escalader CE trajet) et qu'un client tiers ou un
+ *       outil d'exploitation peut en avoir besoin.
  *     tags: [Trips]
  *     security: [{ bearerAuth: [] }]
  *     parameters:

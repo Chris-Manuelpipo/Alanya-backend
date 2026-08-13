@@ -306,9 +306,13 @@ function registerTripJobHandlers() {
   });
 
   // Purge de la trace. Le fait survit, le tracé non.
-  registerJobHandler('trip_points_purge', async ({ tripId }) => {
-    await purgeTripPoints(tripId);
-  });
+  // Pas de handler `trip_points_purge` : la purge des traces est faite par le
+  // balayage nocturne (`runNightlyTripPurge`, planifié sous bail dans
+  // server.js), qui applique les mêmes rétentions à tous les trajets d'un coup.
+  //
+  // Un handler par trajet a existé ici, enregistré mais jamais mis en file :
+  // il laissait croire à une purge planifiée trajet par trajet qui n'a jamais
+  // eu lieu. Le retirer évite qu'on s'y fie en lisant ce fichier.
 }
 
 // ---------------------------------------------------------------------------
