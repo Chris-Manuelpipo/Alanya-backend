@@ -26,6 +26,7 @@ const {
 const { loadUserDndScheduleMany } = require('./dndScheduleService');
 const { shouldUseAndroidNativeDataOnly } = require('../notifications/notificationAndroidNative');
 const { shouldUseDeviceRegistry } = require('../notifications/notificationRouting');
+const { resolveTripPush, isTripType, TRIP_TYPES } = require('../notifications/notificationTripRouting');
 
 /**
  * Push silencieuse : le destinataire a coupé ses notifications ou mis la
@@ -42,9 +43,9 @@ const _buildApnsConfig = (data) => {
       type === 'meeting_invite' ||
       type === 'meeting_reminder' ||
       type === 'status_view' ||
-      // Sans ces trois lignes, une alerte de trajet partait en push de fond sur
+      // Sans cette ligne, une alerte de trajet partait en push de fond sur
       // iOS : aucun affichage, et une délivrance à la discrétion du système.
-      type.startsWith('trip_'));
+      isTripType(type));
 
   const aps = { 'content-available': 1 };
   if (showAlert && (data.title || data.body)) {
@@ -87,36 +88,14 @@ const _buildApnsConfig = (data) => {
 // Types affichés à l'utilisateur : bloc `notification` Android pour que le
 // système les affiche même app tuée. Les appels restent data-only pour
 // déclencher CallKit via le handler Dart.
+// Trajets : la décision d'acheminement vit dans `notificationTripRouting`, un
+// module pur et testé. Hors de VISIBLE_TYPES, une alerte partait en push de
+// fond sur iOS (rien affiché) et en priorité normale avec 24 h de TTL sur
+// Android (retardable par Doze) — deux défauts qu'aucune lecture ne révélait.
 const VISIBLE_TYPES = [
   'message', 'meeting_invite', 'meeting_reminder', 'status_view',
-  // Trajets de confiance. Les inscrire ici n'est pas un détail de confort :
-  // hors de cette liste, `_buildApnsConfig` ne posait aucun `aps.alert` et
-  // envoyait en `apns-push-type: background` — sur iOS, l'alerte de sûreté
-  // n'affichait rien du tout et se faisait étrangler par Apple. Sur Android,
-  // elle partait en priorité `normal` avec 24 h de TTL, donc retardable de
-  // plusieurs heures par Doze.
-  'trip_alert', 'trip_sos', 'trip_closed',
-  'trip_eta_soon', 'trip_due', 'trip_reminder',
+  ...TRIP_TYPES,
 ];
-
-/** Les deux seuls types de toute l'application qui réveillent quelqu'un. */
-const TRIP_ALERT_TYPES = ['trip_alert', 'trip_sos'];
-
-/** Rappels au propriétaire : visibles et prioritaires, mais qui ne forcent rien. */
-const TRIP_OWNER_TYPES = ['trip_eta_soon', 'trip_due', 'trip_reminder'];
-
-/**
- * TTL par type. Une notification de sûreté périmée est pire qu'absente : elle
- * apprend au destinataire que les alertes de l'application arrivent en retard,
- * et il cesse de les ouvrir.
- */
-const TRIP_TTL_MS = {
-  trip_alert: 120_000,
-  trip_sos: 120_000,
-  trip_eta_soon: 600_000,
-  trip_due: 900_000,
-  trip_reminder: 600_000,
-};
 
 const CALL_TYPES = ['call', 'group_call'];
 // Aligné sur NO_ANSWER_MS (45 s, calls.js) : un push d'appel délivré après le
@@ -157,7 +136,7 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
         priority: isCall || isVisible ? 'high' : 'normal',
         ttl: isCall
           ? CALL_TTL_MS
-          : (TRIP_TTL_MS[data.type] ?? 86400000),
+          : (resolveTripPush(data.type)?.ttlMs ?? 86400000),
       },
       apns: _buildApnsConfig(data),
     };
@@ -192,22 +171,14 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       // Poster une alerte de sûreté sur `talky_messages` la rendrait
       // silencieuse chez quiconque a activé le mode silencieux — c'est-à-dire
       // la nuit, précisément quand elle compte.
-      const isTripAlert = TRIP_ALERT_TYPES.includes(data.type);
-      const isTripOwner = TRIP_OWNER_TYPES.includes(data.type);
-      const channelId = isTripAlert
-          ? 'alanya_trip_alert'
-          : isTripOwner || data.type === 'trip_closed'
-              ? 'alanya_trip'
-              : isMeeting
-                  ? 'talky_meetings'
-                  : 'talky_messages';
+      const trajet = resolveTripPush(data.type);
 
       message.android.notification = {
-        channelId,
+        channelId: trajet
+          ? trajet.channelId
+          : (isMeeting ? 'talky_meetings' : 'talky_messages'),
         icon: 'ic_stat_notification',
-        // Rouge pour une alerte : la couleur de la pastille système est le seul
-        // signal visible avant d'avoir lu quoi que ce soit.
-        color: isTripAlert ? '#EF4444' : '#114B86',
+        color: trajet ? trajet.color : '#114B86',
         sound: 'default',
         tag,
       };
