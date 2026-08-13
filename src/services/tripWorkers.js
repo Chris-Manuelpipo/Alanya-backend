@@ -29,7 +29,13 @@ const {
   postIncidentLine,
   updateTripCards,
 } = require('./tripService');
-const { notifyTripAlert, notifyTripClosed } = require('./notificationService');
+const {
+  notifyTripAlert,
+  notifyTripClosed,
+  notifyTripEtaSoon,
+  notifyTripDue,
+  notifyTripReminder,
+} = require('./notificationService');
 
 const KINDS = [
   'trip_eta_soon',
@@ -175,6 +181,15 @@ const transition = async (tripId, state, { reason = null, actorId = null } = {})
       await notifyTripAlert(trip, ids, { io: _io, isSos: state === 'sos' });
     } else if (terminal) {
       await notifyTripClosed(trip, ids, { io: _io });
+    } else if (state === 'awaiting_confirm' && avant?.state !== state) {
+      // L'échéance vient de tomber. C'est la notification la plus utile de tout
+      // le volet : la dernière occasion, pour le propriétaire, de confirmer
+      // avant que cinq personnes ne soient réveillées. Elle n'existait pas —
+      // `awaiting_confirm` n'étant ni un état d'alerte ni une clôture, aucune
+      // branche ne le couvrait, et le job ne poussait qu'un socket.
+      //
+      // Au propriétaire SEUL : le cercle ne doit rien savoir à ce stade.
+      await notifyTripDue(trip, { io: _io });
     }
   } catch (e) {
     console.error('[Trip] notification de transition échouée:', e.message);
@@ -212,7 +227,15 @@ function registerTripJobHandlers() {
   // T−5 : silencieux, propriétaire seul. Il ne se passe rien côté cercle.
   registerJobHandler('trip_eta_soon', async ({ tripId }) => {
     const trip = await vivant(tripId, 'active');
-    if (!trip || !_io) return;
+    if (!trip) return;
+
+    // ⚠ Le socket ne suffit pas, et ne suffisait pas : il n'atteint que les
+    // applications ouvertes. Or ce rappel s'adresse précisément à quelqu'un qui
+    // a rangé son téléphone. La poussée d'abord, le socket ensuite pour les
+    // écrans déjà allumés.
+    await notifyTripEtaSoon(trip, { io: _io });
+
+    if (!_io) return;
     _io.to(`user_${Number(trip.owner_id)}`).emit('trip:eta_soon', {
       tripId: Number(tripId),
       etaAt: trip.eta_at,
@@ -242,7 +265,11 @@ function registerTripJobHandlers() {
 
   registerJobHandler('trip_reminder', async ({ tripId, offset }) => {
     const trip = await vivant(tripId, 'awaiting_confirm');
-    if (!trip || !_io) return;
+    if (!trip) return;
+
+    await notifyTripReminder(trip, { io: _io, offsetMin: offset });
+
+    if (!_io) return;
     _io.to(`user_${Number(trip.owner_id)}`).emit('trip:reminder', {
       tripId: Number(tripId),
       offsetMin: offset,

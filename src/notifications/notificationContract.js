@@ -21,6 +21,12 @@ const NOTIFICATION_TYPES = Object.freeze([
   'trip_alert',
   'trip_sos',
   'trip_closed',
+  // Rappels au PROPRIÉTAIRE seul, avant que le cercle ne soit sollicité. Ils ne
+  // contournent pas « Ne pas déranger » : ce ne sont pas des alertes, ce sont
+  // les chances qu'on lui laisse d'éviter d'en déclencher une.
+  'trip_eta_soon',
+  'trip_due',
+  'trip_reminder',
 ]);
 
 /**
@@ -170,6 +176,8 @@ const buildTripPayload = (input = {}) => {
     lastLng = null,
     lastAt = null,
     eventId = null,
+    title = '',
+    body = '',
   } = input;
 
   return stringifyData({
@@ -183,6 +191,25 @@ const buildTripPayload = (input = {}) => {
     lastLat,
     lastLng,
     lastAt,
+
+    // ⚠ `title` et `body` ne sont PAS décoratifs : sans eux, la notification
+    // n'existe pas.
+    //
+    // Ces envois sont data-only (`sendDataOnlyNotification`), donc c'est le
+    // client qui compose et affiche la notification locale — et il commence par
+    // `if (title.isEmpty && body.isEmpty) return;` (push_service.dart). Une
+    // charge utile sans ces deux champs produisait donc une alerte de sûreté
+    // parfaitement silencieuse : elle ne vivait que dans le socket, c'est-à-dire
+    // uniquement si l'application du destinataire était déjà ouverte. L'inverse
+    // exact de la règle du volet — une alerte ne transite jamais par la seule
+    // room.
+    //
+    // Le texte est composé côté serveur, comme pour les messages
+    // (`buildMessagePayload`) : quand l'application est tuée, personne côté
+    // client n'est là pour traduire.
+    title,
+    body,
+
     deeplink: `alanya://trips/${tripId}`,
   });
 };

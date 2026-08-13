@@ -41,7 +41,10 @@ const _buildApnsConfig = (data) => {
     (type === 'message' ||
       type === 'meeting_invite' ||
       type === 'meeting_reminder' ||
-      type === 'status_view');
+      type === 'status_view' ||
+      // Sans ces trois lignes, une alerte de trajet partait en push de fond sur
+      // iOS : aucun affichage, et une délivrance à la discrétion du système.
+      type.startsWith('trip_'));
 
   const aps = { 'content-available': 1 };
   if (showAlert && (data.title || data.body)) {
@@ -84,7 +87,37 @@ const _buildApnsConfig = (data) => {
 // Types affichés à l'utilisateur : bloc `notification` Android pour que le
 // système les affiche même app tuée. Les appels restent data-only pour
 // déclencher CallKit via le handler Dart.
-const VISIBLE_TYPES = ['message', 'meeting_invite', 'meeting_reminder', 'status_view'];
+const VISIBLE_TYPES = [
+  'message', 'meeting_invite', 'meeting_reminder', 'status_view',
+  // Trajets de confiance. Les inscrire ici n'est pas un détail de confort :
+  // hors de cette liste, `_buildApnsConfig` ne posait aucun `aps.alert` et
+  // envoyait en `apns-push-type: background` — sur iOS, l'alerte de sûreté
+  // n'affichait rien du tout et se faisait étrangler par Apple. Sur Android,
+  // elle partait en priorité `normal` avec 24 h de TTL, donc retardable de
+  // plusieurs heures par Doze.
+  'trip_alert', 'trip_sos', 'trip_closed',
+  'trip_eta_soon', 'trip_due', 'trip_reminder',
+];
+
+/** Les deux seuls types de toute l'application qui réveillent quelqu'un. */
+const TRIP_ALERT_TYPES = ['trip_alert', 'trip_sos'];
+
+/** Rappels au propriétaire : visibles et prioritaires, mais qui ne forcent rien. */
+const TRIP_OWNER_TYPES = ['trip_eta_soon', 'trip_due', 'trip_reminder'];
+
+/**
+ * TTL par type. Une notification de sûreté périmée est pire qu'absente : elle
+ * apprend au destinataire que les alertes de l'application arrivent en retard,
+ * et il cesse de les ouvrir.
+ */
+const TRIP_TTL_MS = {
+  trip_alert: 120_000,
+  trip_sos: 120_000,
+  trip_eta_soon: 600_000,
+  trip_due: 900_000,
+  trip_reminder: 600_000,
+};
+
 const CALL_TYPES = ['call', 'group_call'];
 // Aligné sur NO_ANSWER_MS (45 s, calls.js) : un push d'appel délivré après le
 // timeout serveur ferait sonner un appel déjà classé « sans réponse ».
@@ -122,7 +155,9 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       ),
       android: {
         priority: isCall || isVisible ? 'high' : 'normal',
-        ttl: isCall ? CALL_TTL_MS : 86400000,
+        ttl: isCall
+          ? CALL_TTL_MS
+          : (TRIP_TTL_MS[data.type] ?? 86400000),
       },
       apns: _buildApnsConfig(data),
     };
@@ -137,17 +172,42 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       // Tag distinct obligatoire : sans tag, FCM réutilise l'id 0 et chaque
       // notif écrase la précédente dans le tiroir Android.
       let tag;
-      if (data.conversationId) {
+      if (data.tripId) {
+        // Un trajet occupe UNE ligne dans le tiroir, quel que soit le nombre
+        // d'étapes. Sans ce tag, le propriétaire empilerait quatre
+        // notifications pour un même trajet — pré-avis, échéance, deux
+        // relances — et devrait deviner laquelle est encore d'actualité. La
+        // plus récente remplace la précédente, exactement comme la carte de
+        // conversation est réécrite sur place.
+        tag = `trip_${data.tripId}`;
+      } else if (data.conversationId) {
         tag = `conv_${data.conversationId}`;
       } else if (data.meetingId) {
         tag = `meeting_${data.type}_${data.meetingId}`;
       } else {
         tag = `${data.type || 'notif'}_${Date.now()}`;
       }
+      // Le canal décide de tout sur Android : c'est lui qui porte l'importance,
+      // le son, et surtout l'autorisation de passer outre « Ne pas déranger ».
+      // Poster une alerte de sûreté sur `talky_messages` la rendrait
+      // silencieuse chez quiconque a activé le mode silencieux — c'est-à-dire
+      // la nuit, précisément quand elle compte.
+      const isTripAlert = TRIP_ALERT_TYPES.includes(data.type);
+      const isTripOwner = TRIP_OWNER_TYPES.includes(data.type);
+      const channelId = isTripAlert
+          ? 'alanya_trip_alert'
+          : isTripOwner || data.type === 'trip_closed'
+              ? 'alanya_trip'
+              : isMeeting
+                  ? 'talky_meetings'
+                  : 'talky_messages';
+
       message.android.notification = {
-        channelId: isMeeting ? 'talky_meetings' : 'talky_messages',
+        channelId,
         icon: 'ic_stat_notification',
-        color: '#114B86',
+        // Rouge pour une alerte : la couleur de la pastille système est le seul
+        // signal visible avant d'avoir lu quoi que ce soit.
+        color: isTripAlert ? '#EF4444' : '#114B86',
         sound: 'default',
         tag,
       };
@@ -802,6 +862,38 @@ const notifyMessageReadSync = async (alanyaID, conversationID, msgID = null) => 
 };
 
 
+// ---------------------------------------------------------------------------
+// Trajets de confiance — les textes
+// ---------------------------------------------------------------------------
+
+/**
+ * Les libellés des notifications de trajet sont composés **ici, côté serveur**.
+ *
+ * Ce n'est pas le choix habituel de l'application, qui préfère laisser le client
+ * traduire dans la langue du lecteur. Mais ces envois doivent atteindre un
+ * téléphone dont l'application est fermée, voire tuée : c'est le système qui
+ * affiche, et il n'y a personne pour traduire. La même contrainte s'applique
+ * déjà aux messages (`buildMessagePayload`).
+ *
+ * Conséquence assumée : ces phrases sont en français. Les localiser demanderait
+ * de connaître la langue de chaque destinataire côté serveur — un chantier
+ * distinct, qui vaudrait pour tous les types de notification.
+ */
+const hhmm = (date) => {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+/** Heure à laquelle le cercle sera prévenu — la moitié du contrat annoncé au
+ *  départ. Elle ne se devine pas, on l'écrit. */
+const heureAlerte = (trip) => {
+  if (!trip.eta_at) return null;
+  const eta = new Date(trip.eta_at);
+  if (Number.isNaN(eta.getTime())) return null;
+  return hhmm(new Date(eta.getTime() + Number(trip.grace_minutes || 0) * 60_000));
+};
+
 /**
  * Alerte de trajet — le moment pour lequel toute la fonctionnalité existe.
  *
@@ -829,6 +921,9 @@ const notifyTripAlert = async (trip, watcherIds, { io = null, isSos = false } = 
   } catch { /* le nom est un confort, pas une condition */ }
 
   const type = isSos ? 'trip_sos' : 'trip_alert';
+  const qui = ownerName || 'Un proche';
+  const vu = trip.last_at ? hhmm(trip.last_at) : null;
+
   const data = buildTripPayload({
     type,
     tripId: Number(trip.id),
@@ -838,6 +933,15 @@ const notifyTripAlert = async (trip, watcherIds, { io = null, isSos = false } = 
     lastLat: trip.last_lat == null ? null : Number(trip.last_lat),
     lastLng: trip.last_lng == null ? null : Number(trip.last_lng),
     lastAt: trip.last_at || null,
+    // Le titre dit le FAIT, jamais une supposition : « n'a pas confirmé son
+    // arrivée » et non « est en danger ». Le corps donne ce qui permet d'agir —
+    // l'heure du dernier point, qui répond à « depuis quand ? ».
+    title: isSos
+      ? `${qui} a déclenché un SOS`
+      : `${qui} n'a pas confirmé son arrivée`,
+    body: vu
+      ? `Dernière position à ${vu}`
+      : 'Aucune position reçue',
   });
 
   await Promise.allSettled(watcherIds.map((id) =>
@@ -857,19 +961,115 @@ const notifyTripAlert = async (trip, watcherIds, { io = null, isSos = false } = 
  *  doit réveiller personne. */
 const notifyTripClosed = async (trip, watcherIds, { io = null } = {}) => {
   if (!Array.isArray(watcherIds) || watcherIds.length === 0) return;
+
+  // Une clôture rassure : elle mérite un texte, mais pas de réveiller personne.
+  const confirme = trip.state === 'closed_confirmed';
+  const fausseAlerte = trip.close_reason === 'false_alarm';
+
   const data = buildTripPayload({
     type: 'trip_closed',
     tripId: Number(trip.id),
     state: trip.state,
     ownerId: Number(trip.owner_id),
+    title: 'Trajet de confiance',
+    body: fausseAlerte
+      ? 'Fausse alerte — tout va bien'
+      : (confirme ? 'Arrivée confirmée' : 'Partage arrêté'),
   });
   await Promise.allSettled(watcherIds.map((id) =>
     sendToUser(Number(id), data, { io, android: { priority: 'normal' } })));
 };
 
+// ---------------------------------------------------------------------------
+// Rappels au propriétaire — les chances qu'on lui laisse
+// ---------------------------------------------------------------------------
+
+/**
+ * Prévient le PROPRIÉTAIRE, et lui seul, avant que son cercle ne soit sollicité.
+ *
+ * Ces trois notifications sont l'escalade elle-même. Sans elles, quelqu'un qui
+ * range son téléphone, arrive chez lui et oublie de confirmer n'apprend
+ * strictement rien à 21:45, rien à 21:48, rien à 21:52 — et à 21:55 ses cinq
+ * proches sont réveillés. Le mécanisme conçu pour éviter exactement cela n'avait
+ * jamais eu l'occasion de fonctionner : les jobs n'émettaient qu'un socket, que
+ * le client n'écoutait pas, et `transition()` ne poussait que sur les états
+ * d'alerte et les clôtures.
+ *
+ * Priorité normale et **aucun contournement de « Ne pas déranger »** : ce ne
+ * sont pas des alertes. Le jour où un rappel réveille quelqu'un la nuit, le
+ * cercle apprend que le rouge de l'application ne veut rien dire.
+ */
+const notifierProprietaire = async (trip, { io, type, title, body, ttlMs }) => {
+  const data = buildTripPayload({
+    type,
+    tripId: Number(trip.id),
+    state: trip.state,
+    ownerId: Number(trip.owner_id),
+    title,
+    body,
+  });
+  await sendToUser(Number(trip.owner_id), data, {
+    io,
+    // Surtout pas `skipIfDeviceOnline` : « en ligne » ne veut pas dire « regarde
+    // son écran ». C'est précisément la personne distraite qu'il faut atteindre.
+    skipIfDeviceOnline: false,
+    android: { priority: 'high', ...(ttlMs ? { ttl: ttlMs } : {}) },
+    apns: { headers: { 'apns-priority': '10', 'apns-push-type': 'alert' } },
+  });
+};
+
+/** T−5 min. Silencieux pour le cercle, informatif pour le porteur. */
+const notifyTripEtaSoon = async (trip, { io = null } = {}) => {
+  const eta = trip.eta_at ? hhmm(trip.eta_at) : null;
+  await notifierProprietaire(trip, {
+    io,
+    type: 'trip_eta_soon',
+    title: 'Votre arrivée approche',
+    body: eta
+      ? `Arrivée prévue à ${eta}. Pensez à confirmer.`
+      : 'Pensez à confirmer votre arrivée.',
+    // Périmé passé l'échéance : le rappel suivant prendra le relais.
+    ttlMs: 10 * 60_000,
+  });
+};
+
+/** T. L'échéance est atteinte, le cercle ne sait encore rien. */
+const notifyTripDue = async (trip, { io = null } = {}) => {
+  const alerte = heureAlerte(trip);
+  await notifierProprietaire(trip, {
+    io,
+    type: 'trip_due',
+    title: 'Confirmez votre arrivée',
+    // Les deux heures du contrat, écrites et non déduites. C'est la seule chose
+    // qui permette de décider en connaissance de cause depuis l'écran de
+    // verrouillage.
+    body: alerte
+      ? `Sans réponse, vos proches seront prévenus à ${alerte}.`
+      : 'Sans réponse, vos proches seront prévenus avec votre dernière position.',
+    ttlMs: 15 * 60_000,
+  });
+};
+
+/** T+3 et T+7. Même contenu, insistance assumée. */
+const notifyTripReminder = async (trip, { io = null, offsetMin = 0 } = {}) => {
+  const alerte = heureAlerte(trip);
+  await notifierProprietaire(trip, {
+    io,
+    type: 'trip_reminder',
+    title: 'Vos proches vont être prévenus',
+    body: alerte
+      ? `Confirmez votre arrivée avant ${alerte}.`
+      : 'Confirmez votre arrivée.',
+    ttlMs: Math.max(2, 10 - Number(offsetMin || 0)) * 60_000,
+  });
+};
+
 module.exports = {
   notifyTripAlert,
   notifyTripClosed,
+  notifyTripEtaSoon,
+  notifyTripDue,
+  notifyTripReminder,
   sendDataOnlyNotification,
   sendToUser,
   sendToUserDevices,
