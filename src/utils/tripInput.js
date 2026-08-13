@@ -10,7 +10,9 @@
  * de téléphone fausse — ou trafiquée — ne doit pas pouvoir décaler une alerte.
  */
 
-const KINDS = new Set(['taxi', 'meeting', 'sos']);
+// `walk` remplace `meeting` (rendez-vous → à pied). `meeting` reste accepté
+// en entrée et est normalisé en `walk` — vieux clients / cartes déjà parties.
+const KINDS = new Set(['taxi', 'walk', 'sos']);
 const NOTE_MAX = 200;
 const CLIENT_ID_MAX = 64;
 const DEVICE_ID_MAX = 128;
@@ -26,7 +28,10 @@ const parseTripId = (raw) => {
   return Number.isNaN(id) || id <= 0 ? null : id;
 };
 
-const parseKind = (raw) => (KINDS.has(raw) ? raw : 'meeting');
+const parseKind = (raw) => {
+  if (raw === 'meeting') return 'walk';
+  return KINDS.has(raw) ? raw : 'taxi';
+};
 
 /**
  * Résout l'échéance à partir de `etaAt` (ISO 8601) ou `durationMin`.

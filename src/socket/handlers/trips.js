@@ -188,6 +188,7 @@ const ingest = async (io, socket, trip, raw) => {
     { lat: Number(trip.dest_lat), lng: Number(trip.dest_lng) }, p);
   tripState.setRegime(trip.id, policy.regimeFor({
     state: trip.state,
+    kind: trip.kind,
     msToEta,
     distanceToDestM: distDest,
     batteryPct: p.battery,

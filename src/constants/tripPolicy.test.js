@@ -30,7 +30,10 @@ const test = (nom, fn) => {
 // --- Régimes par défaut ----------------------------------------------------
 
 test('les défauts sont ceux du réglage réactif', () => {
-  assert.strictEqual(policy.REGIMES.nominal.filterM, 25);
+  // Nominal = cadence piéton (walk) pour clients sans filterMByKind.
+  assert.strictEqual(policy.REGIMES.nominal.filterM, 75);
+  assert.strictEqual(policy.FILTER_M_BY_KIND.taxi, 450);
+  assert.strictEqual(policy.FILTER_M_BY_KIND.walk, 75);
   assert.strictEqual(policy.REGIMES.nominal.floorS, 5);
   assert.strictEqual(policy.REGIMES.nominal.beatS, 45);
   assert.strictEqual(policy.REGIMES.approach.filterM, 15);
@@ -68,6 +71,18 @@ test('chaque régime a un plancher — sans lui le débit suit la vitesse', () =
 test('loin de l’échéance → nominal', () => {
   const r = policy.regimeFor({ state: 'active', msToEta: 45 * 60 * 1000 });
   assert.strictEqual(r.name, 'nominal');
+});
+
+test('nominal : taxi 450 m, à pied 75 m ; approche / alerte inchangés', () => {
+  const taxi = policy.regimeFor({ state: 'active', kind: 'taxi', msToEta: 45 * 60 * 1000 });
+  const walk = policy.regimeFor({ state: 'active', kind: 'walk', msToEta: 45 * 60 * 1000 });
+  const meeting = policy.regimeFor({ state: 'active', kind: 'meeting', msToEta: 45 * 60 * 1000 });
+  assert.strictEqual(taxi.filterM, 450);
+  assert.strictEqual(walk.filterM, 75);
+  assert.strictEqual(meeting.filterM, 75, 'meeting (legacy) = walk');
+  const approche = policy.regimeFor({ state: 'active', kind: 'taxi', msToEta: 5 * 60 * 1000 });
+  assert.strictEqual(approche.name, 'approach');
+  assert.strictEqual(approche.filterM, policy.REGIMES.approach.filterM);
 });
 
 test('à moins de 10 min de l’échéance → approche', () => {
@@ -147,6 +162,8 @@ test('la politique servie porte tout ce dont le client a besoin', () => {
       assert.ok(p.regimes[nom][champ] !== undefined, `${nom}.${champ} manquant`);
     }
   }
+  assert.strictEqual(p.filterMByKind.taxi, 450);
+  assert.strictEqual(p.filterMByKind.walk, 75);
   // Sans ces deux-là, le client ne sait pas quand afficher « position
   // indisponible » ni quand grisser un relevé imprécis.
   assert.ok(p.staleFactor > 0);
@@ -162,12 +179,15 @@ test('la politique servie est sérialisable telle quelle', () => {
 
 test('une valeur d’environnement absurde retombe sur le défaut', () => {
   delete require.cache[require.resolve('./tripPolicy')];
-  process.env.TRIP_FILTER_M_NOMINAL = 'beaucoup';
+  process.env.TRIP_FILTER_M_WALK = 'beaucoup';
+  process.env.TRIP_FILTER_M_TAXI = '99999';
   process.env.TRIP_BEAT_S_NOMINAL = '999999';   // au-dessus du plafond
   const p2 = require('./tripPolicy');
-  assert.strictEqual(p2.REGIMES.nominal.filterM, 25, 'NaN doit retomber sur le défaut');
+  assert.strictEqual(p2.FILTER_M_BY_KIND.walk, 75, 'NaN doit retomber sur le défaut');
+  assert.strictEqual(p2.FILTER_M_BY_KIND.taxi, 2000, 'la valeur doit être bornée');
   assert.strictEqual(p2.REGIMES.nominal.beatS, 900, 'la valeur doit être bornée');
-  delete process.env.TRIP_FILTER_M_NOMINAL;
+  delete process.env.TRIP_FILTER_M_WALK;
+  delete process.env.TRIP_FILTER_M_TAXI;
   delete process.env.TRIP_BEAT_S_NOMINAL;
 });
 

@@ -53,8 +53,8 @@ const {
  *                 description: Identifiant client, pour l'idempotence
  *               kind:
  *                 type: string
- *                 enum: [taxi, meeting]
- *                 default: meeting
+ *                 enum: [taxi, walk]
+ *                 default: taxi
  *               etaAt:
  *                 type: string
  *                 format: date-time

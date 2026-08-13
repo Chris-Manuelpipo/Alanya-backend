@@ -50,11 +50,12 @@ test('parseTripId : refuse tout ce qui n’est pas un entier positif', () => {
 
 // --- parseKind -------------------------------------------------------------
 
-test('parseKind : une valeur inconnue retombe sur meeting', () => {
+test('parseKind : taxi / walk ; meeting (legacy) → walk ; inconnu → taxi', () => {
   assert.strictEqual(t.parseKind('taxi'), 'taxi');
-  assert.strictEqual(t.parseKind('meeting'), 'meeting');
-  assert.strictEqual(t.parseKind('avion'), 'meeting');
-  assert.strictEqual(t.parseKind(undefined), 'meeting');
+  assert.strictEqual(t.parseKind('walk'), 'walk');
+  assert.strictEqual(t.parseKind('meeting'), 'walk');
+  assert.strictEqual(t.parseKind('avion'), 'taxi');
+  assert.strictEqual(t.parseKind(undefined), 'taxi');
 });
 
 // --- resolveEta : le chemin normal ----------------------------------------

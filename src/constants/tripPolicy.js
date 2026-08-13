@@ -47,6 +47,30 @@ const readInt = (name, defaultValue, { min, max }) => {
 //              « traceur mort ». Il ne rallume pas le GPS : il renvoie le
 //              dernier point connu avec son horodatage de capture réel.
 
+// ---------------------------------------------------------------------------
+// Filtre nominal par type de trajet — taxi vs à pied
+// ---------------------------------------------------------------------------
+// Un taxi en ville franchit 75 m en quelques secondes : le même filtre que
+// pour un piéton saturerait le flux. Inversement, 450 m à pied laisserait
+// trop longtemps le cercle sans nouvelle position. Le type choisi à la
+// composition fixe donc le distanceFilter du régime *nominal* ; approche et
+// alerte restent partagés (plus serrés, indépendants du moyen de transport).
+//
+// TRIP_FILTER_M_NOMINAL : repli historique si TRIP_FILTER_M_WALK est absent.
+const _filtreWalkDefaut = readInt('TRIP_FILTER_M_NOMINAL', 75, { min: 10, max: 500 });
+const FILTER_M_BY_KIND = {
+  taxi: readInt('TRIP_FILTER_M_TAXI', 450, { min: 50, max: 2000 }),
+  walk: readInt('TRIP_FILTER_M_WALK', _filtreWalkDefaut, { min: 10, max: 500 }),
+};
+// Alias historique (rendez-vous → à pied).
+FILTER_M_BY_KIND.meeting = FILTER_M_BY_KIND.walk;
+
+/** Filtre mètres du régime nominal pour un kind. `sos` / inconnu → walk. */
+const filterMForKind = (kind) => {
+  if (kind === 'taxi') return FILTER_M_BY_KIND.taxi;
+  return FILTER_M_BY_KIND.walk;
+};
+
 const REGIMES = {
   // ⚠ `balanced` désigne l'équilibre batterie/cadence, PAS une précision
   // dégradée : le client le traduit en `LocationAccuracy.high`. Demander
@@ -54,7 +78,10 @@ const REGIMES = {
   // pour retrouver quelqu'un comme pour détecter une arrivée.
   nominal: {
     accuracy: 'balanced',
-    filterM: readInt('TRIP_FILTER_M_NOMINAL', 25, { min: 10, max: 500 }),
+    // Filtre « générique » pour clients anciens (sans filterMByKind) :
+    // cadence piéton. Les clients récents écrasent via filterMByKind[kind]
+    // en régime nominal uniquement — approche / alerte restent ci-dessous.
+    filterM: FILTER_M_BY_KIND.walk,
     floorS: readInt('TRIP_FLOOR_S_NOMINAL', 5, { min: 1, max: 300 }),
     beatS: readInt('TRIP_BEAT_S_NOMINAL', 45, { min: 15, max: 900 }),
   },
@@ -164,33 +191,39 @@ const APPROACH_M = 1000;
 /**
  * @param {object} ctx
  * @param {string} ctx.state          état du trajet
+ * @param {string} [ctx.kind]        taxi | walk (défaut taxi ; meeting → walk)
  * @param {number|null} ctx.msToEta   millisecondes avant l'échéance (négatif = dépassée)
  * @param {number|null} ctx.distanceToDestM  distance à la destination, si connue
  * @param {number|null} ctx.batteryPct
  * @returns {{name: string, accuracy: string, filterM: number, floorS: number, beatS: number}}
  */
-const regimeFor = ({ state, msToEta = null, distanceToDestM = null, batteryPct = null } = {}) => {
+const regimeFor = ({ state, kind = 'taxi', msToEta = null, distanceToDestM = null, batteryPct = null } = {}) => {
+  const avecFiltreKind = (name, base) => {
+    // Approche / alerte : filtres serrés inchangés. Nominal : taxi vs à pied.
+    if (name !== 'nominal') return { name, ...base };
+    return { name, ...base, filterM: filterMForKind(kind) };
+  };
+
   // L'alerte l'emporte sur tout, batterie comprise : c'est le moment où la
   // position sert vraiment.
-  if (ALERT_STATES.has(state)) return { name: 'alert', ...REGIMES.alert };
+  if (ALERT_STATES.has(state)) return avecFiltreKind('alert', REGIMES.alert);
 
   // Garde batterie : on ralentit, et le cercle en est informé.
   if (batteryPct !== null && batteryPct <= LOW_BATTERY_PCT) {
-    return {
-      name: 'nominal',
+    return avecFiltreKind('nominal', {
       ...REGIMES.nominal,
       floorS: Math.max(REGIMES.nominal.floorS, 60),
       beatS: Math.max(REGIMES.nominal.beatS, 120),
-    };
+    });
   }
 
   const procheDansLeTemps = msToEta !== null && msToEta <= APPROACH_MS;
   const procheDansLEspace = distanceToDestM !== null && distanceToDestM <= APPROACH_M;
   if (procheDansLeTemps || procheDansLEspace) {
-    return { name: 'approach', ...REGIMES.approach };
+    return avecFiltreKind('approach', REGIMES.approach);
   }
 
-  return { name: 'nominal', ...REGIMES.nominal };
+  return avecFiltreKind('nominal', REGIMES.nominal);
 };
 
 /** Ce qui part vers le client dans chaque réponse portant un trajet.
@@ -199,6 +232,13 @@ const regimeFor = ({ state, msToEta = null, distanceToDestM = null, batteryPct =
 const publicPolicy = () => ({
   version: 1,
   regimes: REGIMES,
+  // DistanceFilter du régime nominal selon le type choisi à la composition.
+  // Le client l'applique localement ; sans ce champ (serveur ancien), il
+  // retombe sur ses défauts taxi=450 / walk=75.
+  filterMByKind: {
+    taxi: FILTER_M_BY_KIND.taxi,
+    walk: FILTER_M_BY_KIND.walk,
+  },
   // Valeurs de contrat exposées en LECTURE : l'écran de composition doit
   // pouvoir écrire « si vous n'avez pas confirmé à 21:55, vos proches seront
   // prévenus » AVANT que le trajet n'existe. Sans elles, il devrait supposer la
@@ -221,6 +261,7 @@ const publicPolicy = () => ({
 
 module.exports = {
   REGIMES,
+  FILTER_M_BY_KIND,
   CONTRACT,
   RETENTION,
   SOS_MAX_24H,
@@ -235,6 +276,7 @@ module.exports = {
   ALERT_STATES,
   TERMINAL_STATES,
   staleAfterSeconds,
+  filterMForKind,
   regimeFor,
   publicPolicy,
 };

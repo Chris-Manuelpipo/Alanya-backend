@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS trip (
   id               BIGINT       NOT NULL AUTO_INCREMENT,
   owner_id         INT          NOT NULL,
   client_id        VARCHAR(64)  NOT NULL,          -- création idempotente (cf. broadcast)
-  kind             ENUM('taxi','meeting','sos')    NOT NULL DEFAULT 'meeting',
+  kind             ENUM('taxi','walk','sos')       NOT NULL DEFAULT 'taxi',
   state            ENUM('active','awaiting_confirm','alert','sos',
                         'closed_confirmed','closed_cancelled',
                         'closed_expired','closed_unwatched')
