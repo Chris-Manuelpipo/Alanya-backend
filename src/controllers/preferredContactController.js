@@ -145,6 +145,18 @@ const removePreferredContact = async (req, res) => {
       return res.status(404).json({ error: 'Contact not found' });
     }
 
+    // Être un contact préféré est le PRÉREQUIS pour appartenir à une liste
+    // (cf. addMember de contactListController). Le retirer des favoris doit
+    // donc le sortir de toutes MES listes — sinon il y resterait en membre
+    // fantôme, impossible à ré-ajouter et invisible dans les favoris.
+    // Restreint à mes listes : les listes des autres ne me regardent pas.
+    await pool.execute(
+      `DELETE clm FROM contact_list_member clm
+         JOIN contact_list cl ON cl.idList = clm.idList
+        WHERE cl.alanyaID = ? AND clm.idFriend = ?`,
+      [alanyaID, friendID]
+    );
+
     res.json({ message: 'Contact removed' });
   } catch (error) {
     console.error('[removePreferredContact] ERROR:', error);

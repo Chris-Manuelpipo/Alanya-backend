@@ -16,6 +16,11 @@ const { DEVICE_REGISTRY_V2, ANDROID_NATIVE_V2, IOS_RICH_NSE, IOS_VOIP_V2 } = req
 const { resolvePushTargets, resolveCallPushTargets } = require('../notifications/pushDeviceRegistry');
 const { sendVoipPush, clearVoipToken, isConfigured: isVoipConfigured } = require('../notifications/apnsVoipProvider');
 const { evaluateMessagePush, evaluateTypePush } = require('../notifications/notificationFilter');
+const {
+  loadUserNotificationPrefsMany,
+  loadConversationMuteMany,
+} = require('../notifications/notificationPrefs');
+const { loadUserDndScheduleMany } = require('./dndScheduleService');
 const { shouldUseAndroidNativeDataOnly } = require('../notifications/notificationAndroidNative');
 const { shouldUseDeviceRegistry } = require('../notifications/notificationRouting');
 
@@ -288,6 +293,11 @@ const sendToUserLegacy = async (alanyaID, data = {}, options = {}) => {
 
 const MAX_PUSH_CONCURRENCY = 5;
 
+// Nombre de destinataires traités en parallèle par notifyNewMessage : borne le
+// pic de connexions DB / d'appels FCM tout en supprimant la latence cumulée
+// d'un fan-out strictement séquentiel.
+const FANOUT_CONCURRENCY = Number(process.env.PUSH_FANOUT_CONCURRENCY || 10);
+
 /**
  * Envoie à tous les appareils enregistrés (skip foreground+conv active récent).
  */
@@ -376,10 +386,21 @@ const sendCallToUser = async (alanyaID, data = {}) => {
 };
 
 /**
- * Fin d'appel : FCM data-only sur tous les appareils + VoIP dismiss iOS si actif.
+ * Fin d'appel : FCM data-only + VoIP dismiss iOS.
+ * @param {object} [options]
+ * @param {string} [options.excludeDeviceId] — ne pas pousser vers cet appareil (gagnant claim).
  */
-const sendCallEndedToUser = async (alanyaID, data = {}) => {
+const sendCallEndedToUser = async (alanyaID, data = {}, options = {}) => {
+  const { normalizeDeviceId } = require('../utils/deviceId');
+  const excludeDeviceId = normalizeDeviceId(options.excludeDeviceId);
+
   if (!DEVICE_REGISTRY_V2) {
+    if (excludeDeviceId) {
+      console.warn(
+        '[PushCall] excludeDeviceId ignored on legacy path user=',
+        alanyaID,
+      );
+    }
     return sendToUserLegacy(alanyaID, data, {});
   }
 
@@ -390,6 +411,27 @@ const sendCallEndedToUser = async (alanyaID, data = {}) => {
     }
 
     for (const target of targets) {
+      const targetDid = normalizeDeviceId(target.deviceId);
+
+      // Target sans deviceId clair : ne pas envoyer call_ended (évite de tuer
+      // le gagnant si excludeDeviceId est ambigu / si ids divergent).
+      if (!targetDid) {
+        console.warn(
+          `[PushCall] skip call_ended user=${alanyaID} reason=missing_or_ambiguous_deviceId`,
+        );
+        continue;
+      }
+
+      if (excludeDeviceId && targetDid === excludeDeviceId) {
+        continue;
+      }
+
+      if (options.excludeDeviceId && !excludeDeviceId) {
+        console.warn(
+          `[PushCall] excludeDeviceId missing/ambiguous user=${alanyaID}`,
+        );
+      }
+
       logQueued({
         type: data.type,
         userId: alanyaID,
@@ -469,15 +511,34 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
       [conversationID, senderID]
     );
+    if (participants.length === 0) return;
     const pushOptions = getMessagePushOptions();
+    const recipientIds = participants.map((p) => Number(p.alanyaID));
 
-    for (const p of participants) {
-      const [unreadRows] = await pool.execute(
-        'SELECT COALESCE(SUM(unreadCount), 0) AS total FROM conv_participants WHERE alanyaID = ?',
-        [p.alanyaID],
-      );
-      const totalUnread = unreadRows[0]?.total ?? 0;
+    // Lectures en batch : la boucle unitaire exécutait ~4 requêtes séquentielles
+    // PAR destinataire (unread, prefs, DND, mute) — soit ~800 requêtes pour un
+    // groupe de 200. Ici : 4 requêtes au total, quel que soit l'effectif.
+    const [
+      unreadRows,
+      prefsMap,
+      dndMap,
+      muteMap,
+    ] = await Promise.all([
+      pool
+        .query(
+          'SELECT alanyaID, COALESCE(SUM(unreadCount), 0) AS total FROM conv_participants WHERE alanyaID IN (?) GROUP BY alanyaID',
+          [recipientIds],
+        )
+        .then(([rows]) => rows),
+      loadUserNotificationPrefsMany(recipientIds),
+      loadUserDndScheduleMany(recipientIds),
+      loadConversationMuteMany(conversationID, recipientIds),
+    ]);
+    const unreadMap = new Map(
+      unreadRows.map((r) => [Number(r.alanyaID), Number(r.total) || 0]),
+    );
 
+    const notifyOne = async (recipientId) => {
       let payload = buildMessagePayload({
         msgID,
         clientId,
@@ -490,15 +551,20 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
         isGroup,
         groupName,
         groupAvatar,
-        unreadTotal: totalUnread,
+        unreadTotal: unreadMap.get(recipientId) ?? 0,
       });
 
-      const mentioned = isMentioned(mentionList, p.alanyaID, senderID);
+      const mentioned = isMentioned(mentionList, recipientId, senderID);
       payload = { ...payload, mentioned: mentioned ? '1' : '0' };
 
-      const decision = await evaluateMessagePush(p.alanyaID, conversationID, payload, {
+      const decision = await evaluateMessagePush(recipientId, conversationID, payload, {
         isGroup,
         isMentioned: mentioned,
+        preloaded: {
+          prefs: prefsMap.get(recipientId),
+          dnd: dndMap.get(recipientId),
+          mute: muteMap.get(recipientId),
+        },
       });
       if (!decision.allowed) {
         logSkipped({
@@ -506,22 +572,48 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
           eventId: payload.eventId,
           msgID: payload.msgID,
           conversationId: String(conversationID),
-          userId: p.alanyaID,
+          userId: recipientId,
           reason: decision.reason,
         });
-        continue;
+        return;
       }
       payload = decision.payload;
 
-      await sendToUser(p.alanyaID, payload, pushOptions);
+      await sendToUser(recipientId, payload, pushOptions);
+    };
+
+    // Envois par vagues bornées : plus de latence cumulée séquentielle
+    // (200 allers-retours FCM en série ≈ 40 s), sans pour autant noyer le
+    // pool DB ni l'API FCM.
+    for (let i = 0; i < recipientIds.length; i += FANOUT_CONCURRENCY) {
+      const wave = recipientIds.slice(i, i + FANOUT_CONCURRENCY);
+      await Promise.all(
+        wave.map((id) =>
+          notifyOne(id).catch((e) =>
+            console.error(`[FCM] notifyNewMessage destinataire=${id}:`, e.message),
+          ),
+        ),
+      );
     }
   } catch (error) {
     console.error('[FCM] notifyNewMessage error:', error.message);
   }
 };
 
-const notifyIncomingCall = async (idReceiver, callerID, callerName, callerPhoto, isVideo, callId) => {
-  await sendCallToUser(idReceiver, {
+/**
+ * Construit le data payload FCM/CallKit d'un appel entrant.
+ * Extras optionnels pour les invitations conférence / transfert.
+ * Exposé pour les tests de contrat (sans I/O réseau).
+ */
+const buildIncomingCallPayload = (
+  callerID,
+  callerName,
+  callerPhoto,
+  isVideo,
+  callId,
+  extras = null,
+) => {
+  const payload = {
     type:       'call',
     title:      callerName || 'Appel entrant',
     body:       `${callerName || 'Quelqu\'un'} vous appelle`,
@@ -530,7 +622,44 @@ const notifyIncomingCall = async (idReceiver, callerID, callerName, callerPhoto,
     photo:      String(callerPhoto ?? ''),
     isVideo:    String(isVideo ?? false),
     callId:     String(callId ?? ''),
-  });
+  };
+  if (extras && typeof extras === 'object') {
+    if (extras.roomId != null && extras.roomId !== '') {
+      payload.roomId = String(extras.roomId);
+    }
+    if (extras.sessionId != null && extras.sessionId !== '') {
+      payload.sessionId = String(extras.sessionId);
+    }
+    if (extras.sessionKind != null && extras.sessionKind !== '') {
+      payload.sessionKind = String(extras.sessionKind);
+    }
+    if (extras.mode != null && extras.mode !== '') {
+      payload.mode = String(extras.mode);
+    }
+  }
+  return payload;
+};
+
+/**
+ * Push d'appel entrant (1-à-1 ou invitation conférence).
+ *
+ * Pour une conférence / transfert, passer extras :
+ *   { roomId, sessionId, sessionKind: 'conference', mode: 'join'|'transfer' }
+ * Les appels 1-à-1 n'envoient pas ces champs (rétrocompat).
+ */
+const notifyIncomingCall = async (
+  idReceiver,
+  callerID,
+  callerName,
+  callerPhoto,
+  isVideo,
+  callId,
+  extras = null,
+) => {
+  await sendCallToUser(
+    idReceiver,
+    buildIncomingCallPayload(callerID, callerName, callerPhoto, isVideo, callId, extras),
+  );
 };
 
 const notifyGroupCall = async (targetUserIds = [], callerID, callerName, callerPhoto, isVideo, roomId) => {
@@ -611,14 +740,33 @@ const notifyMeetingReminder = async (participantId, meetingTitle, organiserName,
   });
 };
 
-const notifyCallEnded = async (receiverId, callerId, callerName, callId = null) => {
-  await sendCallEndedToUser(receiverId, {
+/**
+ * @param {object} [options]
+ * @param {string} [options.excludeDeviceId]
+ * @param {string} [options.reason]
+ * @param {boolean} [options.claimedByAnotherDevice]
+ */
+const notifyCallEnded = async (
+  receiverId,
+  callerId,
+  callerName,
+  callId = null,
+  options = {},
+) => {
+  const payload = {
     type:       'call_ended',
     title:      'Appel terminé',
     body:       `${callerName || 'L\'appel'} a raccroché`,
     callerId:   String(callerId),
     callerName: String(callerName ?? ''),
     callId:     String(callId ?? ''),
+  };
+  if (options.reason) payload.reason = String(options.reason);
+  if (options.claimedByAnotherDevice) {
+    payload.claimedByAnotherDevice = 'true';
+  }
+  await sendCallEndedToUser(receiverId, payload, {
+    excludeDeviceId: options.excludeDeviceId,
   });
 };
 
@@ -659,6 +807,7 @@ module.exports = {
   sendToUserLegacy,
   notifyNewMessage,
   notifyIncomingCall,
+  buildIncomingCallPayload,
   notifyGroupCall,
   notifyStatusView,
   notifyQrContactScanned,

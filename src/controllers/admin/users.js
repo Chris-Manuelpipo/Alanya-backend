@@ -1,62 +1,36 @@
 const pool = require('../../config/db');
 const { ensureGroupOwner } = require('../../utils/groupOwnership');
 const { _notifyUserAccountAction } = require('./helpers');
+const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
+const { invalidateOfficialAccountCache } = require('../../utils/officialAccountGuard');
+const { guardDisplayNames } = require('../../utils/displayNameGuard');
+const { buildUsersWhere, fetchUsersForExport } = require('./usersQuery');
 
-// Utilisateurs (liste complète, détails, bannissement, rôle, suppression…)
 const getUsers = async (req, res) => {
   try {
-    const {
-      search = '',
-      status = '',
-      from = '',
-      to = '',
-      idPays = '',
-      sort = 'created_at',
-      order = 'desc',
-      page = 1,
-      limit = 20,
-    } = req.query;
+    const { page = 1, limit = 20 } = req.query;
+    const { whereSql, params, sortCol, dir } = buildUsersWhere(req.query);
 
-    const where = [];
-    const params = [];
-
-    if (search) {
-      where.push('(u.nom LIKE ? OR u.pseudo LIKE ? OR u.alanyaPhone LIKE ?)');
-      const like = `%${search}%`;
-      params.push(like, like, like);
-    }
-    if (status === 'online')  { where.push('u.is_online = ?'); params.push(1); }
-    if (status === 'banned')  { where.push('u.exclus = ?'); params.push(1); }
-    if (status === 'admin')   { where.push('u.type_compte >= ?'); params.push(1); }
-    if (from) { where.push('u.created_at >= ?'); params.push(from); }
-    if (to)   { where.push('u.created_at <= ?'); params.push(to); }
-    if (idPays) { where.push('u.idPays = ?'); params.push(idPays); }
-
-    const allowedSort = { created_at: 'u.created_at', nom: 'u.nom', last_seen: 'u.last_seen' };
-    const sortCol = allowedSort[sort] || 'u.created_at';
-    const dir = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-
-    const pageN  = Math.max(1, parseInt(page, 10));
+    const pageN = Math.max(1, parseInt(page, 10));
     const limitN = Math.min(100, Math.max(1, parseInt(limit, 10)));
     const offset = (pageN - 1) * limitN;
 
-    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
- 
     const [items] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
-              u.type_compte, u.is_online, u.last_seen, u.exclus, u.exclude_at,
+              u.type_compte, u.account_type, u.verification_status, u.verified_until,
+              u.is_online, u.last_seen, u.exclus, u.exclude_at,
               u.exclude_reason, u.created_at, u.idPays, p.libelle AS pays_libelle
        FROM users u
        LEFT JOIN pays p ON u.idPays = p.idPays
        ${whereSql}
        ORDER BY ${sortCol} ${dir}
        LIMIT ${limitN} OFFSET ${offset}`,
-      params
+      params,
     );
 
     const [[{ total }]] = await pool.execute(
       `SELECT COUNT(*) AS total FROM users u ${whereSql}`,
-      params
+      params,
     );
 
     res.json({ items, total, page: pageN, limit: limitN });
@@ -72,7 +46,8 @@ const getUserById = async (req, res) => {
     const { id } = req.params;
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
-              u.type_compte, u.is_online, u.last_seen, u.exclus, u.exclude_at,
+              u.type_compte, u.account_type, u.verification_status, u.verified_until,
+              u.is_online, u.last_seen, u.exclus, u.exclude_at,
               u.exclude_reason, u.created_at, u.idPays, u.fcm_token, u.device_ID,
               p.libelle AS pays_libelle, p.prefix AS pays_prefix
        FROM users u
@@ -234,9 +209,18 @@ const deleteUser = async (req, res) => {
       return res.status(400).json({ error: 'Impossible de se supprimer soi-même' });
     }
     const [users] = await pool.execute(
-      'SELECT email, nom FROM users WHERE alanyaID = ?',
+      'SELECT email, nom, account_type FROM users WHERE alanyaID = ?',
       [id]
     );
+    // Le compte officiel est référencé par broadcast.sender_id, sans ON DELETE :
+    // dès la première diffusion, la suppression échouerait sur une violation de
+    // clé étrangère illisible. On refuse en amont, avec la marche à suivre.
+    if (Number(users[0]?.account_type ?? 0) === ACCOUNT_TYPE.OFFICIEL) {
+      return res.status(409).json({
+        error: 'Le compte officiel ne peut pas être supprimé. Révoquez d\'abord son genre de compte.',
+        code: 'OFFICIAL_NOT_DELETABLE',
+      });
+    }
     // Groupes dont ce compte est membre, lus AVANT la suppression : le
     // ON DELETE CASCADE de fk_cp_user va effacer ses lignes conv_participants,
     // et si c'était le propriétaire, le groupe se retrouverait sans role=2 —
@@ -275,6 +259,80 @@ const deleteUser = async (req, res) => {
   }
 };
 
+const setUserSocle = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { account_type, verification_status, verified_until } = req.body || {};
+    const [users] = await pool.execute(
+      'SELECT type_compte, account_type, nom, pseudo FROM users WHERE alanyaID = ?',
+      [id],
+    );
+    if (!users.length) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+    const updates = [];
+    const values = [];
+
+    if (account_type != null) {
+      const at = Number(account_type);
+      if (![0, 1, 2].includes(at)) {
+        return res.status(400).json({ error: 'account_type invalide' });
+      }
+      // Un compte officiel se crée, il ne se promeut pas. Sans cette règle, un
+      // compte personnel — dont le propriétaire connaît l'e-mail, le mot de
+      // passe et le code de récupération — pourrait devenir la voix de
+      // l'application. La révocation reste permise.
+      const wasOfficial = Number(users[0].account_type ?? 0) === ACCOUNT_TYPE.OFFICIEL;
+      if (at === ACCOUNT_TYPE.OFFICIEL && !wasOfficial) {
+        return res.status(409).json({
+          error: 'Le compte officiel se crée depuis « Créer un utilisateur », il ne se promeut pas',
+          code: 'OFFICIAL_NOT_PROMOTABLE',
+        });
+      }
+      if ((users[0].type_compte ?? 0) >= 1 && at !== Number(users[0].account_type ?? 0)) {
+        return res.status(409).json({
+          error: 'Impossible de modifier le genre de compte d\'un administrateur via account_type',
+        });
+      }
+      updates.push('account_type = ?');
+      values.push(at);
+    }
+
+    if (verification_status != null) {
+      updates.push('verification_status = ?');
+      values.push(Number(verification_status));
+    }
+    if (verified_until !== undefined) {
+      updates.push('verified_until = ?');
+      values.push(verified_until || null);
+    }
+
+    // Révocation : le compte cesse d'être la voix de l'application, il ne doit
+    // donc plus en porter le logo. Sans cela, un compte redevenu ordinaire
+    // continuerait de s'afficher avec l'avatar Alanya — une usurpation par
+    // simple oubli.
+    if (
+      account_type != null
+      && Number(users[0].account_type ?? 0) === ACCOUNT_TYPE.OFFICIEL
+      && Number(account_type) !== ACCOUNT_TYPE.OFFICIEL
+    ) {
+      updates.push('avatar_url = ?');
+      values.push(process.env.AVATAR_DEFAULT_MALE || 'NON DEFINI');
+    }
+
+    if (!updates.length) return res.status(400).json({ error: 'Aucune modification' });
+
+    values.push(id);
+    await pool.execute(`UPDATE users SET ${updates.join(', ')} WHERE alanyaID = ?`, values);
+    // Une révocation change l'identité du compte officiel : les gardes mis en
+    // cache doivent la voir immédiatement.
+    if (account_type != null) invalidateOfficialAccountCache();
+    res.json({ message: 'Socle de compte mis à jour' });
+  } catch (error) {
+    console.error('[Admin] setUserSocle error:', error.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
 module.exports = {
   getUsers,
   getUserById,
@@ -283,5 +341,6 @@ module.exports = {
   banUser,
   unbanUser,
   setAccountType,
+  setUserSocle,
   deleteUser,
 };

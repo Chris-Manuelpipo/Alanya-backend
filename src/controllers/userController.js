@@ -2,6 +2,8 @@ const pool = require('../config/db');
 const { getBlockPair } = require('../utils/blockUtils');
 const { canViewProfileField } = require('../services/privacyPrefsService');
 const { normalize, isNumericQuery } = require('../utils/alanyaPhone');
+const { isOfficialAccount } = require('../utils/officialAccountGuard');
+const { ACCOUNT_TYPE } = require('../constants/accountTypes');
 
 const _INVALID_URL_VALUES = ['NON DEFINI', 'INDEFINI', 'undefined', 'null', ''];
 const sanitizeUrl = (url) => {
@@ -38,8 +40,12 @@ const getUserById = async (req, res) => {
     const viewerId = req.user.alanyaID;
     const targetId = parseInt(id, 10);
     const [rows] = await pool.execute(
+      // account_type voyage avec la fiche : l'écran de détail mobile en dépend
+      // pour reconnaître le compte officiel et masquer appels, favori et
+      // blocage. Sans lui il afficherait une fiche de contact ordinaire.
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
-              u.avatar_url, u.type_compte, u.is_online, u.last_seen,
+              u.avatar_url, u.type_compte, u.account_type, u.verification_status,
+              u.is_online, u.last_seen,
               p.libelle AS pays_libelle, p.prefix AS pays_prefix
          FROM users u
          LEFT JOIN pays p ON u.idPays = p.idPays
@@ -77,8 +83,8 @@ const getUserByPhone = async (req, res) => {
               p.libelle AS pays_libelle, p.prefix AS pays_prefix
          FROM users u
          LEFT JOIN pays p ON u.idPays = p.idPays
-        WHERE u.alanyaPhone = ? AND u.exclus = 0`,
-      [canonical]
+        WHERE u.alanyaPhone = ? AND u.exclus = 0 AND u.account_type != ?`,
+      [canonical, ACCOUNT_TYPE.OFFICIEL]
     );
 
     if (rows.length === 0) {
@@ -111,9 +117,9 @@ const searchUsers = async (req, res) => {
                 p.libelle AS pays_libelle, p.prefix AS pays_prefix
            FROM users u
            LEFT JOIN pays p ON u.idPays = p.idPays
-          WHERE u.alanyaPhone = ? AND u.exclus = 0
+          WHERE u.alanyaPhone = ? AND u.exclus = 0 AND u.account_type != ?
           LIMIT 20`,
-        [canonical]
+        [canonical, ACCOUNT_TYPE.OFFICIEL]
       );
     } else {
       [rows] = await pool.execute(
@@ -122,9 +128,9 @@ const searchUsers = async (req, res) => {
                 p.libelle AS pays_libelle, p.prefix AS pays_prefix
            FROM users u
            LEFT JOIN pays p ON u.idPays = p.idPays
-          WHERE (u.nom = ? OR u.pseudo = ?) AND u.exclus = 0
+          WHERE (u.nom = ? OR u.pseudo = ?) AND u.exclus = 0 AND u.account_type != ?
           LIMIT 20`,
-        [trimmed, trimmed]
+        [trimmed, trimmed, ACCOUNT_TYPE.OFFICIEL]
       );
     }
 
@@ -138,6 +144,17 @@ const blockUser = async (req, res) => {
   try {
     const { id } = req.params;         // cible (l'utilisateur à bloquer)
     const alanyaID = req.user.alanyaID; // moi (owner du blocage)
+
+    // Le compte officiel ne porte que des annonces de service. Il n'est pas
+    // blocable ; l'échappatoire de l'utilisateur est le réglage « Annonces
+    // Alanya » des notifications, qui coupe la notification sans couper
+    // l'information.
+    if (await isOfficialAccount(id)) {
+      return res.status(409).json({
+        error: 'Le compte officiel ne peut pas être bloqué. Coupez les annonces dans vos notifications.',
+        code: 'OFFICIAL_NOT_BLOCKABLE',
+      });
+    }
 
     // blocked.alanyaID = owner (moi), blocked.idCallerBlock = target (l'autre)
     const [existing] = await pool.execute(

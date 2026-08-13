@@ -28,9 +28,11 @@ const meetingRoutes      = require('./src/routes/meetings');
 const notifyRoutes       = require('./src/routes/notify');
 const uploadRoutes       = require('./src/routes/upload');
 const contactRoutes      = require('./src/routes/contacts');
+const contactListRoutes  = require('./src/routes/contactLists');
 const qrRoutes           = require('./src/routes/qr');
 const turnRoutes         = require('./src/routes/turn');
 const adminRoutes        = require('./src/routes/admin');
+const welcomeRoutes      = require('./src/routes/welcome');
 const qrLandingRoutes    = require('./src/routes/qrLanding');
 
 // ── Socket handlers ───────────────────────────────────────────────────
@@ -45,9 +47,11 @@ const {
 const {
   callUser, answerCall, rejectCall, iceCandidate, endCall,
   addParticipant, cancelAddParticipant, confJoin, confReject,
+  confReady,
   createGroupCall, joinGroupCall, leaveGroupCall, endGroupCall,
   groupOffer, groupAnswer, groupIceCandidate,
-  callMuteState, groupMuteState, callVideoState, groupVideoState, callRejoin,
+  callMuteState, groupMuteState, callVideoState, groupVideoState,
+  callResumeHandshake, callRejoin,
 } = require('./src/socket/handlers/calls');
 
 const {
@@ -60,6 +64,13 @@ const {
 
 const { startMeetingScheduler, stopMeetingScheduler } = require('./src/services/meetingScheduler');
 const { startAccountLifecycleSchedulers } = require('./src/controllers/accountLifecycleController');
+const { initBroadcastCache, runNightlyDeliveryMaintenance } = require('./src/services/broadcastService');
+const { registerBroadcastJobHandlers } = require('./src/services/broadcastWorkers');
+const { registerWelcomeJobHandlers } = require('./src/services/welcomeWorkers');
+const { purgeExpiredWelcomeStatuses } = require('./src/services/welcomeService');
+const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
+const { startVerificationScheduler, stopVerificationScheduler } = require('./src/services/verificationScheduler');
+const { withLease } = require('./src/services/schedulerLease');
 
 let stopAccountLifecycleSchedulers = () => {};
 
@@ -97,9 +108,11 @@ app.use('/api/calls',         callRoutes);
 app.use('/api/meetings',      meetingRoutes);
 app.use('/api/upload',        uploadRoutes);
 app.use('/api/contacts',      contactRoutes);
+app.use('/api/contact-lists', contactListRoutes);
 app.use('/api/qr',            qrRoutes);
 app.use('/api/turn',          turnRoutes);
 app.use('/api/admin',         adminRoutes);
+app.use('/api/welcome',       welcomeRoutes);
 app.use('/notify',            notifyRoutes);
 
 // Routes publiques du volet QR (page d'accueil d'un code, fichiers
@@ -136,6 +149,7 @@ io.on('connection', (socket) => {
   cancelAddParticipant(io, socket, userSockets);
   confJoin(io, socket, userSockets);
   confReject(io, socket, userSockets);
+  confReady(io, socket, userSockets);
   createGroupCall(io, socket, userSockets);
   joinGroupCall(io, socket, userSockets);
   leaveGroupCall(io, socket, userSockets);
@@ -147,6 +161,7 @@ io.on('connection', (socket) => {
   groupMuteState(io, socket, userSockets);
   callVideoState(io, socket, userSockets);
   groupVideoState(io, socket, userSockets);
+  callResumeHandshake(io, socket, userSockets);
   callRejoin(io, socket, userSockets);
   meetingCreate(io, socket, userSockets);
   meetingJoinRoom(io, socket, userSockets);
@@ -193,8 +208,25 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Serveur en marche sur le port ${PORT}`);
   resetStalePresence();
+  registerBroadcastJobHandlers();
+  registerWelcomeJobHandlers();
+  initBroadcastCache().catch((e) => console.error('[Broadcast] init cache:', e.message));
+  startJobWorker();
   startMeetingScheduler();
+  startVerificationScheduler();
   stopAccountLifecycleSchedulers = startAccountLifecycleSchedulers();
+
+  setInterval(() => {
+    withLease('broadcast_nightly_purge', () => runNightlyDeliveryMaintenance()).catch(
+      (e) => console.error('[Broadcast] nightly:', e.message),
+    );
+    // Sans cette purge, `statut` grossit d'une ligne par inscription et ne
+    // rétrécit jamais : l'app cesse d'afficher un statut expiré, mais rien ne
+    // le supprimait.
+    withLease('welcome_status_purge', () => purgeExpiredWelcomeStatuses()).catch(
+      (e) => console.error('[Welcome] purge statuts:', e.message),
+    );
+  }, 24 * 60 * 60 * 1000);
 });
 
 // Filet de dernier recours. Express 4 ne capture PAS le rejet d'un handler
@@ -219,6 +251,8 @@ process.on('uncaughtException', (err) => {
 process.on('SIGINT', () => {
   console.log('Arrêt du serveur...');
   stopMeetingScheduler();
+  stopVerificationScheduler();
+  stopJobWorker();
   stopAccountLifecycleSchedulers();
   process.exit(0);
 });

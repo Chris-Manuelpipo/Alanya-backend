@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { hashForLog } = require('../notifications/notificationLogger');
+const { normalizeDeviceId } = require('../utils/deviceId');
 
 const VALID_PLATFORMS = new Set(['android', 'ios', 'web', 'unknown']);
 const VALID_APP_STATES = new Set(['foreground', 'background', 'unknown']);
@@ -25,9 +26,9 @@ const registerPushDevice = async (req, res) => {
       locale,
     } = req.body;
 
-    const devId = String(deviceId || device_ID || '').trim();
+    const devId = normalizeDeviceId(deviceId || device_ID);
     const token = String(fcmToken || fcm_token || '').trim();
-    if (!devId || devId.length > 128) {
+    if (!devId) {
       return res.status(400).json({ error: 'deviceId requis (max 128)' });
     }
     if (token && token.length > 4096) {
@@ -36,6 +37,27 @@ const registerPushDevice = async (req, res) => {
 
     const plat = _normalizePlatform(platform);
     const voip = voipToken ? String(voipToken).slice(0, 2048) : null;
+
+    // Un appareil n'appartient qu'à un compte à la fois : on réclame le
+    // deviceId et le token FCM aux autres comptes (logout hors-ligne,
+    // réinstallation), sinon l'ancien compte continue de pousser vers
+    // cet appareil via sa ligne orpheline.
+    if (token) {
+      await pool.execute(
+        `DELETE FROM user_push_devices
+          WHERE alanyaID <> ? AND (deviceId = ? OR fcmToken = ?)`,
+        [alanyaID, devId, token],
+      );
+      await pool.execute(
+        'UPDATE users SET fcm_token = "INDEFINI" WHERE alanyaID <> ? AND fcm_token = ?',
+        [alanyaID, token],
+      );
+    } else {
+      await pool.execute(
+        'DELETE FROM user_push_devices WHERE alanyaID <> ? AND deviceId = ?',
+        [alanyaID, devId],
+      );
+    }
 
     await pool.execute(
       `INSERT INTO user_push_devices
@@ -82,7 +104,7 @@ const updatePushDeviceState = async (req, res) => {
       notificationsEnabled,
     } = req.body;
 
-    const devId = String(deviceId || device_ID || '').trim();
+    const devId = normalizeDeviceId(deviceId || device_ID);
     if (!devId) {
       return res.status(400).json({ error: 'deviceId requis' });
     }
@@ -129,12 +151,19 @@ const updatePushDeviceState = async (req, res) => {
 const deletePushDevice = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
-    const devId = String(req.params.deviceId || '').trim();
+    const devId = normalizeDeviceId(req.params.deviceId);
     if (!devId) {
       return res.status(400).json({ error: 'deviceId requis' });
     }
     await pool.execute(
       'DELETE FROM user_push_devices WHERE alanyaID = ? AND deviceId = ?',
+      [alanyaID, devId],
+    );
+    // Fallback legacy users.fcm_token : sans cette purge, resolvePushTargets
+    // repousserait vers cet appareil dès que le compte n'a plus de ligne
+    // user_push_devices.
+    await pool.execute(
+      'UPDATE users SET fcm_token = "INDEFINI" WHERE alanyaID = ? AND device_ID = ?',
       [alanyaID, devId],
     );
     res.json({ ok: true });

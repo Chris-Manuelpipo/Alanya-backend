@@ -13,7 +13,11 @@ const {
 } = require('../../services/alanyaPhoneService');
 const { sendMail, renderHtmlEmail, escapeHtml } = require('../../services/mailService');
 const { sendToUser } = require('../../services/notificationService');
+const recoveryCode = require('../../services/recoveryCodeService');
 const { _buildUserMailFrom, _appName } = require('./helpers');
+const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
+const { guardDisplayNames } = require('../../utils/displayNameGuard');
+const { ensureDefaultContactLists } = require('../../utils/defaultContactLists');
 
 const SALT_ROUNDS = 10;
 
@@ -138,10 +142,33 @@ const createUser = async (req, res) => {
       idPays,
       avatarGender,
       type_compte,
+      account_type: bodyAccountType,
     } = req.body || {};
 
     if (!nom || !pseudo || !password) {
       return res.status(400).json({ error: 'nom, pseudo et password requis' });
+    }
+
+    const resolvedAccountType = bodyAccountType != null ? Number(bodyAccountType) : 0;
+    if (![0, 1].includes(resolvedAccountType)) {
+      // Le compte officiel a son propre point d'entrée : il n'a ni nom, ni
+      // e-mail, ni mot de passe à saisir, et il est unique. Le faire passer par
+      // la création générique rouvrirait toutes ces portes.
+      return res.status(400).json({
+        error: resolvedAccountType === ACCOUNT_TYPE.OFFICIEL
+          ? 'Le compte officiel se crée via POST /admin/official-account'
+          : 'account_type invalide',
+        code: resolvedAccountType === ACCOUNT_TYPE.OFFICIEL ? 'OFFICIAL_WRONG_ENDPOINT' : undefined,
+      });
+    }
+
+    const nameGuard = guardDisplayNames({
+      nom: nom.trim(),
+      pseudo: pseudo.trim(),
+      accountType: resolvedAccountType,
+    });
+    if (!nameGuard.ok) {
+      return res.status(400).json({ error: nameGuard.message, code: nameGuard.code });
     }
     if (password.length < 6) {
       return res.status(400).json({ error: 'Le mot de passe doit faire au moins 6 caractères' });
@@ -161,6 +188,13 @@ const createUser = async (req, res) => {
         return res.status(400).json({ error: 'type_compte doit être 0, 1 ou 2' });
       }
       resolvedType = t;
+    }
+    // Un compte public est une cible d'usurpation : il ne doit jamais ouvrir
+    // le back-office. Les deux axes sont mutuellement exclusifs.
+    if (resolvedAccountType !== ACCOUNT_TYPE.PERSONNEL && resolvedType >= 1) {
+      return res.status(409).json({
+        error: 'Un compte business ou officiel ne peut pas être administrateur (type_compte >= 1)',
+      });
     }
 
     const trimmedEmail = email ? String(email).toLowerCase().trim() : null;
@@ -187,13 +221,25 @@ const createUser = async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-    const avatarUrl = _defaultAvatar(avatarGender === 'female' ? 'female' : 'male');
+    const isFemale = avatarGender === 'female';
+    const avatarUrl = _defaultAvatar(isFemale ? 'female' : 'male');
+
+    // `avatarGender` ne servait jusqu'ici qu'à choisir un avatar par défaut, sans
+    // jamais être conservé. Maintenant que la colonne existe, on l'y persiste —
+    // uniquement quand il a été explicitement fourni : le repli « male » de la
+    // ligne au-dessus est un choix d'illustration, pas une déclaration de genre.
+    const genre = avatarGender === 'female' ? 'femme'
+      : avatarGender === 'male' ? 'homme'
+      : null;
+
+    // Comme à l'inscription : aucun compte ne doit exister sans voie de secours.
+    const { encrypted: recoveryEncrypted } = recoveryCode.issue();
 
     const [result] = await pool.execute(
       `INSERT INTO users
         (nom, pseudo, alanyaPhone, email, password, idPays, avatar_url,
-         type_compte, fcm_token, device_ID, last_seen, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INDEFINI', 'INDEFINI', NOW(), NOW())`,
+         type_compte, account_type, genre, recovery_code_enc, fcm_token, device_ID, last_seen, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INDEFINI', 'INDEFINI', NOW(), NOW())`,
       [
         nom.trim(),
         pseudo.trim(),
@@ -203,8 +249,13 @@ const createUser = async (req, res) => {
         resolvedIdPays,
         avatarUrl,
         resolvedType,
+        resolvedAccountType,
+        genre,
+        recoveryEncrypted,
       ]
     );
+
+    await ensureDefaultContactLists(result.insertId);
 
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,

@@ -14,6 +14,7 @@ const NOTIFICATION_TYPES = Object.freeze([
   'meeting_reminder',
   'status_view',
   'qr_contact_scanned',
+  'broadcast',
 ]);
 
 /**

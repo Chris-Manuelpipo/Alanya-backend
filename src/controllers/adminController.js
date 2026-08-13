@@ -11,4 +11,7 @@ module.exports = {
   ...require('./admin/meetings'),
   ...require('./admin/settings'),
   ...require('./admin/profile'),
+  ...require('./admin/broadcast'),
+  ...require('./admin/villes'),
+  ...require('./admin/export'),
 };

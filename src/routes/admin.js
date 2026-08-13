@@ -23,6 +23,7 @@ const {
   banUser,
   unbanUser,
   setAccountType,
+  setUserSocle,
   deleteUser,
   createUser,
   updateUserPhone,
@@ -33,7 +34,10 @@ const {
   getMe,
   updateMe,
   updatePassword,
+  exportUsers,
+  exportAnalytics,
 } = require('../controllers/adminController');
+const { broadcastSendLimiter, broadcastEstimateLimiter } = require('../middleware/rateLimiter');
 
 /**
  * @swagger
@@ -423,6 +427,8 @@ router.delete('/groups/:id',               adminAuth, deleteGroup);
  *       200:
  *         description: Liste des utilisateurs
  */
+router.get('/users/export',                   adminAuth, exportUsers);
+router.get('/analytics/export',               adminAuth, exportAnalytics);
 router.get('/users',                       adminAuth, getUsers);
 router.post('/users',                      adminAuth, createUser);
 
@@ -580,6 +586,7 @@ router.delete('/users/:id/ban',            adminAuth, unbanUser);
  *         description: Rôle mis à jour
  */
 router.put('/users/:id/role',              adminAuth, superAdminAuth, setAccountType);
+router.put('/users/:id/socle',             adminAuth, superAdminAuth, setUserSocle);
 router.put('/users/:id/phone',             adminAuth, updateUserPhone);
 router.delete('/users/:id',                adminAuth, superAdminAuth, deleteUser);
 
@@ -587,5 +594,46 @@ router.get('/alanya-phones/check-assignable', adminAuth, checkAssignablePhone);
 router.get('/reserved-alanya-phones',      adminAuth, listReservedPhones);
 router.post('/reserved-alanya-phones',     adminAuth, superAdminAuth, addReservedPhone);
 router.delete('/reserved-alanya-phones/:phone', adminAuth, superAdminAuth, removeReservedPhone);
+
+const {
+  listBroadcasts,
+  getBroadcast,
+  estimateBroadcast,
+  createBroadcast,
+  cancelScheduled,
+} = require('../controllers/admin/broadcast');
+const { getVilles } = require('../controllers/admin/villes');
+const {
+  getOfficialAccount,
+  createOfficialAccount,
+} = require('../controllers/admin/officialAccount');
+const {
+  getWelcome,
+  updateDraft,
+  publish,
+  backfill,
+  getStatusConfig,
+  updateStatusConfig,
+} = require('../controllers/admin/welcome');
+
+// Le compte officiel est unique et se crée sans aucune saisie. Sa création est
+// un acte irréversible : super-admin, comme setUserSocle et deleteUser.
+router.get('/official-account', adminAuth, getOfficialAccount);
+router.post('/official-account', adminAuth, superAdminAuth, createOfficialAccount);
+
+router.get('/broadcasts', adminAuth, listBroadcasts);
+router.get('/broadcasts/:id', adminAuth, getBroadcast);
+router.post('/broadcasts/estimate', adminAuth, broadcastEstimateLimiter, estimateBroadcast);
+router.post('/broadcasts', adminAuth, broadcastSendLimiter, createBroadcast);
+router.delete('/broadcasts/scheduled/:jobId', adminAuth, cancelScheduled);
+router.get('/villes', adminAuth, getVilles);
+
+router.get('/welcome', adminAuth, superAdminAuth, getWelcome);
+router.put('/welcome/draft', adminAuth, superAdminAuth, updateDraft);
+router.post('/welcome/publish', adminAuth, superAdminAuth, publish);
+router.post('/welcome/backfill', adminAuth, superAdminAuth, backfill);
+// Statut de bienvenue : réglage global, appliqué sans publication.
+router.get('/welcome/status', adminAuth, superAdminAuth, getStatusConfig);
+router.put('/welcome/status', adminAuth, superAdminAuth, updateStatusConfig);
 
 module.exports = router;

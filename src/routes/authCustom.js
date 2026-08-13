@@ -16,6 +16,8 @@ const {
   requestEmailChangeOtp,
   confirmEmailChange,
   changePassword,
+  validateRecoveryCode,
+  revealRecoveryCode,
 } = require('../controllers/authCustomController');
 const {
   createQrSession,
@@ -268,6 +270,51 @@ router.post('/reset-password-confirm',    completePasswordReset);
 
 /**
  * @swagger
+ * /api/auth/recovery-code/validate:
+ *   post:
+ *     summary: Récupération sans e-mail - valide un code de récupération
+ *     description: >
+ *       Voie de secours des comptes sans adresse e-mail. Retourne le même
+ *       resetToken que /validate-otp : enchaîner ensuite sur
+ *       /reset-password-confirm. Réponse volontairement indifférenciée en cas
+ *       d'échec (numéro inconnu, absence de code, code faux).
+ *     tags: [Auth Custom]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - alanyaPhone
+ *               - recoveryCode
+ *             properties:
+ *               alanyaPhone:
+ *                 type: string
+ *                 example: "12345678"
+ *               recoveryCode:
+ *                 type: string
+ *                 description: Tirets, espaces et minuscules acceptés
+ *                 example: "TQMP-KX3C-P6P5"
+ *     responses:
+ *       200:
+ *         description: Code valide, retourne un resetToken (15 min)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 resetToken:
+ *                   type: string
+ *       401:
+ *         description: Numéro ou code de récupération invalide
+ *       403:
+ *         description: Compte banni ou suppression en cours
+ */
+router.post('/recovery-code/validate', authLimiter, validateRecoveryCode);
+
+/**
+ * @swagger
  * /api/auth/me:
  *   get:
  *     summary: Récupère mon profil (Custom Auth)
@@ -393,6 +440,47 @@ router.post('/me/email/confirm', authCustom, confirmEmailChange);
  *         description: Mot de passe modifié
  */
 router.put('/me/password', authCustom, changePassword);
+
+/**
+ * @swagger
+ * /api/auth/me/recovery-code/reveal:
+ *   post:
+ *     summary: Affiche le code de récupération du compte connecté
+ *     description: >
+ *       Le mot de passe est exigé : un appareil déverrouillé laissé sans
+ *       surveillance ne doit pas suffire à repartir avec la clé de secours du
+ *       compte. Le code ne change jamais, y compris après un changement de mot de
+ *       passe. S'il est absent (compte antérieur à la migration 037), il est émis
+ *       à la volée et persisté.
+ *     tags: [Auth Custom]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - password
+ *             properties:
+ *               password:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Code de récupération en clair
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 recoveryCode:
+ *                   type: string
+ *                   example: "TQMP-KX3C-P6P5"
+ *       401:
+ *         description: Mot de passe incorrect
+ */
+router.post('/me/recovery-code/reveal', authCustom, authLimiter, revealRecoveryCode);
 
 /**
  * @swagger

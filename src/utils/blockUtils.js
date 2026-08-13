@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { ACCOUNT_TYPE } = require('../constants/accountTypes');
 const { loadUserPrivacyPrefs, _passesVisibility } = require('../services/privacyPrefsService');
 const { isSelfChatRow } = require('./directConversation');
 
@@ -108,6 +109,21 @@ const evaluateDirectMessageSend = async (conversationID, senderID) => {
   const peerId = await getDirectConversationPeer(conversationID, senderID);
   if (peerId == null) return { isDirect: false };
 
+  const [peerRows] = await pool.execute(
+    'SELECT account_type FROM users WHERE alanyaID = ? LIMIT 1',
+    [peerId],
+  );
+  if (peerRows[0] && Number(peerRows[0].account_type) === ACCOUNT_TYPE.OFFICIEL) {
+    return {
+      isDirect: true,
+      peerId,
+      action: 'reject',
+      code: 'OFFICIAL_READONLY',
+      iBlockedThem: false,
+      theyBlockedMe: false,
+    };
+  }
+
   const pair = await getBlockPair(senderID, peerId);
   if (pair.iBlockedThem) {
     return { isDirect: true, peerId, action: 'reject', code: 'BLOCKED_BY_SENDER', ...pair };
@@ -136,7 +152,12 @@ const maskPresenceIfBlocked = async (viewerId, subjectId, isOnline, lastSeen) =>
   return { is_online: isOnline, last_seen: lastSeen };
 };
 
-/** Ne pas notifier la présence aux utilisateurs bloqués par subjectUserId */
+/**
+ * Diffuse un changement de présence à son audience réelle uniquement :
+ * co-participants de conversations + personnes ayant le sujet en contact,
+ * moins les utilisateurs bloqués par le sujet. Jamais de broadcast global
+ * (coût quadratique en nombre de connectés + fuite de présence à des inconnus).
+ */
 const emitPresenceUpdate = async (io, subjectUserId, payload) => {
   const uid = Number(subjectUserId);
   const prefs = await loadUserPrivacyPrefs(uid);
@@ -146,31 +167,41 @@ const emitPresenceUpdate = async (io, subjectUserId, payload) => {
     [uid],
   );
   const blockedSet = new Set(blocked.map((r) => Number(r.idCallerBlock)));
-  const blockedRooms = [...blockedSet].map((id) => `user_${id}`);
+
+  // Audience = ceux qui affichent cette présence quelque part : membres d'une
+  // conversation commune, et utilisateurs qui ont le sujet dans leurs contacts.
+  const [audienceRows] = await pool.execute(
+    `SELECT DISTINCT cp2.alanyaID AS id
+       FROM conv_participants cp1
+       JOIN conv_participants cp2 ON cp1.conversID = cp2.conversID
+      WHERE cp1.alanyaID = ? AND cp2.alanyaID != ?
+      UNION
+     SELECT pc.alanyaID AS id FROM preferredContact pc WHERE pc.idFriend = ?`,
+    [uid, uid, uid],
+  );
+  const audience = audienceRows
+    .map((r) => Number(r.id))
+    .filter((id) => !blockedSet.has(id));
 
   const needsOnlineMask = prefs.onlineVisibility !== 'everyone';
   const needsLastSeenMask = prefs.lastSeenVisibility !== 'everyone';
 
   if (!needsOnlineMask && !needsLastSeenMask) {
-    if (blockedRooms.length > 0) {
-      io.except(blockedRooms).emit('presence:updated', payload);
-    } else {
-      io.emit('presence:updated', payload);
+    if (audience.length > 0) {
+      // Forme tableau : une seule émission, encodage unique du payload.
+      io.to(audience.map((id) => `user_${id}`)).emit('presence:updated', payload);
     }
     return;
   }
 
-  let contactIds = [];
+  let contactSet = new Set();
   if (prefs.onlineVisibility === 'contacts' || prefs.lastSeenVisibility === 'contacts') {
     const [rows] = await pool.execute(
       'SELECT idFriend FROM preferredContact WHERE alanyaID = ?',
       [uid],
     );
-    contactIds = rows
-      .map((r) => Number(r.idFriend))
-      .filter((id) => !blockedSet.has(id));
+    contactSet = new Set(rows.map((r) => Number(r.idFriend)));
   }
-  const contactRooms = contactIds.map((id) => `user_${id}`);
 
   const payloadFor = (isSelf, isContact) => ({
     userID: payload.userID,
@@ -184,12 +215,16 @@ const emitPresenceUpdate = async (io, subjectUserId, payload) => {
 
   io.to(`user_${uid}`).emit('presence:updated', payloadFor(true, false));
 
-  for (const cid of contactIds) {
-    io.to(`user_${cid}`).emit('presence:updated', payloadFor(false, true));
+  const contactAudience = audience.filter((id) => contactSet.has(id));
+  const otherAudience = audience.filter((id) => !contactSet.has(id));
+  if (contactAudience.length > 0) {
+    io.to(contactAudience.map((id) => `user_${id}`))
+      .emit('presence:updated', payloadFor(false, true));
   }
-
-  const except = [`user_${uid}`, ...contactRooms, ...blockedRooms];
-  io.except(except).emit('presence:updated', payloadFor(false, false));
+  if (otherAudience.length > 0) {
+    io.to(otherAudience.map((id) => `user_${id}`))
+      .emit('presence:updated', payloadFor(false, false));
+  }
 };
 
 module.exports = {

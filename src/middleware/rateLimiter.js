@@ -51,4 +51,19 @@ const generalLimiter = rateLimit({
   message: { error: 'Trop de requêtes, veuillez ralentir' },
 });
 
-module.exports = { authLimiter, messageLimiter, uploadLimiter, qrResolveLimiter, generalLimiter };
+module.exports = { authLimiter, messageLimiter, uploadLimiter, qrResolveLimiter, generalLimiter,
+  broadcastSendLimiter: rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Limite de diffusions atteinte (10/h)' },
+  }),
+  broadcastEstimateLimiter: rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Trop d\'estimations, patientez' },
+  }),
+};

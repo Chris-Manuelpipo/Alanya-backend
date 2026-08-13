@@ -626,20 +626,31 @@ const phone = decoded.phone_number ?? decoded.talky_phone ?? null;
 ### Tables principales
 
 ```sql
--- Utilisateurs
+-- Utilisateurs — schéma faisant foi : migrations/001 puis 003, 005, 025, 026,
+-- 030, 035, 037. Ce bloc en est un résumé, pas la source de vérité.
 users (
-  alanyaID,         -- PK (UUID)
-  Firebase_UID,     -- FK Firebase
-  alanyaPhone,      -- Unique, used for mapping
-  nom,
-  pseudo,
-  avatar_url,
+  alanyaID,         -- PK (INT AUTO_INCREMENT)
+  alanyaPhone,      -- Unique, 8 chiffres, identifiant de connexion
+  nom, pseudo, avatar_url, bio,
+  password,         -- bcrypt
+  email,            -- FACULTATIF, unique, sert à la récupération de mot de passe
+  idPays,           -- FK pays
+  type_compte,      -- 0 = user, 1 = admin, 2 = super
   fcm_token,        -- Pour notifications push
+  device_ID,
   is_online,        -- Boolean, mis à jour par Socket.IO
-  last_seen,        -- Timestamp
-  is_excluded,      -- Soft delete
-  created_at,
-  updated_at
+  last_seen, in_call, biometric,
+  exclus, exclude_at, exclude_reason,     -- Soft delete / bannissement
+  reset_otp, reset_otp_expires_at,        -- Réinitialisation par e-mail
+  pending_email, email_change_otp, email_change_otp_expires_at,
+  qr_public_id,     -- Jeton opaque du QR d'identité
+  delete_requested_at, delete_scheduled_at,
+  genre,            -- homme|femme|autre|non_precise — écriture unique
+  age,              -- Déclaré à l'onboarding — écriture unique
+  annee_naissance,  -- Déduite de age (approximative), ne se périme pas
+  ville,            -- Déduite de l'adresse IP (ipwho.is), jamais déclarée
+  recovery_code_enc,-- Code de récupération chiffré (AES-256-GCM)
+  created_at
 )
 
 -- Conversations (1-à-1 et groupes)

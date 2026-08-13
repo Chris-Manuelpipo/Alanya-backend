@@ -13,10 +13,13 @@ const evaluateMessagePush = async (
   alanyaID,
   conversationId,
   payload,
-  { isGroup = false, isMentioned = false } = {},
+  { isGroup = false, isMentioned = false, preloaded = {} } = {},
 ) => {
-  const prefs = await loadUserNotificationPrefs(alanyaID);
-  const dnd = await loadUserDndSchedule(alanyaID);
+  // `preloaded` permet au fan-out de groupe de fournir prefs/dnd/mute chargés
+  // en batch (une requête pour tous les destinataires) au lieu de 3 requêtes
+  // unitaires par destinataire. Sans lui, comportement inchangé.
+  const prefs = preloaded.prefs ?? (await loadUserNotificationPrefs(alanyaID));
+  const dnd = preloaded.dnd ?? (await loadUserDndSchedule(alanyaID));
 
   // Notifications coupées ou conversation en sourdine : on n'affiche rien, mais
   // on envoie quand même une push SILENCIEUSE (data-only, sans alerte ni son).
@@ -39,7 +42,7 @@ const evaluateMessagePush = async (
     return silence('group_messages_disabled');
   }
 
-  const mute = await loadConversationMute(conversationId, alanyaID);
+  const mute = preloaded.mute ?? (await loadConversationMute(conversationId, alanyaID));
   const muted = isConversationMuted(mute);
   const mentionsOnly = !!mute.mentionsOnly;
 

@@ -5,6 +5,7 @@ const {
   previewModeToInt,
   previewModeFromDb,
 } = require('../constants/profilePrefs');
+const { isOfficialAccount } = require('../utils/officialAccountGuard');
 
 const VISIBILITY_VALUES = new Set(['everyone', 'contacts', 'nobody']);
 const PREVIEW_VALUES = new Set(['full', 'name_only', 'generic']);
@@ -84,6 +85,13 @@ const canViewProfileField = async (viewerId, targetId, field) => {
 /** L'acteur peut-il ajouter la cible à une conversation / un groupe ? */
 const canAddUser = async (actorId, targetId) => {
   if (Number(actorId) === Number(targetId)) return true;
+
+  // Le compte officiel diffuse, il ne converse pas : il n'entre ni dans un
+  // groupe ni dans une conversation créée par un tiers. Sa conversation 1-1
+  // naît de la matérialisation d'une diffusion, jamais d'une initiative
+  // d'utilisateur. Ce point couvre les trois appelants — createConversation,
+  // createGroup et addParticipants.
+  if (await isOfficialAccount(targetId)) return false;
 
   const prefs = await loadUserPrivacyPrefs(targetId);
   const policy = prefs.addMePolicy || 'everyone';

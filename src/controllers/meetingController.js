@@ -222,12 +222,13 @@ const joinMeeting = async (req, res) => {
 
       await pool.execute(
         `INSERT INTO participant (idMeeting, IDparticipant, status, start_time, connecte, duree) 
-         VALUES (?, ?, 0, NOW(), 1, 0)`,
+         VALUES (?, ?, 0, NOW(), 0, 0)`,
         [id, alanyaID]
       );
     } else {
+      // Inscription/autorisation seulement — présence live = meeting:join_room.
       await pool.execute(
-        'UPDATE participant SET connecte = 1, start_time = NOW() WHERE idMeeting = ? AND IDparticipant = ?',
+        'UPDATE participant SET start_time = NOW() WHERE idMeeting = ? AND IDparticipant = ?',
         [id, alanyaID]
       );
     }
