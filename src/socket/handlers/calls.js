@@ -541,7 +541,25 @@ async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnec
 // mais n'a PLUS AUCUN socket connecté et aucune reconnexion en grâce → son appel
 // précédent n'a jamais été nettoyé (kill multi-socket, socket fantôme, crash sans
 // end_call…). On le purge des deux côtés pour ne pas renvoyer un faux call_busy.
+// Session à trois résiduelle : le participant n'a plus aucune socket et aucune
+// reconnexion en grâce — son client a terminé sans prévenir (crash, kill, bug).
+// Sans ce nettoyage, la session le maintiendrait « occupé » et confisquerait le
+// droit d'ajout de l'appel indéfiniment.
+function reclaimStaleSession(io, userID) {
+  const session = callSessions.getByUser(userID);
+  if (!session) return false;
+  if (isUserOnline(io, userID)) return false;
+  if (callState.getEntry(userID)?.disconnectTimer) return false;
+
+  console.log(
+    `[callSessions] reclaimStaleSession user=${userID} session=${session.sessionId} (hors-ligne, sans grâce)`,
+  );
+  callSessions.removeParticipant(session.sessionId, userID);
+  return true;
+}
+
 function reclaimStaleBusy(io, userID) {
+  reclaimStaleSession(io, userID);
   const entry = callState.getEntry(userID);
   if (!entry) return false;
   if (entry.status !== 'in_call' && entry.status !== 'ringing') return false;
@@ -1985,8 +2003,12 @@ const callMuteState = (io, socket, userSockets) => {
   });
 };
 
-// Appel de groupe : diffuse l'état micro à tous les autres participants de la
-// room (l'émetteur est exclu via `socket.to`).
+// Appel de groupe : diffuse l'état micro à tous les autres participants.
+// Les groupes classiques sont dans la room Socket.IO `group_<roomId>`. Une
+// conférence créée par « Ajouter un participant » utilise au contraire une
+// callSession et un routage média par appareil ; ses participants ne rejoignent
+// pas cette room. On relaie donc cette session vers les seuls appareils owners,
+// sans changer le chemin historique des groupes classiques.
 const groupMuteState = (io, socket, userSockets) => {
   socket.on('group:mute_state', (data) => {
     try {
@@ -1994,11 +2016,28 @@ const groupMuteState = (io, socket, userSockets) => {
       const rId = (data && data.roomId) || socket.currentGroupRoom;
       if (!rId) return;
 
-      socket.to(`group_${rId}`).emit('group:mute_state', {
-        roomId:  rId,
-        userId:  String(socket.alanyaID),
+      const payload = {
+        roomId: String(rId),
+        userId: String(socket.alanyaID),
         isMuted: !!(data && data.isMuted),
-      });
+      };
+
+      const session = callSessions.getByUser(socket.alanyaID);
+      if (session && String(session.sessionId) === String(rId)) {
+        for (const participantId of callSessions.participantIds(session)) {
+          if (Number(participantId) === Number(socket.alanyaID)) continue;
+          const deviceId = callDeviceOwnership.getActiveDeviceId(
+            session.sessionId,
+            participantId,
+          );
+          if (deviceId) {
+            emitToDevice(io, participantId, deviceId, 'group:mute_state', payload);
+          }
+        }
+        return;
+      }
+
+      socket.to(`group_${rId}`).emit('group:mute_state', payload);
     } catch (error) {
       console.error('[Socket group:mute_state]', error.message);
     }
