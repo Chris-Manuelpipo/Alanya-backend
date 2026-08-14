@@ -5,6 +5,7 @@ const {
   adminLogin,
   getStats,
   getAnalytics,
+  getTripStats,
   getActivityFeed,
   getAllMedia,
   deleteMedia,
@@ -134,6 +135,33 @@ router.get('/stats',                       adminAuth, getStats);
  *         description: Agrégations analytiques groupées par domaine
  */
 router.get('/analytics',                   adminAuth, getAnalytics);
+
+/**
+ * @swagger
+ * /api/admin/trips:
+ *   get:
+ *     summary: Compteurs agrégés des trajets de confiance (sans identité ni coordonnées)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: from
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Date début (ISO, défaut J-7)
+ *       - in: query
+ *         name: to
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Date fin (ISO, défaut maintenant)
+ *     responses:
+ *       200:
+ *         description: KPIs anonymes (démarrés, issues, durées, SOS)
+ */
+router.get('/trips',                       adminAuth, getTripStats);
 
 /**
  * @swagger
