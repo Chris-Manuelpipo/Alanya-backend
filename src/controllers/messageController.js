@@ -9,6 +9,7 @@ const { markConversationDeliveredBy } = require('../utils/deliveryReceiptUtils')
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
+const { MESSAGE_INSERT_SQL, messageInsertParams } = require('../utils/messageInsert');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
 const MAX_BATCH_DELETE = 50;
@@ -248,26 +249,60 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     conversationID, senderID, mentions, { all: mentionsAll === true },
   );
 
-  const [result] = await _execute(conn, 
-    `INSERT INTO message
-       (senderID, conversationID, content, type, status, sendAt,
-        clickSentAt, clientID,
-        mediaUrl, mediaName, mediaDuration, mediaThumb, mediaSize, mediaPageCount,
-        replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce, mentions)
-     VALUES (?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      senderID, conversationID, content ?? null, type,
-      clickSentAt ? new Date(clickSentAt) : null,
-      clientId ?? null,
-      mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
-      mediaSize ?? null, mediaPageCount ?? null,
-      resolvedReplyToID, resolvedReplyToContent, isStatusReply,
-      isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
-      serializeMentionsColumn(mentionsValue),
-    ]
+  const [result] = await _execute(
+    conn,
+    MESSAGE_INSERT_SQL,
+    messageInsertParams({
+      senderID,
+      conversationID,
+      clientId,
+      content,
+      type,
+      clickSentAt,
+      mediaUrl,
+      mediaName,
+      mediaDuration,
+      mediaThumb,
+      mediaSize,
+      mediaPageCount,
+      replyToID: resolvedReplyToID,
+      replyToContent: resolvedReplyToContent,
+      isStatusReply,
+      isForwarded,
+      isViewOnce,
+      mentionsSerialized: serializeMentionsColumn(mentionsValue),
+    }),
   );
 
   const msgID = result.insertId;
+  // Course : un second POST (rejeu natif / Flutter) a pu gagner l'INSERT.
+  // affectedRows === 1 → ligne nouvelle ; sinon c'est un rejeu, on ne
+  // touche ni unread ni lastMessage.
+  const isNewInsert = result.affectedRows === 1;
+  if (!isNewInsert) {
+    const [existingRows] = await _execute(
+      conn,
+      `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
+              p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
+       FROM message m
+       JOIN users u ON m.senderID = u.alanyaID
+       LEFT JOIN pays p ON u.idPays = p.idPays
+       WHERE m.msgID = ?`,
+      [msgID],
+    );
+    return {
+      msg: existingRows[0],
+      silentDrop: false,
+      replayed: true,
+      fields: {
+        content,
+        mediaName,
+        type,
+        isViewOnce,
+        mentions: existingRows[0]?.mentions ?? mentionsValue,
+      },
+    };
+  }
 
   if (!silentDrop) {
     await _execute(conn,

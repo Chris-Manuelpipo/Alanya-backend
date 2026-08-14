@@ -11,6 +11,7 @@ const {
   getCachedParticipants,
   setCachedParticipants,
 } = require('../../../utils/conversationParticipantsCache');
+const { MESSAGE_INSERT_SQL, messageInsertParams } = require('../../../utils/messageInsert');
 
 const MSG_SELECT = `
   SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
@@ -215,22 +216,27 @@ const messageSend = (io, socket) => {
 
       // Idempotence via unique (senderID, clientID) : insertId = nouveau ou existant.
       const [result] = await pool.execute(
-        `INSERT INTO message
-           (senderID, conversationID, clientID, content, type, status, sendAt,
-            clickSentAt,
-            mediaUrl, mediaName, mediaDuration, mediaThumb, mediaSize, mediaPageCount,
-            replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce, mentions)
-         VALUES (?, ?, ?, ?, ?, 1, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE msgID = LAST_INSERT_ID(msgID)`,
-        [
-          senderID, conversationID, clientId, content ?? null, type,
-          clickSentAt ? new Date(clickSentAt) : null,
-          mediaUrl ?? null, mediaName ?? null, mediaDuration ?? null, mediaThumb ?? null,
-          mediaSize ?? null, mediaPageCount ?? null,
-          resolvedReplyToID, resolvedReplyToContent, isStatusReply,
-          isForwarded ? 1 : 0, isViewOnce ? 1 : 0,
-          serializeMentionsColumn(mentionsValue),
-        ],
+        MESSAGE_INSERT_SQL,
+        messageInsertParams({
+          senderID,
+          conversationID,
+          clientId,
+          content,
+          type,
+          clickSentAt,
+          mediaUrl,
+          mediaName,
+          mediaDuration,
+          mediaThumb,
+          mediaSize,
+          mediaPageCount,
+          replyToID: resolvedReplyToID,
+          replyToContent: resolvedReplyToContent,
+          isStatusReply,
+          isForwarded,
+          isViewOnce,
+          mentionsSerialized: serializeMentionsColumn(mentionsValue),
+        }),
       );
       const msgID = result.insertId;
       const isNewInsert = result.affectedRows === 1;
