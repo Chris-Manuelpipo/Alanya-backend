@@ -1,7 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const { authCustom } = require('../middleware/authCustom');
-const { authLimiter } = require('../middleware/rateLimiter');
+const { authLimiter, registerLimiter } = require('../middleware/rateLimiter');
 const {
   register,
   login,
@@ -99,8 +99,10 @@ const { getMyMedia } = require('../controllers/profileMediaController');
  *                   type: string
  *                 refreshToken:
  *                   type: string
+ *       429:
+ *         description: "`REGISTER_RATE_LIMITED` — plafond d'inscriptions réussies par IP (défaut 3 / 24 h)"
  */
-router.post('/register', authLimiter, register);
+router.post('/register', authLimiter, registerLimiter, register);
 
 /**
  * @swagger

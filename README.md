@@ -601,15 +601,26 @@ const phone = decoded.phone_number ?? decoded.talky_phone ?? null;
 | **Validation entrées** | express-validator sur routes | ✅ |
 | **Gestion erreurs centralisée** | Middleware errorHandler.js | ✅ |
 | **Password hashing** | N/A (Firebase handles) | ✅ |
-| **Rate limiting** | ❌ À implémenter |
+| **Rate limiting** | express-rate-limit (auth, register, messages, upload, QR, API générale) | ✅ |
 | **HTTPS/SSL** | À activer en production | ✅ |
 | **Secrets** | Variables d'env (.env) | ✅ |
+
+**Inscriptions (`POST /api/auth/register`)** — deux limiteurs en chaîne :
+- `authLimiter` : 10 **échecs** / 15 min / IP (`skipSuccessfulRequests`).
+- `registerLimiter` : **3 comptes créés** / 24 h / IP par défaut (`skipFailedRequests` ; seuls les 2xx comptent).
+
+Variables optionnelles :
+```env
+REGISTER_MAX_PER_IP=3
+REGISTER_WINDOW_MS=86400000
+```
+
+Réponse `429` si le plafond d'inscriptions est atteint : `{ "error": "...", "code": "REGISTER_RATE_LIMITED" }`.
 
 ### À sécuriser avant production
 
 ```
 [ ] Restreindre CORS accept list aux domaines connus
-[ ] Implémenter rate limiting (express-rate-limit)
 [ ] Activer HTTPS/SSL (certificat Let's Encrypt)
 [ ] Configurer sauvegardes BD régulières
 [ ] Monitorer logs et erreurs
