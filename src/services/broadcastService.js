@@ -12,7 +12,9 @@ const {
 const { generateEventId, stringifyData } = require('../notifications/notificationContract');
 const { enqueue } = require('./jobQueue');
 const {
+  SUPPORTED_CONTENT_LOCALES,
   normalizeLocale,
+  resolveI18n,
   pickLocalized,
   defaultBroadcastPushBody,
 } = require('../utils/localeContent');
@@ -56,6 +58,10 @@ async function publishBroadcast({
   kind = 0,
   content,
   contentEn = null,
+  // Traductions par locale — `{ fr, en, zh }`. Remplace le couple
+  // content/contentEn, conservé pour les appelants non migrés et pour la
+  // double écriture des colonnes héritées.
+  translations = null,
   type = 0,
   mediaUrl = null,
   backgroundColor = null,
@@ -64,6 +70,14 @@ async function publishBroadcast({
   estimate = 0,
   scheduledAt = null,
 }) {
+  // Les colonnes héritées restent la source du contenu français et anglais
+  // tant qu'elles ne sont pas supprimées : on les dérive des traductions
+  // plutôt que d'exiger des appelants qu'ils passent les deux formes.
+  if (translations) {
+    content = translations.fr ?? content;
+    contentEn = translations.en ?? contentEn;
+  }
+
   if (scheduledAt) {
     const runAfter = new Date(scheduledAt);
     await enqueue(
@@ -74,6 +88,7 @@ async function publishBroadcast({
         kind,
         content,
         contentEn,
+        translations,
         type,
         mediaUrl,
         backgroundColor,
@@ -123,6 +138,7 @@ async function publishBroadcast({
       ],
     );
     const broadcastId = ins.insertId;
+    await writeContentI18n(conn, 'broadcast', broadcastId, translations);
 
     let statutId = null;
     if (kind === 1) {
@@ -137,6 +153,7 @@ async function publishBroadcast({
       );
       statutId = st.insertId;
       await conn.execute('UPDATE broadcast SET statut_id = ? WHERE id = ?', [statutId, broadcastId]);
+      await writeContentI18n(conn, 'statut', statutId, translations);
     }
 
     await conn.commit();
@@ -445,6 +462,42 @@ async function markPushJobFailed(broadcastId) {
   }
 }
 
+/**
+ * Écrit les traductions d'un contenu officiel dans sa table `*_i18n`.
+ *
+ * Sans effet si aucune traduction n'est fournie, ou si la table n'existe pas
+ * encore (migration 053 non appliquée) : le contenu reste alors lisible via
+ * les colonnes héritées, toujours écrites en parallèle. C'est ce qui permet de
+ * déployer le code avant la migration, et de revenir en arrière après.
+ */
+async function writeContentI18n(conn, entity, entityId, translations) {
+  if (!translations || !entityId) return;
+
+  const spec = {
+    broadcast: { table: 'broadcast_i18n', key: 'broadcast_id', col: 'content' },
+    statut: { table: 'statut_i18n', key: 'statut_id', col: 'text' },
+  }[entity];
+  if (!spec) return;
+
+  const rows = SUPPORTED_CONTENT_LOCALES
+    .map((loc) => [loc, translations[loc]])
+    .filter(([, v]) => v != null && String(v).trim() !== '');
+  if (rows.length === 0) return;
+
+  try {
+    for (const [loc, value] of rows) {
+      await conn.execute(
+        `INSERT INTO ${spec.table} (${spec.key}, locale, ${spec.col})
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE ${spec.col} = VALUES(${spec.col})`,
+        [entityId, loc, String(value)],
+      );
+    }
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
+}
+
 async function resolveMaterializeLocale(alanyaID, hint) {
   if (hint) return normalizeLocale(hint);
   try {
@@ -458,6 +511,20 @@ async function resolveMaterializeLocale(alanyaID, hint) {
   } catch (e) {
     if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
   }
+
+  // Repli sur la préférence applicative : un utilisateur qui a coupé les
+  // notifications n'a aucune ligne dans `user_push_devices`, et recevait donc
+  // ses annonces en français quelle que soit la langue choisie dans l'app.
+  try {
+    const [rows] = await pool.execute(
+      'SELECT locale FROM user_settings WHERE alanyaID = ? LIMIT 1',
+      [alanyaID],
+    );
+    if (rows.length && rows[0].locale) return normalizeLocale(rows[0].locale);
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
+
   return 'fr';
 }
 
@@ -512,6 +579,29 @@ async function materializeForUser(alanyaID, { locale: localeHint } = {}) {
       [lastId, maxId],
     );
 
+    // Traductions des diffusions à matérialiser, en une seule requête pour le
+    // lot : `materializeForUser` est sur le chemin chaud de
+    // `GET /api/conversations`, une requête par diffusion n'y aurait pas sa
+    // place. Vide tant que la migration 053 n'est pas passée — le repli sur
+    // `broadcast.content` / `content_en` prend alors le relais.
+    const i18nByBroadcast = new Map();
+    if (pending.length) {
+      try {
+        const ids = pending.map((b) => b.id);
+        const [i18nRows] = await conn.query(
+          'SELECT broadcast_id, locale, content FROM broadcast_i18n WHERE broadcast_id IN (?)',
+          [ids],
+        );
+        for (const r of i18nRows) {
+          const list = i18nByBroadcast.get(r.broadcast_id) || [];
+          list.push(r);
+          i18nByBroadcast.set(r.broadcast_id, list);
+        }
+      } catch (e) {
+        if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+      }
+    }
+
     for (const b of pending) {
       const criteria = typeof b.criteria === 'string' ? JSON.parse(b.criteria) : b.criteria;
       const match = evaluateInMemory(userRow, criteria, { sentAt: b.sent_at });
@@ -527,7 +617,12 @@ async function materializeForUser(alanyaID, { locale: localeHint } = {}) {
           if (del.affectedRows === 1) {
             const conversID = await ensureDirectConversation(conn, b.sender_id, alanyaID);
             const clientMsgId = `broadcast:${b.id}:${alanyaID}`;
-            const msgContent = pickLocalized(b, locale, 'content');
+            // Table normalisée d'abord, colonnes héritées ensuite : c'est ce
+            // qui rend le déploiement réversible tant que la double écriture
+            // dure.
+            const msgContent =
+              resolveI18n(i18nByBroadcast.get(b.id), locale) ??
+              pickLocalized(b, locale, 'content');
             const [msgIns] = await conn.execute(
               `INSERT INTO message
                 (senderID, conversationID, content, type, status, sendAt, clientID, mediaUrl)

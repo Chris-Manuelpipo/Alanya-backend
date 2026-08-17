@@ -8,6 +8,10 @@ const {
 const { enqueue } = require('../../services/jobQueue');
 const { getOfficialAccountId } = require('../../utils/officialAccountGuard');
 const { buildBroadcastWhere } = require('./broadcastQuery');
+const {
+  SUPPORTED_CONTENT_LOCALES,
+  REQUIRED_CONTENT_LOCALES,
+} = require('../../utils/localeContent');
 
 const listBroadcasts = async (req, res) => {
   try {
@@ -103,6 +107,9 @@ const createBroadcast = async (req, res) => {
       kind: kindRaw = 0,
       content,
       contentEn,
+      // Traductions par locale — `{ fr, en, zh }`. Le couple content/contentEn
+      // reste accepté pour les clients non migrés.
+      translations: translationsRaw,
       type = 0,
       mediaUrl,
       backgroundColor,
@@ -121,13 +128,30 @@ const createBroadcast = async (req, res) => {
     if (!senderId || !criteria || !clientId) {
       return res.status(400).json({ error: 'senderId, criteria et clientId requis' });
     }
-    if (!content || !String(content).trim()) {
-      return res.status(400).json({ error: 'content (FR) requis' });
+    // Normalise les deux formes acceptées vers un seul objet par locale.
+    const translations = {};
+    for (const loc of SUPPORTED_CONTENT_LOCALES) {
+      const v = translationsRaw && translationsRaw[loc];
+      if (v != null && String(v).trim()) translations[loc] = String(v).trim();
     }
-    // Les deux langues sont exigées : sans traduction, `pickLocalized` sert le
-    // français aux anglophones sans que personne ne s'en aperçoive.
-    if (!contentEn || !String(contentEn).trim()) {
-      return res.status(400).json({ error: 'contentEn (EN) requis' });
+    if (!translations.fr && content && String(content).trim()) {
+      translations.fr = String(content).trim();
+    }
+    if (!translations.en && contentEn && String(contentEn).trim()) {
+      translations.en = String(contentEn).trim();
+    }
+
+    // Français et anglais restent obligatoires : sans eux, la chaîne de repli
+    // n'a rien à servir et un lecteur verrait une annonce vide. Les autres
+    // langues sont facultatives — les exiger bloquerait toute publication
+    // jusqu'à ce qu'un traducteur soit disponible, et le repli couvre
+    // l'absence.
+    for (const loc of REQUIRED_CONTENT_LOCALES) {
+      if (!translations[loc]) {
+        return res
+          .status(400)
+          .json({ error: `content (${loc.toUpperCase()}) requis` });
+      }
     }
 
     // Il n'existe qu'un compte officiel, et toutes les diffusions en émanent :
@@ -158,8 +182,9 @@ const createBroadcast = async (req, res) => {
       senderId: Number(senderId),
       createdBy: req.user.alanyaID,
       kind,
-      content: String(content).trim(),
-      contentEn: contentEn != null ? String(contentEn).trim() : null,
+      content: translations.fr,
+      contentEn: translations.en,
+      translations,
       type: Number(type),
       mediaUrl: mediaUrl || null,
       // Seul un statut porte une couleur de fond ; l'ignorer pour un message

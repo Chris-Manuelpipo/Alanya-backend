@@ -7,6 +7,7 @@ const { enqueue } = require('./jobQueue');
 
 const {
   normalizeLocale,
+  resolveI18n,
   pickLocalized,
 } = require('../utils/localeContent');
 
@@ -52,7 +53,34 @@ async function loadBlocksForConfig(configId, conn = pool) {
     'SELECT * FROM welcome_block WHERE config_id = ? ORDER BY sort_order ASC, id ASC',
     [configId],
   );
-  return rows.map(mapBlockRow);
+  const blocks = rows.map(mapBlockRow);
+
+  // Traductions de tous les blocs en une requête. Vide tant que la migration
+  // 053 n'est pas passée : `blockToMessagePayload` retombe alors sur
+  // `content_fr`/`content_en` et sur les `labelFr`/`labelEn` de `cta_json`.
+  if (blocks.length) {
+    try {
+      const ids = blocks.map((b) => b.id);
+      const [i18nRows] = await conn.query(
+        'SELECT block_id, locale, field, value FROM welcome_block_i18n WHERE block_id IN (?)',
+        [ids],
+      );
+      const byBlock = new Map();
+      for (const r of i18nRows) {
+        const list = byBlock.get(r.block_id) || [];
+        list.push(r);
+        byBlock.set(r.block_id, list);
+      }
+      for (const b of blocks) {
+        b.i18n = byBlock.get(b.id) || [];
+      }
+    } catch (e) {
+      if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+      for (const b of blocks) b.i18n = [];
+    }
+  }
+
+  return blocks;
 }
 
 async function getActiveConfig() {
@@ -115,31 +143,48 @@ async function getAdminWelcomeState() {
 
 function blockToMessagePayload(block, locale, configId, alanyaID, sortOrder) {
   const clientId = `welcome:${configId}:${alanyaID}:${sortOrder}`;
+
+  // Table normalisée d'abord, colonnes héritées ensuite, le temps de la
+  // double écriture.
+  const body = () =>
+    resolveI18n(block.i18n, locale, { valueKey: 'value', field: 'content' }) ??
+    pickLocalized(block, locale, 'content');
+
   switch (block.blockType) {
     case 'text': {
-      const content = pickLocalized(block, locale, 'content');
-      return { type: 0, content, mediaUrl: null, clientId };
+      return { type: 0, content: body(), mediaUrl: null, clientId };
     }
     case 'image':
       return {
         type: 1,
-        content: pickLocalized(block, locale, 'content') || null,
+        content: body() || null,
         mediaUrl: block.mediaUrl || null,
         clientId,
       };
     case 'video':
       return {
         type: 2,
-        content: pickLocalized(block, locale, 'content') || null,
+        content: body() || null,
         mediaUrl: block.mediaUrl || null,
         clientId,
       };
     case 'cta': {
       const raw = block.ctaJson?.buttons ?? [];
-      const buttons = raw.map((btn) => ({
-        label: locale === 'en'
-          ? (btn.labelEn || btn.labelFr || '')
-          : (btn.labelFr || btn.labelEn || ''),
+      // Les libellés vivent désormais dans `welcome_block_i18n`, indexés par la
+      // position du bouton (`cta.0`, `cta.1`…). `cta_json` ne garde que la
+      // structure : action et cible. Le repli sur `labelFr`/`labelEn` couvre
+      // les configurations antérieures à la migration 053 — c'est ce JSON qui
+      // avait déjà été cassé une fois (migrations 042 puis 046), on ne le
+      // réécrit pas.
+      const buttons = raw.map((btn, index) => ({
+        label:
+          resolveI18n(block.i18n, locale, {
+            valueKey: 'value',
+            field: `cta.${index}`,
+          }) ??
+          (normalizeLocale(locale) !== 'fr'
+            ? (btn.labelEn || btn.labelFr || '')
+            : (btn.labelFr || btn.labelEn || '')),
         action: btn.action === 'url' ? 'url' : 'route',
         target: String(btn.target || ''),
       })).filter((b) => b.label && b.target);
