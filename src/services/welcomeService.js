@@ -1,11 +1,12 @@
 const pool = require('../config/db');
 const { getOfficialAccountId } = require('../utils/officialAccountGuard');
-const { ensureDirectConversation } = require('./broadcastService');
+const { ensureDirectConversation, writeContentI18n } = require('./broadcastService');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { notifyNewMessage } = require('./notificationService');
 const { enqueue } = require('./jobQueue');
 
 const {
+  SUPPORTED_CONTENT_LOCALES,
   normalizeLocale,
   resolveI18n,
   pickLocalized,
@@ -46,6 +47,113 @@ function mapConfigRow(row, blocks = []) {
     publishedBy: row.published_by,
     blocks,
   };
+}
+
+/**
+ * Écrit les traductions d'un bloc de bienvenue.
+ *
+ * **Toujours appelé avec l'`insertId` du bloc qui vient d'être inséré.** Les
+ * lignes de `welcome_block_i18n` sont clées sur `block_id`, et `publishDraft`
+ * recopie les blocs deux fois en leur donnant à chaque passage de nouveaux
+ * identifiants : réutiliser l'ancien laisserait les traductions accrochées à
+ * des blocs supprimés et les nouveaux muets. La panne serait silencieuse —
+ * c'est exactement ainsi que `cta_json` avait été cassé (migrations 042/046).
+ *
+ * `field` vaut `content` pour le corps, `cta.<index>` pour le libellé du
+ * bouton d'indice `<index>`. Un seul endroit connaît cette convention.
+ *
+ * Sans effet si la table n'existe pas encore (migration 053 non appliquée) :
+ * le contenu reste lisible via `content_fr`/`content_en`, toujours écrites en
+ * parallèle.
+ */
+/**
+ * Construit les lignes `(locale, field, value)` des traductions d'un bloc.
+ *
+ * Pure et exportée pour être testable sans base : c'est la logique dont dépend
+ * la survie des traductions à travers les recopies de blocs.
+ *
+ * Trois provenances, par ordre de priorité :
+ *   1. `translations` / `ctaTranslations` — le bloc arrive de l'éditeur ;
+ *   2. `i18n` — le bloc a été relu en base et on le recopie : c'est ce cas qui
+ *      transporte les traductions d'un identifiant de bloc au suivant ;
+ *   3. colonnes héritées `contentFr`/`contentEn` et libellés de `cta_json` —
+ *      contenu antérieur à la migration 053.
+ *
+ * `field` vaut `content` pour le corps, `cta.<index>` pour le libellé du bouton
+ * d'indice `<index>`. Un seul endroit connaît cette convention.
+ */
+function buildBlockI18nRows(block) {
+  if (!block) return [];
+
+  const rows = [];
+  const seen = new Set();
+  const push = (locale, field, value) => {
+    if (locale == null) return;
+    const key = `${locale}|${field}`;
+    if (seen.has(key)) return;
+    if (value == null || String(value).trim() === '') return;
+    seen.add(key);
+    rows.push([locale, field, String(value)]);
+  };
+
+  const translations = block.translations || {};
+  for (const locale of SUPPORTED_CONTENT_LOCALES) {
+    push(locale, 'content', translations[locale]);
+  }
+
+  for (const row of block.i18n || []) {
+    push(row.locale, row.field || 'content', row.value);
+  }
+
+  push('fr', 'content', block.contentFr);
+  push('en', 'content', block.contentEn);
+
+  const buttons = block.ctaJson?.buttons ?? [];
+  const ctaTranslations = block.ctaTranslations || [];
+  buttons.forEach((btn, index) => {
+    const perLocale = ctaTranslations[index] || {};
+    for (const locale of SUPPORTED_CONTENT_LOCALES) {
+      push(locale, `cta.${index}`, perLocale[locale]);
+    }
+    push('fr', `cta.${index}`, btn.labelFr);
+    push('en', `cta.${index}`, btn.labelEn);
+  });
+
+  return rows;
+}
+
+/**
+ * Écrit les traductions d'un bloc de bienvenue.
+ *
+ * **Toujours appelé avec l'`insertId` du bloc qui vient d'être inséré.** Les
+ * lignes de `welcome_block_i18n` sont clées sur `block_id`, et une
+ * configuration de bienvenue recopie ses blocs à chaque changement d'état
+ * (`ensureDraftConfig`, `saveDraft`, et deux fois dans `publishDraft`), avec de
+ * nouveaux identifiants à chaque passage. Réutiliser l'ancien laisserait les
+ * traductions accrochées à des blocs supprimés et les nouveaux muets — panne
+ * silencieuse, exactement ainsi que `cta_json` avait été cassé (042/046).
+ *
+ * Sans effet si la table n'existe pas encore (migration 053 non appliquée) :
+ * le contenu reste lisible via `content_fr`/`content_en`, toujours écrites en
+ * parallèle.
+ */
+async function writeBlockI18n(conn, blockId, block) {
+  if (!blockId) return;
+  const rows = buildBlockI18nRows(block);
+  if (rows.length === 0) return;
+
+  try {
+    for (const [locale, field, value] of rows) {
+      await conn.execute(
+        `INSERT INTO welcome_block_i18n (block_id, locale, field, value)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE value = VALUES(value)`,
+        [blockId, locale, field, value],
+      );
+    }
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
 }
 
 async function loadBlocksForConfig(configId, conn = pool) {
@@ -114,7 +222,7 @@ async function ensureDraftConfig(conn) {
 
   if (active?.blocks?.length) {
     for (const b of active.blocks) {
-      await conn.execute(
+      const [blockIns] = await conn.execute(
         `INSERT INTO welcome_block
           (config_id, sort_order, block_type, content_fr, content_en, media_url, cta_json)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -128,6 +236,9 @@ async function ensureDraftConfig(conn) {
           b.ctaJson ? JSON.stringify(b.ctaJson) : null,
         ],
       );
+      // Nouveau bloc, donc nouvel identifiant : les traductions relues sur
+      // l'actif (`b.i18n`) sont recopiées sur celui-ci.
+      await writeBlockI18n(conn, blockIns.insertId, b);
     }
   }
 
@@ -225,11 +336,24 @@ async function getWelcomeStatusConfig() {
   );
   if (!row) {
     return {
-      enabled: false, type: 0, textFr: '', textEn: '',
+      enabled: false, type: 0, textFr: '', textEn: '', translations: {},
       mediaUrl: '', backgroundColor: '', updatedAt: null, updatedBy: null,
     };
   }
-  return mapStatusConfigRow(row);
+
+  // Traductions normalisées. Vides tant que la migration 053 n'est pas passée :
+  // `text_fr`/`text_en` prennent alors le relais.
+  const translations = {};
+  try {
+    const [rows] = await pool.execute(
+      'SELECT locale, text FROM welcome_status_config_i18n WHERE config_id = 1',
+    );
+    for (const r of rows) translations[normalizeLocale(r.locale)] = r.text;
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
+
+  return { ...mapStatusConfigRow(row), translations };
 }
 
 /** Couleur de fond acceptée par l'app : `#RRGGBB` (cf. `_parseColor`). */
@@ -258,8 +382,12 @@ function normalizeStatusText(raw) {
 
 async function saveWelcomeStatusConfig(patch, adminId) {
   const type = [0, 1, 2].includes(Number(patch?.type)) ? Number(patch.type) : 0;
-  const textFr = normalizeStatusText(patch?.textFr);
-  const textEn = normalizeStatusText(patch?.textEn);
+  // Les colonnes héritées restent la source du français et de l'anglais tant
+  // qu'elles existent : on les dérive des traductions plutôt que d'exiger des
+  // appelants qu'ils envoient les deux formes.
+  const incoming = patch?.translations || {};
+  const textFr = normalizeStatusText(incoming.fr ?? patch?.textFr);
+  const textEn = normalizeStatusText(incoming.en ?? patch?.textEn);
   const mediaUrl = patch?.mediaUrl ? String(patch.mediaUrl).slice(0, 512) : null;
   const backgroundColor = normalizeBackgroundColor(patch?.backgroundColor);
   const enabled = patch?.enabled ? 1 : 0;
@@ -297,6 +425,30 @@ async function saveWelcomeStatusConfig(patch, adminId) {
        updated_by = VALUES(updated_by)`,
     [enabled, type, textFr || null, textEn || null, mediaUrl, backgroundColor, adminId ?? null],
   );
+
+  const translations = { ...incoming, fr: textFr, en: textEn };
+  try {
+    for (const locale of SUPPORTED_CONTENT_LOCALES) {
+      const value = normalizeStatusText(translations[locale]);
+      if (value) {
+        await pool.execute(
+          `INSERT INTO welcome_status_config_i18n (config_id, locale, text)
+           VALUES (1, ?, ?)
+           ON DUPLICATE KEY UPDATE text = VALUES(text)`,
+          [locale, value],
+        );
+      } else {
+        // Une traduction effacée doit disparaître, sinon l'ancienne valeur
+        // resterait servie alors que l'administrateur l'a retirée.
+        await pool.execute(
+          'DELETE FROM welcome_status_config_i18n WHERE config_id = 1 AND locale = ?',
+          [locale],
+        );
+      }
+    }
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
 
   return getWelcomeStatusConfig();
 }
@@ -347,6 +499,10 @@ async function deliverWelcomeStatus(alanyaID) {
         STATUS_TTL_HOURS,
       ],
     );
+    // Le statut livré porte les mêmes traductions que la configuration :
+    // sans cela, un lecteur chinois verrait l'anglais alors que la version
+    // chinoise existe.
+    await writeContentI18n(conn, 'statut', ins.insertId, config.translations);
 
     await conn.execute(
       'INSERT INTO welcome_status_delivery (alanyaID, statut_id) VALUES (?, ?)',
@@ -578,7 +734,7 @@ async function saveDraft(blocks, adminId) {
     const sorted = [...(blocks || [])].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
     for (let i = 0; i < sorted.length; i += 1) {
       const b = sorted[i];
-      await conn.execute(
+      const [ins] = await conn.execute(
         `INSERT INTO welcome_block
           (config_id, sort_order, block_type, content_fr, content_en, media_url, cta_json)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -592,6 +748,9 @@ async function saveDraft(blocks, adminId) {
           b.ctaJson ? JSON.stringify(b.ctaJson) : null,
         ],
       );
+      // Les blocs du brouillon viennent d'être supprimés : leurs lignes i18n
+      // sont parties par ON DELETE CASCADE. On réécrit sur le nouvel id.
+      await writeBlockI18n(conn, ins.insertId, b);
     }
 
     await conn.execute('UPDATE welcome_config SET updated_at = NOW() WHERE id = ?', [draft.id]);
@@ -665,7 +824,7 @@ async function publishDraft(adminId) {
     const newId = ins.insertId;
 
     for (const b of blocks) {
-      await conn.execute(
+      const [ins] = await conn.execute(
         `INSERT INTO welcome_block
           (config_id, sort_order, block_type, content_fr, content_en, media_url, cta_json)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -679,13 +838,16 @@ async function publishDraft(adminId) {
           b.ctaJson ? JSON.stringify(b.ctaJson) : null,
         ],
       );
+      // Configuration publiée : nouveaux identifiants de blocs, donc les
+      // traductions du brouillon (`b.i18n`) sont réécrites sur eux.
+      await writeBlockI18n(conn, ins.insertId, b);
     }
 
     // Resync draft from published
     await conn.execute('DELETE FROM welcome_block WHERE config_id = ?', [draft.id]);
     const publishedBlocks = await loadBlocksForConfig(newId, conn);
     for (const b of publishedBlocks) {
-      await conn.execute(
+      const [ins] = await conn.execute(
         `INSERT INTO welcome_block
           (config_id, sort_order, block_type, content_fr, content_en, media_url, cta_json)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -699,6 +861,9 @@ async function publishDraft(adminId) {
           b.ctaJson ? JSON.stringify(b.ctaJson) : null,
         ],
       );
+      // Resynchronisation du brouillon sur le publié : troisième jeu
+      // d'identifiants, troisième réécriture.
+      await writeBlockI18n(conn, ins.insertId, b);
     }
     await conn.execute(
       'UPDATE welcome_config SET version = ? WHERE id = ?',
@@ -808,6 +973,7 @@ async function continueBackfillChain(lastId, hasMore) {
 }
 
 module.exports = {
+  buildBlockI18nRows,
   WELCOME_CTA_MSG_TYPE,
   getAdminWelcomeState,
   saveDraft,

@@ -1,0 +1,116 @@
+-- Migration 054 : suppression du stockage bilingue hérité
+--
+-- ╔══════════════════════════════════════════════════════════════════════╗
+-- ║  ⚠️  NE PAS EXÉCUTER MAINTENANT.                                     ║
+-- ║                                                                      ║
+-- ║  Ce fichier existe pour que le ménage soit décidé, écrit et daté     ║
+-- ║  pendant qu'on a le contexte en tête — pas pour être joué dans la    ║
+-- ║  foulée de la 053. Dans six mois, plus personne ne se souviendrait   ║
+-- ║  que ces colonnes devaient disparaître.                              ║
+-- ╚══════════════════════════════════════════════════════════════════════╝
+--
+-- ── CE QU'ELLE SUPPRIME ───────────────────────────────────────────────
+--
+-- Les colonnes que la migration 053 a remplacées par des tables par locale :
+--   • broadcast.content_en          → broadcast_i18n
+--   • statut.text_en                → statut_i18n
+--   • welcome_block.content_fr/_en  → welcome_block_i18n
+--   • les libellés dans welcome_block.cta_json (labelFr / labelEn)
+--
+-- `broadcast.content` et `statut.text` sont CONSERVÉES : ce ne sont pas des
+-- colonnes de traduction mais le contenu de base, et `statut.text` est NOT NULL
+-- et porte les statuts des utilisateurs ordinaires, qui n'ont aucune traduction.
+--
+-- ── CONDITIONS À RÉUNIR AVANT DE L'EXÉCUTER ───────────────────────────
+--
+--  1. La migration 053 est appliquée en production, et sa requête de contrôle
+--     rend ZÉRO partout (voir la fin de 053_content_i18n.sql).
+--
+--  2. La lecture normalisée tourne en production depuis assez longtemps pour
+--     couvrir un cycle complet : une diffusion publiée, un statut officiel, et
+--     surtout une PUBLICATION de message de bienvenue — c'est elle qui recopie
+--     les blocs et remappe leurs identifiants.
+--
+--  3. La requête de contrôle ci-dessous rend zéro partout.
+--
+--  4. Une sauvegarde de la base existe et a été testée. La suppression de
+--     colonnes est irréversible : sans sauvegarde, un contenu qui n'aurait pas
+--     été repris est définitivement perdu.
+--
+--  5. Le code qui lit encore les colonnes héritées est retiré DANS LE MÊME
+--     DÉPLOIEMENT, sans quoi `pickLocalized` lirait des colonnes absentes :
+--       • src/utils/localeContent.js      → `pickLocalized` et son export
+--       • src/services/broadcastService.js → repli `?? pickLocalized(...)`,
+--                                            colonnes content_en des INSERT
+--       • src/services/welcomeService.js   → repli dans `blockToMessagePayload`,
+--                                            `contentFr`/`contentEn` de
+--                                            `mapBlockRow` et des quatre INSERT,
+--                                            `labelFr`/`labelEn` dans
+--                                            `buildBlockI18nRows`
+--       • src/controllers/admin/broadcast.js → `content` / `contentEn`
+--       • alanya-admin → `pickLocalized` de lib/preview/localized.ts, et
+--                        l'état contentFr/contentEn des éditeurs restants
+--
+-- ── CONTRÔLE PRÉALABLE ────────────────────────────────────────────────
+--
+-- Doit rendre 0 sur les quatre compteurs. Un écart signale un contenu présent
+-- dans les colonnes héritées et absent des tables : NE PAS SUPPRIMER.
+--
+--   SELECT
+--     (SELECT COUNT(*) FROM broadcast b
+--       WHERE b.content_en IS NOT NULL AND TRIM(b.content_en) <> ''
+--         AND NOT EXISTS (SELECT 1 FROM broadcast_i18n t
+--                          WHERE t.broadcast_id = b.id AND t.locale = 'en'))
+--       AS diffusions_non_reprises,
+--     (SELECT COUNT(*) FROM statut s
+--       WHERE s.text_en IS NOT NULL AND TRIM(s.text_en) <> ''
+--         AND NOT EXISTS (SELECT 1 FROM statut_i18n t
+--                          WHERE t.statut_id = s.ID AND t.locale = 'en'))
+--       AS statuts_non_repris,
+--     (SELECT COUNT(*) FROM welcome_block wb
+--       WHERE wb.content_fr IS NOT NULL AND TRIM(wb.content_fr) <> ''
+--         AND NOT EXISTS (SELECT 1 FROM welcome_block_i18n t
+--                          WHERE t.block_id = wb.id AND t.locale = 'fr'
+--                            AND t.field = 'content'))
+--       AS blocs_non_repris,
+--     (SELECT COUNT(*) FROM welcome_block wb,
+--             JSON_TABLE(wb.cta_json, '$.buttons[*]' COLUMNS (
+--               pos FOR ORDINALITY, label_fr TEXT PATH '$.labelFr')) AS jt
+--       WHERE wb.cta_json IS NOT NULL
+--         AND jt.label_fr IS NOT NULL AND TRIM(jt.label_fr) <> ''
+--         AND NOT EXISTS (SELECT 1 FROM welcome_block_i18n t
+--                          WHERE t.block_id = wb.id AND t.locale = 'fr'
+--                            AND t.field = CONCAT('cta.', jt.pos - 1)))
+--       AS libelles_boutons_non_repris;
+--
+-- ── LA MIGRATION ELLE-MÊME ────────────────────────────────────────────
+--
+-- Décommenter seulement une fois les cinq conditions réunies.
+--
+-- ALTER TABLE broadcast      DROP COLUMN content_en;
+-- ALTER TABLE statut         DROP COLUMN text_en;
+-- ALTER TABLE welcome_block  DROP COLUMN content_fr;
+-- ALTER TABLE welcome_block  DROP COLUMN content_en;
+--
+-- -- Les libellés sortent de `cta_json`, qui ne garde que la structure :
+-- -- action et cible. L'ordre des boutons reste ce qui les relie aux lignes
+-- -- `cta.<index>` de welcome_block_i18n.
+-- UPDATE welcome_block
+-- SET cta_json = JSON_REPLACE(
+--       cta_json,
+--       '$.buttons',
+--       (SELECT JSON_ARRAYAGG(
+--                 JSON_OBJECT('action', jt.action, 'target', jt.target))
+--          FROM JSON_TABLE(cta_json, '$.buttons[*]' COLUMNS (
+--                 pos    FOR ORDINALITY,
+--                 action TEXT PATH '$.action',
+--                 target TEXT PATH '$.target')) AS jt))
+-- WHERE cta_json IS NOT NULL
+--   AND JSON_LENGTH(cta_json, '$.buttons') > 0;
+--
+-- ── APRÈS EXÉCUTION ───────────────────────────────────────────────────
+--
+-- Vérifier qu'un message de bienvenue s'affiche encore avec ses boutons dans
+-- les trois langues. `cta_json` a déjà été cassé une fois par une migration
+-- (042, réparée par la 046) et l'échec est SILENCIEUX : un bloc vide dans
+-- l'application, sans aucune erreur côté serveur.

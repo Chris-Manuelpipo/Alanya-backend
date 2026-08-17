@@ -750,6 +750,7 @@ function mapBroadcastRow(row) {
 
 module.exports = {
   initBroadcastCache,
+  writeContentI18n,
   findBroadcastByClientId,
   estimateAudience,
   publishBroadcast,

@@ -69,6 +69,22 @@ CREATE TABLE IF NOT EXISTS welcome_block_i18n (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- =============================================================
+--  3 bis. Statut de bienvenue (singleton, migration 044)
+-- =============================================================
+-- Cinquième site bilingue, facile à oublier : `welcome_status_config` est une
+-- table à une seule ligne, mais elle portait elle aussi `text_fr`/`text_en`.
+-- La laisser de côté aurait maintenu une exception au moment même où l'on
+-- promet de ne plus jamais payer ce coût.
+CREATE TABLE IF NOT EXISTS welcome_status_config_i18n (
+  config_id TINYINT    NOT NULL DEFAULT 1,
+  locale    VARCHAR(8) NOT NULL,
+  text      TINYTEXT   NOT NULL,
+  PRIMARY KEY (config_id, locale),
+  CONSTRAINT fk_wsc_i18n FOREIGN KEY (config_id)
+    REFERENCES welcome_status_config(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =============================================================
 --  4. Reprise des données existantes
 -- =============================================================
 -- INSERT IGNORE partout : la migration est rejouable sans écraser une
@@ -134,6 +150,17 @@ FROM welcome_block wb,
      )) AS jt
 WHERE wb.cta_json IS NOT NULL
   AND jt.label_en IS NOT NULL AND TRIM(jt.label_en) <> '';
+
+-- 4.5 Statut de bienvenue.
+INSERT IGNORE INTO welcome_status_config_i18n (config_id, locale, text)
+SELECT c.id, 'fr', c.text_fr
+FROM welcome_status_config c
+WHERE c.text_fr IS NOT NULL AND TRIM(c.text_fr) <> '';
+
+INSERT IGNORE INTO welcome_status_config_i18n (config_id, locale, text)
+SELECT c.id, 'en', c.text_en
+FROM welcome_status_config c
+WHERE c.text_en IS NOT NULL AND TRIM(c.text_en) <> '';
 
 -- =============================================================
 --  5. Contrôle de reprise
