@@ -21,6 +21,58 @@ const cleanColor = (raw) => {
   return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(v) ? v : null;
 };
 
+// ── SONNERIES DE LISTE (synchronisées entre les appareils du compte) ──
+// La sélection est une préférence DU COMPTE, pas de l'appareil. On ne stocke
+// jamais le fichier audio d'une sonnerie importée : seulement son identité.
+//   builtin → id stable d'un son fourni avec l'app (`notif_pop`, `bundled_son3`,
+//             `__system_default__`) ; le fichier existe sur tous les appareils.
+//   custom  → SHA-256 du CONTENU du fichier importé. Le nom (`*_name`) n'est
+//             qu'un libellé d'affichage : deux fichiers homonymes de contenu
+//             différent restent deux sons différents.
+const VALID_SOUND_TYPES = new Set(['builtin', 'custom']);
+
+const cleanSoundType = (raw) => {
+  if (raw == null) return null;
+  const v = String(raw).trim();
+  return VALID_SOUND_TYPES.has(v) ? v : null;
+};
+
+// Identifiant de son : id fourni (`notif_pop`) ou hash hexadécimal. Tout ce qui
+// sort de cet alphabet est refusé plutôt que tronqué — un identifiant abîmé ne
+// résoudrait rien côté client et masquerait le vrai problème.
+const cleanSoundId = (raw) => {
+  if (raw == null) return null;
+  const v = String(raw).trim();
+  return /^[A-Za-z0-9_.:-]{1,80}$/.test(v) ? v : null;
+};
+
+const cleanSoundName = (raw) => {
+  if (raw == null) return null;
+  const v = String(raw).trim().slice(0, 120);
+  return v === '' ? null : v;
+};
+
+// Fusionne le patch reçu avec l'existant pour UN évènement (`message`/`call`).
+// Champ absent = inchangé ; champ à null = effacé. Un triplet incohérent
+// (type sans identifiant) est ramené à « pas de choix » plutôt qu'enregistré à
+// moitié : le client retomberait de toute façon sur son son par défaut.
+const mergeSoundPatch = (body, prefix, existing) => {
+  const has = (key) => Object.prototype.hasOwnProperty.call(body || {}, key);
+  const pick = (suffix, clean, current) => {
+    const key = `${prefix}Sound${suffix}`;
+    return has(key) ? clean(body[key]) : current;
+  };
+
+  const type = pick('Type', cleanSoundType, existing.type);
+  const id = pick('Id', cleanSoundId, existing.id);
+  let name = pick('Name', cleanSoundName, existing.name);
+
+  if (!type || !id) return { type: null, id: null, name: null };
+  // Le libellé d'un son fourni vient des traductions du client, pas d'ici.
+  if (type === 'builtin') name = null;
+  return { type, id, name };
+};
+
 const parseListId = (raw) => {
   const id = parseInt(raw, 10);
   return Number.isNaN(id) || id <= 0 ? null : id;
@@ -31,7 +83,11 @@ const parseListId = (raw) => {
 // côtés) pour ne pas révéler l'existence des listes d'autrui.
 const findOwnedList = async (idList, alanyaID) => {
   const [rows] = await pool.execute(
-    'SELECT idList, alanyaID, name, kind, color, member_limit, created_at FROM contact_list WHERE idList = ? AND alanyaID = ?',
+    `SELECT idList, alanyaID, name, kind, color, member_limit,
+            msg_sound_type, msg_sound_id, msg_sound_name,
+            call_sound_type, call_sound_id, call_sound_name,
+            sound_priority, created_at
+       FROM contact_list WHERE idList = ? AND alanyaID = ?`,
     [idList, alanyaID]
   );
   return rows[0] || null;
@@ -45,6 +101,17 @@ const listRow = (r, memberCount = 0) => ({
   memberLimit: r.member_limit != null ? Number(r.member_limit) : null,
   memberCount: Number(memberCount) || 0,
   createdAt:   r.created_at,
+  // Sonneries de la liste — voir migration 055. Toujours présentes dans la
+  // réponse (à null quand la liste n'a jamais été configurée) : le client
+  // distingue « pas de choix » de « choix = sonnerie système », qui vaut
+  // builtin/__system_default__.
+  messageSoundType: r.msg_sound_type ?? null,
+  messageSoundId:   r.msg_sound_id ?? null,
+  messageSoundName: r.msg_sound_name ?? null,
+  callSoundType:    r.call_sound_type ?? null,
+  callSoundId:      r.call_sound_id ?? null,
+  callSoundName:    r.call_sound_name ?? null,
+  soundPriority:    r.sound_priority != null ? Number(r.sound_priority) : null,
 });
 
 // Toutes mes listes, avec le nombre de membres de chacune.
@@ -60,12 +127,22 @@ const getLists = async (req, res) => {
          cl.kind,
          cl.color,
          cl.member_limit,
+         cl.msg_sound_type,
+         cl.msg_sound_id,
+         cl.msg_sound_name,
+         cl.call_sound_type,
+         cl.call_sound_id,
+         cl.call_sound_name,
+         cl.sound_priority,
          cl.created_at,
          COUNT(clm.idFriend) AS member_count
        FROM contact_list cl
        LEFT JOIN contact_list_member clm ON clm.idList = cl.idList
        WHERE cl.alanyaID = ?
-       GROUP BY cl.idList, cl.name, cl.kind, cl.color, cl.member_limit, cl.created_at
+       GROUP BY cl.idList, cl.name, cl.kind, cl.color, cl.member_limit,
+                cl.msg_sound_type, cl.msg_sound_id, cl.msg_sound_name,
+                cl.call_sound_type, cl.call_sound_id, cl.call_sound_name,
+                cl.sound_priority, cl.created_at
        ORDER BY ${KIND_ORDER_SQL}, cl.name ASC`,
       [alanyaID]
     );
@@ -101,21 +178,24 @@ const createList = async (req, res) => {
       throw e;
     }
 
-    res.status(201).json({
-      idList:      Number(result.insertId),
-      name,
-      kind:        null,
-      color,
-      memberCount: 0,
-    });
+    res.status(201).json(
+      listRow(
+        { idList: result.insertId, name, kind: null, color, member_limit: null },
+        0,
+      ),
+    );
   } catch (error) {
     console.error('[createList] ERROR:', error);
     res.status(500).json({ error: error.message });
   }
 };
 
-// Renommer / recolorer. Les deux champs sont optionnels : `color: null` (ou
-// chaîne vide) efface la couleur, `color` absent la laisse telle quelle.
+// Renommer / recolorer / choisir les sonneries de la liste. Tous les champs
+// sont optionnels : `color: null` (ou chaîne vide) efface la couleur, `color`
+// absent la laisse telle quelle — même règle pour les six champs de son.
+//
+// Les sonneries sont acceptées y compris sur une liste SYSTÈME (Famille,
+// Confiance…) : c'est leur nom qui est verrouillé, pas leurs préférences.
 const updateList = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
@@ -149,10 +229,30 @@ const updateList = async (req, res) => {
       return res.status(400).json({ error: 'List name is required' });
     }
 
+    const msg = mergeSoundPatch(req.body, 'message', {
+      type: existing.msg_sound_type,
+      id:   existing.msg_sound_id,
+      name: existing.msg_sound_name,
+    });
+    const call = mergeSoundPatch(req.body, 'call', {
+      type: existing.call_sound_type,
+      id:   existing.call_sound_id,
+      name: existing.call_sound_name,
+    });
+
     try {
       await pool.execute(
-        'UPDATE contact_list SET name = ?, color = ? WHERE idList = ? AND alanyaID = ?',
-        [name, color, idList, alanyaID]
+        `UPDATE contact_list
+            SET name = ?, color = ?,
+                msg_sound_type = ?, msg_sound_id = ?, msg_sound_name = ?,
+                call_sound_type = ?, call_sound_id = ?, call_sound_name = ?
+          WHERE idList = ? AND alanyaID = ?`,
+        [
+          name, color,
+          msg.type, msg.id, msg.name,
+          call.type, call.id, call.name,
+          idList, alanyaID,
+        ]
       );
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') {
@@ -166,7 +266,17 @@ const updateList = async (req, res) => {
       [idList]
     );
 
-    res.json(listRow({ ...existing, name, color }, counted.member_count));
+    res.json(listRow({
+      ...existing,
+      name,
+      color,
+      msg_sound_type:  msg.type,
+      msg_sound_id:    msg.id,
+      msg_sound_name:  msg.name,
+      call_sound_type: call.type,
+      call_sound_id:   call.id,
+      call_sound_name: call.name,
+    }, counted.member_count));
   } catch (error) {
     console.error('[updateList] ERROR:', error);
     res.status(500).json({ error: error.message });
@@ -353,6 +463,58 @@ const addMember = async (req, res) => {
   }
 };
 
+// Ordre de priorité des sonneries de liste. Un contact peut appartenir à
+// plusieurs listes : c'est cet ordre qui désigne celle qui sonne. Il vit avec
+// les sons plutôt qu'avec chaque appareil — sans lui, deux appareils pourtant
+// d'accord sur les sons jouaient encore des sonneries différentes pour un
+// contact multi-listes.
+//
+// Ré-écriture complète (et non un rang par liste) : l'écran envoie la file
+// telle qu'il l'affiche, ce qui évite tout état intermédiaire où deux listes
+// partageraient le même rang.
+const updateSoundOrder = async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const alanyaID = req.user.alanyaID;
+    const raw = req.body?.order;
+    if (!Array.isArray(raw)) {
+      return res.status(400).json({ error: 'order must be an array of list IDs' });
+    }
+
+    // Dédoublonnage en conservant la première occurrence : un id répété ne doit
+    // pas décaler silencieusement le reste de la file.
+    const ids = [];
+    for (const item of raw) {
+      const id = parseListId(item);
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+
+    await conn.beginTransaction();
+    // Remise à zéro d'abord : une liste retirée de la file (ou supprimée) ne
+    // doit pas garder son ancien rang.
+    await conn.execute(
+      'UPDATE contact_list SET sound_priority = NULL WHERE alanyaID = ?',
+      [alanyaID],
+    );
+    for (let i = 0; i < ids.length; i += 1) {
+      // Le WHERE sur alanyaID suffit à ignorer un id qui ne m'appartient pas.
+      await conn.execute(
+        'UPDATE contact_list SET sound_priority = ? WHERE idList = ? AND alanyaID = ?',
+        [i, ids[i], alanyaID],
+      );
+    }
+    await conn.commit();
+
+    res.json({ order: ids });
+  } catch (error) {
+    try { await conn.rollback(); } catch (_) { /* connexion déjà perdue */ }
+    console.error('[updateSoundOrder] ERROR:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    conn.release();
+  }
+};
+
 const removeMember = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
@@ -391,6 +553,7 @@ module.exports = {
   getLists,
   createList,
   updateList,
+  updateSoundOrder,
   deleteList,
   getListMembers,
   addMember,

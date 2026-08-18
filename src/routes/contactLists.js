@@ -5,6 +5,7 @@ const {
   getLists,
   createList,
   updateList,
+  updateSoundOrder,
   deleteList,
   getListMembers,
   addMember,
@@ -54,9 +55,40 @@ router.post('/',   auth, createList);
 
 /**
  * @swagger
+ * /api/contact-lists/sound-order:
+ *   put:
+ *     summary: Ordre de priorité des sonneries de liste (contact multi-listes)
+ *     tags: [ContactLists]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [order]
+ *             properties:
+ *               order:
+ *                 type: array
+ *                 items:
+ *                   type: integer
+ *                 description: idList du plus prioritaire au moins prioritaire
+ *     responses:
+ *       200:
+ *         description: Ordre enregistré
+ *       400:
+ *         description: Corps invalide
+ */
+// ⚠ AVANT `/:idList` : sinon Express fait correspondre « sound-order » au
+// paramètre et la requête finit en 400 « Invalid list ID ».
+router.put('/sound-order', auth, updateSoundOrder);
+
+/**
+ * @swagger
  * /api/contact-lists/{idList}:
  *   put:
- *     summary: Renommer ou recolorer une liste
+ *     summary: Renommer, recolorer ou choisir les sonneries d'une liste
  *     tags: [ContactLists]
  *     security:
  *       - bearerAuth: []
@@ -76,6 +108,28 @@ router.post('/',   auth, createList);
  *                 type: string
  *                 maxLength: 60
  *               color:
+ *                 type: string
+ *                 nullable: true
+ *               messageSoundType:
+ *                 type: string
+ *                 enum: [builtin, custom]
+ *                 nullable: true
+ *               messageSoundId:
+ *                 type: string
+ *                 nullable: true
+ *                 description: "id du son fourni, ou SHA-256 du fichier importé"
+ *               messageSoundName:
+ *                 type: string
+ *                 nullable: true
+ *                 description: "nom du fichier importé — affichage seulement"
+ *               callSoundType:
+ *                 type: string
+ *                 enum: [builtin, custom]
+ *                 nullable: true
+ *               callSoundId:
+ *                 type: string
+ *                 nullable: true
+ *               callSoundName:
  *                 type: string
  *                 nullable: true
  *     responses:
