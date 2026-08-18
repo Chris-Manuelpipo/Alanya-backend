@@ -8,7 +8,7 @@ const getMyMedia = async (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
     const cursor = Number(req.query.cursor) || 0;
 
-    const params = [alanyaID, ...MEDIA_TYPES];
+    const params = [alanyaID, ...MEDIA_TYPES, alanyaID];
     let cursorClause = '';
     if (cursor > 0) {
       cursorClause = ' AND m.msgID < ?';
@@ -16,12 +16,20 @@ const getMyMedia = async (req, res) => {
     }
     params.push(limit + 1);
 
-    const [rows] = await pool.execute(
-      `SELECT m.msgID, m.conversationID, m.type, m.mediaUrl, m.mediaName, m.sendAt
+    // pool.query et non pool.execute : en requête préparée mysql2 envoie le
+    // LIMIT en chaîne et MySQL répond ER_WRONG_ARGUMENTS (même contrainte que
+    // messageController et broadcastService).
+    // mediaThumb n'est remonté que pour les vidéos : une image a déjà son URL,
+    // et la colonne est un JPEG base64 (MEDIUMTEXT) qui alourdirait la page.
+    const [rows] = await pool.query(
+      `SELECT m.msgID, m.conversationID, m.type, m.mediaUrl, m.mediaName,
+              m.mediaDuration, m.sendAt,
+              CASE WHEN m.type = 2 THEN m.mediaThumb END AS mediaThumb
          FROM message m
         WHERE m.senderID = ?
           AND m.type IN (?, ?)
           AND m.isDeleted = 0
+          AND (m.deletedForID IS NULL OR m.deletedForID != ?)
           AND m.mediaUrl IS NOT NULL
           AND m.mediaUrl <> ''
           ${cursorClause}
@@ -41,6 +49,8 @@ const getMyMedia = async (req, res) => {
         type: Number(r.type),
         mediaUrl: r.mediaUrl,
         mediaName: r.mediaName,
+        mediaThumb: r.mediaThumb ?? null,
+        mediaDuration: r.mediaDuration ?? null,
         sendAt: r.sendAt,
       })),
       nextCursor,
