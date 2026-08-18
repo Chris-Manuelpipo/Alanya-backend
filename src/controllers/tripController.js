@@ -768,7 +768,10 @@ const getPoints = async (req, res) => {
         batteryPct: r.battery == null ? null : Number(r.battery),
         recordedAt: r.recorded_at,
       })),
-      purged: trip.points_purged_at != null,
+      // Ce sont les lignes qui font foi, pas l'horodatage. Un `points_purged_at`
+      // posé à tort — le balayage l'a fait pendant un temps — annonçait « trace
+      // purgée » sur des positions parfaitement présentes.
+      purged: trip.points_purged_at != null && rows.length === 0,
     });
   } catch (error) {
     console.error('[Trip] getPoints:', error.message);

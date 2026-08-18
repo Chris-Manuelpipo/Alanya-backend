@@ -4,6 +4,7 @@ module.exports = {
   ...require('./admin/stats'),
   ...require('./admin/analytics'),
   ...require('./admin/trips'),
+  ...require('./admin/tripRetention'),
   ...require('./admin/users'),
   ...require('./admin/userCreate'),
   ...require('./admin/reservedAlanyaPhone'),

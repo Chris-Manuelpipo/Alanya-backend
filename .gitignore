@@ -45,3 +45,4 @@ code_source.dart
 kernel_blob.bin
 # Réglages applicatifs persistés au runtime (back-office admin)
 data/app-settings.json
+data/trip-purge-log.json

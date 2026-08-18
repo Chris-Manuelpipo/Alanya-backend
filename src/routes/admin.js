@@ -6,6 +6,8 @@ const {
   getStats,
   getAnalytics,
   getTripStats,
+  getTripRetention,
+  runTripPurge,
   getActivityFeed,
   getAllMedia,
   deleteMedia,
@@ -162,6 +164,47 @@ router.get('/analytics',                   adminAuth, getAnalytics);
  *         description: KPIs anonymes (démarrés, issues, durées, SOS)
  */
 router.get('/trips',                       adminAuth, getTripStats);
+
+/**
+ * @swagger
+ * /api/admin/trips/retention:
+ *   get:
+ *     summary: État de la rétention des traces GPS (compteurs seuls, sans identité)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Durées de rétention, volumes stockés et purgeables, journal des purges
+ */
+router.get('/trips/retention',             adminAuth, getTripRetention);
+
+/**
+ * @swagger
+ * /api/admin/trips/retention/purge:
+ *   post:
+ *     summary: Purge manuelle des traces GPS (super-admin)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               scope:
+ *                 type: string
+ *                 enum: [retention, all]
+ *                 description: >
+ *                   `retention` applique la politique tout de suite ;
+ *                   `all` efface la trace de tous les trajets clos.
+ *                   Les trajets en cours ne sont jamais touchés.
+ *     responses:
+ *       200:
+ *         description: Compteurs après purge et journal mis à jour
+ */
+router.post('/trips/retention/purge',      adminAuth, superAdminAuth, runTripPurge);
 
 /**
  * @swagger

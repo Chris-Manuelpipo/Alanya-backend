@@ -156,11 +156,12 @@ const CRITICAL_BATTERY_PCT = readInt('TRIP_CRITICAL_BATTERY_PCT', 5, { min: 0, m
 // Rétention
 // ---------------------------------------------------------------------------
 const RETENTION = {
-  // La trace brute. Un registre permanent des déplacements de tous les
-  // utilisateurs n'est justifié par aucun besoin produit.
-  pointsHours: readInt('TRIP_POINTS_RETENTION_H', 24, { min: 1, max: 720 }),
-  // Plus long si le trajet s'est clos sur un incident : la trace peut être une
-  // preuve.
+  // La trace brute. 30 jours : assez pour qu'un trajet reste rejouable le temps
+  // qu'on ait une raison d'y revenir, pas assez pour devenir un registre
+  // permanent des déplacements de tous les utilisateurs.
+  pointsHours: readInt('TRIP_POINTS_RETENTION_H', 720, { min: 1, max: 720 }),
+  // Trajet clos sur un incident : même durée, mais réglable à part — la trace
+  // peut alors être une preuve et mérite sa propre décision.
   pointsIncidentDays: readInt('TRIP_POINTS_INCIDENT_D', 30, { min: 1, max: 365 }),
   // Le fait lui-même.
   tripMonths: readInt('TRIP_RETENTION_MONTHS', 12, { min: 1, max: 60 }),

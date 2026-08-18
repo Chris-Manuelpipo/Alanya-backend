@@ -79,8 +79,9 @@ const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
 const { startVerificationScheduler, stopVerificationScheduler } = require('./src/services/verificationScheduler');
 const { withLease } = require('./src/services/schedulerLease');
 const {
-  registerTripJobHandlers, setIo: setTripIo, runNightlyTripPurge,
+  registerTripJobHandlers, setIo: setTripIo,
 } = require('./src/services/tripWorkers');
+const { runNightlyTripPurge } = require('./src/services/tripRetention');
 
 let stopAccountLifecycleSchedulers = () => {};
 
@@ -249,9 +250,11 @@ server.listen(PORT, () => {
     withLease('welcome_status_purge', () => purgeExpiredWelcomeStatuses()).catch(
       (e) => console.error('[Welcome] purge statuts:', e.message),
     );
-    // Trace GPS : 24 h après clôture, 30 jours si le trajet s'est clos sur une
-    // alerte. Sans cette purge, `trip_point` deviendrait un registre permanent
-    // des déplacements de tous les utilisateurs.
+    // Trace GPS : 30 jours après clôture (TRIP_POINTS_RETENTION_H), autant si
+    // le trajet s'est clos sur une alerte. Sans cette purge, `trip_point`
+    // deviendrait un registre permanent des déplacements de tous les
+    // utilisateurs. L'admin peut la déclencher à la main, mais rien ne dépend
+    // de lui : ce balayage suffit.
     withLease('trip_nightly_purge', () => runNightlyTripPurge()).catch(
       (e) => console.error('[Trips] purge:', e.message),
     );

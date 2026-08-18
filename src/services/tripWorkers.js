@@ -306,69 +306,15 @@ function registerTripJobHandlers() {
   });
 
   // Purge de la trace. Le fait survit, le tracé non.
-  // Pas de handler `trip_points_purge` : la purge des traces est faite par le
-  // balayage nocturne (`runNightlyTripPurge`, planifié sous bail dans
-  // server.js), qui applique les mêmes rétentions à tous les trajets d'un coup.
+  // Pas de handler `trip_points_purge` : la purge des traces vit dans
+  // `./tripRetention` (balayage nocturne `runNightlyTripPurge`, planifié sous
+  // bail dans server.js), qui applique les mêmes rétentions à tous les trajets
+  // d'un coup et sert aussi la purge manuelle de l'espace d'administration.
   //
   // Un handler par trajet a existé ici, enregistré mais jamais mis en file :
   // il laissait croire à une purge planifiée trajet par trajet qui n'a jamais
   // eu lieu. Le retirer évite qu'on s'y fie en lisant ce fichier.
 }
-
-// ---------------------------------------------------------------------------
-// Purge
-// ---------------------------------------------------------------------------
-
-/**
- * Efface la trace d'un trajet clos. Deux durées :
- *   • 24 h pour un trajet ordinaire — un registre permanent des déplacements de
- *     tous les utilisateurs n'est justifié par aucun besoin produit ;
- *   • 30 jours si le trajet s'est clos sur un incident — la trace peut alors
- *     être une preuve.
- */
-const purgeTripPoints = async (tripId = null) => {
-  const heures = policy.RETENTION.pointsHours;
-  const jours = policy.RETENTION.pointsIncidentDays;
-
-  const [res] = await pool.execute(
-    `DELETE p FROM trip_point p
-       JOIN trip t ON t.id = p.trip_id
-      WHERE t.closed_at IS NOT NULL
-        ${tripId ? 'AND t.id = ?' : ''}
-        AND (
-              (t.alerted_at IS NULL
-               AND t.closed_at < DATE_SUB(NOW(), INTERVAL ? HOUR))
-           OR (t.alerted_at IS NOT NULL
-               AND t.closed_at < DATE_SUB(NOW(), INTERVAL ? DAY))
-        )`,
-    tripId ? [tripId, heures, jours] : [heures, jours],
-  );
-
-  if (res.affectedRows > 0) {
-    await pool.execute(
-      `UPDATE trip SET points_purged_at = NOW()
-        WHERE closed_at IS NOT NULL AND points_purged_at IS NULL
-          ${tripId ? 'AND id = ?' : ''}`,
-      tripId ? [tripId] : [],
-    );
-  }
-  return res.affectedRows;
-};
-
-/** Purge nocturne complète : la trace, puis les trajets trop vieux. */
-const runNightlyTripPurge = async () => {
-  const points = await purgeTripPoints();
-  const [res] = await pool.execute(
-    `DELETE FROM trip
-      WHERE closed_at IS NOT NULL
-        AND closed_at < DATE_SUB(NOW(), INTERVAL ? MONTH)`,
-    [policy.RETENTION.tripMonths],
-  );
-  if (points || res.affectedRows) {
-    console.log(`[Trips] purge : ${points} points, ${res.affectedRows} trajets`);
-  }
-  return { points, trips: res.affectedRows };
-};
 
 module.exports = {
   registerTripJobHandlers,
@@ -377,8 +323,6 @@ module.exports = {
   disarm,
   disarmAll,
   transition,
-  purgeTripPoints,
-  runNightlyTripPurge,
   dedupe,
   KINDS,
 };
