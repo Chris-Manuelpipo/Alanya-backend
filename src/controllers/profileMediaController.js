@@ -73,13 +73,15 @@ const getMyMedia = async (req, res) => {
     // ait déjà été consultée ou non.
     // pool.query et non pool.execute : en requête préparée mysql2 envoie le
     // LIMIT en chaîne et MySQL répond ER_WRONG_ARGUMENTS.
-    // mediaThumb n'est remonté que pour les vidéos : une image a déjà son URL,
-    // et la colonne est un JPEG base64 (MEDIUMTEXT) qui alourdirait la page.
+    // mediaThumb est remonté pour les images ET les vidéos : la vignette est
+    // générée côté app à l'envoi (120 px, PNG base64) et l'écran « Mes médias »
+    // l'affiche en mémoire pour peindre la grille instantanément, sans
+    // télécharger le fichier original (pleine taille) de chaque tuile.
     const [rows] = await pool.query(
       `SELECT m.msgID, m.conversationID, m.senderID, m.type, m.mediaUrl,
               m.mediaName, m.mediaDuration, m.mediaSize, m.sendAt,
               u.pseudo AS senderPseudo, u.nom AS senderNom,
-              CASE WHEN m.type = 2 THEN m.mediaThumb END AS mediaThumb
+              CASE WHEN m.type IN (1, 2) THEN m.mediaThumb END AS mediaThumb
          FROM message m
          JOIN conv_participants cp
            ON cp.conversID = m.conversationID AND cp.alanyaID = ?
