@@ -4,21 +4,52 @@ const { isOfficialAccount } = require('../utils/officialAccountGuard');
 const { getClientIp, parseCallMode } = require('../utils/clientIp');
 const { processRejectCall } = require('../socket/handlers/calls');
  
-// Récupère l'historique des appels de l'utilisateur connecté
+// Récupère l'historique des appels de l'utilisateur connecté.
+//
+// Pagination keyset : `before` = IDcall du plus ancien appel déjà affiché,
+// `limit` = taille de page (50 par défaut, 100 max). Sans `before` on renvoie
+// la page la plus récente — c'est le comportement historique, donc les
+// anciennes versions de l'app continuent de marcher sans changement.
+//
+// Le curseur porte sur le couple (created_at, IDcall) et non sur created_at
+// seul : deux appels peuvent tomber dans la même seconde, et un curseur sur la
+// date seule sauterait l'un des deux ou le renverrait en boucle.
 const getCalls = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
-    const [rows] = await pool.execute(
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const before = parseInt(req.query.before, 10);
+    const hasCursor = Number.isInteger(before) && before > 0;
+
+    const params = [alanyaID, alanyaID];
+    let keyset = '';
+    if (hasCursor) {
+      // Sous-requête non corrélée : MySQL l'évalue une seule fois. Le filtre
+      // sur le propriétaire évite qu'un curseur emprunté à l'appel d'un tiers
+      // serve de sonde temporelle. Si la ligne curseur est introuvable, la
+      // comparaison vaut NULL → page vide, ce qui arrête proprement le
+      // défilement côté app plutôt que de renvoyer à nouveau la page 1.
+      keyset = `AND (c.created_at, c.IDcall) <
+                  (SELECT created_at, IDcall FROM callHistory
+                    WHERE IDcall = ? AND (idCaller = ? OR idReceiver = ?))`;
+      params.push(before, alanyaID, alanyaID);
+    }
+    params.push(limit);
+
+    // pool.query (et non execute) : le LIMIT paramétré passe par l'échappement
+    // classique, comme dans getMessages.
+    const [rows] = await pool.query(
       `SELECT c.*,
               u1.nom as caller_nom, u1.pseudo as caller_pseudo, u1.avatar_url as caller_avatar,
               u2.nom as receiver_nom, u2.pseudo as receiver_pseudo, u2.avatar_url as receiver_avatar
        FROM callHistory c
        JOIN users u1 ON c.idCaller   = u1.alanyaID
        JOIN users u2 ON c.idReceiver = u2.alanyaID
-       WHERE c.idCaller = ? OR c.idReceiver = ?
-       ORDER BY c.created_at DESC
-       LIMIT 50`,
-      [alanyaID, alanyaID]
+       WHERE (c.idCaller = ? OR c.idReceiver = ?)
+         ${keyset}
+       ORDER BY c.created_at DESC, c.IDcall DESC
+       LIMIT ?`,
+      params
     );
     res.json(rows);
   } catch (error) {

@@ -7,13 +7,30 @@ const { getCalls, createCall, endCall, rejectCallHttp } = require('../controller
  * @swagger
  * /api/calls:
  *   get:
- *     summary: Historique des appels
+ *     summary: Historique des appels (paginé)
  *     tags: [Appels]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 50
+ *           maximum: 100
+ *         description: Taille de page
+ *       - in: query
+ *         name: before
+ *         schema:
+ *           type: integer
+ *         description: >
+ *           Curseur — IDcall du plus ancien appel déjà reçu. Renvoie la page
+ *           d'appels immédiatement antérieurs. Absent = page la plus récente.
  *     responses:
  *       200:
- *         description: Liste des 50 derniers appels
+ *         description: >
+ *           Liste d'appels du plus récent au plus ancien. Une page plus courte
+ *           que `limit` signale la fin de l'historique.
  *   post:
  *     summary: Créer un appel
  *     tags: [Appels]
