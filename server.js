@@ -104,8 +104,17 @@ app.use(express.json());
 app.use(generalLimiter);
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-// Servir les fichiers uploadés statiquement
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Servir les fichiers uploadés statiquement.
+// Les noms de fichiers sont uniques (`media_<alanyaID>_<timestamp>.<ext>`),
+// donc une URL donnée pointe toujours vers le même contenu : on autorise les
+// caches HTTP (et flutter_cache_manager côté app) à conserver la réponse sans
+// revalidation. Sans cela, chaque retour dans un écran (chat, Mes médias)
+// re-téléchargeait les médias déjà vus.
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  },
+}));
 
 // ── Routes API ────────────────────────────────────────────────────────
 app.use('/api/auth',          authCustomRoutes);
