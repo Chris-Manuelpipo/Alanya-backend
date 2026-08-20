@@ -1,6 +1,5 @@
 const pool = require('../config/db');
-const fs = require('fs');
-const path = require('path');
+const { deleteMediaFile } = require('../utils/mediaFile');
 const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
 const { assertCanSendToConversation } = require('../utils/groupSendPolicy');
@@ -18,23 +17,6 @@ const MAX_BATCH_FORWARD_TARGETS = 20;
 
 const _execute = (conn, sql, params) =>
   conn ? conn.execute(sql, params) : pool.execute(sql, params);
-
-/// Supprime physiquement un fichier média à partir de son URL publique
-/// (`.../uploads/images/x.jpg` ou `.../uploads/media/<sous-dossier>/x`).
-/// Best-effort : toute erreur est ignorée (fichier déjà absent, etc.).
-const deleteMediaFile = (mediaUrl) => {
-  try {
-    if (!mediaUrl) return;
-    const marker = '/uploads/';
-    const idx = mediaUrl.indexOf(marker);
-    if (idx === -1) return;
-    const relative = mediaUrl.substring(idx + marker.length);
-    const filePath = path.join(__dirname, '../../uploads', relative);
-    fs.unlink(filePath, () => {});
-  } catch (_) {
-    /* ignore */
-  }
-};
 
 const getMessages = async (req, res) => {
   try {

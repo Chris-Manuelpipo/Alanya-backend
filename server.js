@@ -83,6 +83,7 @@ const {
   registerTripJobHandlers, setIo: setTripIo,
 } = require('./src/services/tripWorkers');
 const { runNightlyTripPurge } = require('./src/services/tripRetention');
+const { runNightlyMediaPurge } = require('./src/services/mediaRetention');
 
 let stopAccountLifecycleSchedulers = () => {};
 
@@ -273,6 +274,12 @@ server.listen(PORT, () => {
     // ces tables n'était purgée avant (audit scalabilité 06/08/2026 §2.5).
     withLease('data_retention_purge', () => runDataRetentionPurge()).catch(
       (e) => console.error('[DataRetention] purge:', e.message),
+    );
+    // Fichiers média (uploads/) : 30 jours après l'envoi (MEDIA_RETENTION_DAYS).
+    // Le message reste, seule mediaUrl est vidée — une copie déjà téléchargée
+    // sur un appareil n'est jamais concernée par cette purge.
+    withLease('media_nightly_purge', () => runNightlyMediaPurge()).catch(
+      (e) => console.error('[Media] purge:', e.message),
     );
   }, 24 * 60 * 60 * 1000);
 });
