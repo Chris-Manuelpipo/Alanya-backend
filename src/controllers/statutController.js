@@ -163,13 +163,17 @@ const getStatusViews = async (req, res) => {
       return res.status(403).json({ error: 'Non autorisé' });
     }
 
+    // LIMIT en dur : audience naturellement bornée (contacts réciproques
+    // seulement), plafond de sécurité contre le cas pathologique (audit
+    // scalabilité 06/08/2026 §3).
     const [rows] = await pool.execute(
       `SELECT sv.statutID, sv.alanyaID, sv.seenAt, sv.liked, sv.likedAt,
               u.nom, u.pseudo, u.avatar_url
        FROM statut_views sv
        JOIN users u ON sv.alanyaID = u.alanyaID
        WHERE sv.statutID = ?
-       ORDER BY sv.liked DESC, sv.seenAt DESC`,
+       ORDER BY sv.liked DESC, sv.seenAt DESC
+       LIMIT 1000`,
       [id]
     );
 

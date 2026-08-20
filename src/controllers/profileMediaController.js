@@ -77,15 +77,20 @@ const getMyMedia = async (req, res) => {
     // générée côté app à l'envoi (120 px, PNG base64) et l'écran « Mes médias »
     // l'affiche en mémoire pour peindre la grille instantanément, sans
     // télécharger le fichier original (pleine taille) de chaque tuile.
+    // Rejointe depuis message_thumb plutôt que la colonne message.mediaThumb
+    // (audit scalabilité 06/08/2026 §2.2, migration 060) — le WHERE ci-dessous
+    // restreint déjà m.type à {1,2}, donc le CASE WHEN d'origine était
+    // redondant ; le LEFT JOIN suffit.
     const [rows] = await pool.query(
       `SELECT m.msgID, m.conversationID, m.senderID, m.type, m.mediaUrl,
               m.mediaName, m.mediaDuration, m.mediaSize, m.sendAt,
               u.pseudo AS senderPseudo, u.nom AS senderNom,
-              CASE WHEN m.type IN (1, 2) THEN m.mediaThumb END AS mediaThumb
+              TO_BASE64(mt.thumb) AS mediaThumb
          FROM message m
          JOIN conv_participants cp
            ON cp.conversID = m.conversationID AND cp.alanyaID = ?
          JOIN users u ON u.alanyaID = m.senderID
+         LEFT JOIN message_thumb mt ON mt.msgID = m.msgID
         WHERE m.type IN (?, ?)
           AND m.isDeleted = 0
           AND (m.deletedForID IS NULL OR m.deletedForID <> ?)

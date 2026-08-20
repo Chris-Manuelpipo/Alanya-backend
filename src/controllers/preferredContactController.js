@@ -1,5 +1,4 @@
 const pool = require('../config/db');
-const { maskPresenceIfBlocked } = require('../utils/blockUtils');
 const { sanitizeUrl, addContactByFriendId } = require('../services/contactService');
 
 // Contacts préférés : liste, ajout, suppression, vérification
@@ -7,6 +6,9 @@ const getPreferredContacts = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
 
+    // LIMIT en dur (pas un curseur), même raison que GET /conversations
+    // (audit scalabilité 06/08/2026 §3.2/§3.3) : le client traite la réponse
+    // comme la liste complète et démarque en local tout contact absent.
     const [rows] = await pool.execute(
       `SELECT
          pc.idPrefContact,
@@ -27,16 +29,28 @@ const getPreferredContacts = async (req, res) => {
        JOIN users u ON pc.idFriend = u.alanyaID
        LEFT JOIN pays p ON u.idPays = p.idPays
        WHERE pc.alanyaID = ?
-       ORDER BY u.nom ASC`,
+       ORDER BY u.nom ASC
+       LIMIT 1000`,
       [alanyaID]
     );
 
-    const contacts = [];
-    for (const r of rows) {
-      const masked = await maskPresenceIfBlocked(
-        alanyaID, r.alanyaID, r.is_online, r.last_seen,
+    // Masquage de présence en 1 requête batch au lieu d'un SELECT par contact
+    // (N+1 signalé par l'audit scalabilité 06/08/2026 §3.2) : "qui, parmi mes
+    // contacts, m'a bloqué ?" — même sémantique que maskPresenceIfBlocked
+    // (blockUtils.js) mais résolue pour toute la liste d'un coup.
+    let blockedMeSet = new Set();
+    if (rows.length > 0) {
+      const contactIds = rows.map((r) => r.alanyaID);
+      const [blockedRows] = await pool.query(
+        'SELECT alanyaID FROM blocked WHERE idCallerBlock = ? AND alanyaID IN (?)',
+        [alanyaID, contactIds],
       );
-      contacts.push({
+      blockedMeSet = new Set(blockedRows.map((b) => Number(b.alanyaID)));
+    }
+
+    const contacts = rows.map((r) => {
+      const blockedMe = Number(r.alanyaID) !== alanyaID && blockedMeSet.has(Number(r.alanyaID));
+      return {
         idPrefContact: r.idPrefContact,
         addedAt:       r.created_at,
         addedVia:      r.added_via,
@@ -49,10 +63,10 @@ const getPreferredContacts = async (req, res) => {
         pays_libelle:  r.pays_libelle,
         pays_prefix:   r.pays_prefix,
         avatar_url:    sanitizeUrl(r.avatar_url),
-        is_online:     masked.is_online,
-        last_seen:     masked.last_seen,
-      });
-    }
+        is_online:     blockedMe ? 0 : r.is_online,
+        last_seen:     blockedMe ? null : r.last_seen,
+      };
+    });
 
     res.json(contacts);
   } catch (error) {

@@ -162,13 +162,20 @@ const getConversations = async (req, res) => {
     // sur un pool partagé avant de recevoir sa liste. Les conversations
     // matérialisées arrivent au rafraîchissement suivant / via socket.
     _triggerMaterialize(alanyaID, localeHint);
+    // LIMIT en dur (pas un curseur) : le client traite cette réponse comme la
+    // liste complète et fait autorité (deleteConversationsNotIn supprime en
+    // local tout ce qui n'y figure pas) — une vraie pagination casserait ce
+    // merge. Ce plafond ne protège que contre une requête non bornée (audit
+    // scalabilité 06/08/2026 §3.3) ; 500 est très généreux au regard du volume
+    // actuel (113 conversations sur toute la plateforme au 07/08/2026).
     const [rows] = await pool.execute(
       `SELECT c.*, ${CP_VIEWER_FIELDS},
               COALESCE(c.message_count, 0) AS messageCount
        FROM conversation c
        JOIN conv_participants cp ON c.conversID = cp.conversID
        WHERE cp.alanyaID = ?
-       ORDER BY cp.isPinned DESC, c.lastMessageAt DESC, c.conversID DESC`,
+       ORDER BY cp.isPinned DESC, c.lastMessageAt DESC, c.conversID DESC
+       LIMIT 500`,
       [alanyaID]
     );
     const enriched = await attachParticipantsMany(rows, alanyaID);

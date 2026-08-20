@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { MESSAGE_INSERT_SQL, messageInsertParams } = require('./messageInsert');
+const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('./messageInsert');
 
 const placeholders = (MESSAGE_INSERT_SQL.match(/\?/g) || []).length;
 const params = messageInsertParams({
@@ -12,7 +12,6 @@ const params = messageInsertParams({
   mediaUrl: null,
   mediaName: null,
   mediaDuration: null,
-  mediaThumb: null,
   mediaSize: null,
   mediaPageCount: null,
   replyToID: null,
@@ -25,8 +24,8 @@ const params = messageInsertParams({
 
 assert.strictEqual(
   placeholders,
-  18,
-  `INSERT : 18 placeholders attendus, ${placeholders} trouvés`,
+  17,
+  `INSERT : 17 placeholders attendus, ${placeholders} trouvés`,
 );
 assert.strictEqual(
   params.length,
@@ -38,7 +37,19 @@ const cols = MESSAGE_INSERT_SQL.match(/INSERT INTO message\s*\(([^)]+)\)/s)[1]
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-assert.strictEqual(cols.length, 20, '20 colonnes (status et sendAt en littéraux)');
+assert.strictEqual(cols.length, 19, '19 colonnes (status et sendAt en littéraux, mediaThumb exclue)');
+assert.ok(!cols.includes('mediaThumb'), 'mediaThumb ne doit plus faire partie de l\'INSERT message');
 assert.ok(MESSAGE_INSERT_SQL.includes('ON DUPLICATE KEY UPDATE'));
 
-console.log('messageInsert.test.js OK');
+// insertMessageThumb : no-op silencieux si aucune vignette fournie.
+(async () => {
+  let called = false;
+  const fakeConn = { execute: async () => { called = true; } };
+  await insertMessageThumb(fakeConn, 42, null);
+  assert.strictEqual(called, false, 'insertMessageThumb ne doit rien exécuter sans mediaThumb');
+
+  await insertMessageThumb(fakeConn, 42, 'aGVsbG8=');
+  assert.strictEqual(called, true, 'insertMessageThumb doit écrire quand mediaThumb est fourni');
+
+  console.log('messageInsert.test.js OK');
+})();

@@ -9,7 +9,7 @@ const { markConversationDeliveredBy } = require('../utils/deliveryReceiptUtils')
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
-const { MESSAGE_INSERT_SQL, messageInsertParams } = require('../utils/messageInsert');
+const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
 const MAX_BATCH_DELETE = 50;
@@ -54,6 +54,9 @@ const getMessages = async (req, res) => {
 
     // Jointure cp : filtre historyCutoffAt (migration 028). Sans elle, un
     // nouvel arrivant avec historique masqué récupérerait tout le fil.
+    // mediaThumb rejointe depuis message_thumb, réencodée en base64 : même
+    // contrat JSON qu'avant, la vignette n'est simplement plus stockée dans
+    // la ligne `message` (audit scalabilité 06/08/2026 §2.2, migration 060).
     let query = `
       SELECT m.*,
              u.nom        AS sender_nom,
@@ -61,12 +64,14 @@ const getMessages = async (req, res) => {
              u.avatar_url AS sender_avatar,
              p.timeZone   AS messageTz,
              p.decalageHoraire AS messageTzOffset,
-             (m.viewedAt IS NOT NULL) AS viewedByMe
+             (m.viewedAt IS NOT NULL) AS viewedByMe,
+             TO_BASE64(mt.thumb) AS mediaThumb
       FROM message m
       JOIN conv_participants cp
         ON cp.conversID = m.conversationID AND cp.alanyaID = ?
       JOIN users u ON m.senderID = u.alanyaID
       LEFT JOIN pays p ON u.idPays = p.idPays
+      LEFT JOIN message_thumb mt ON mt.msgID = m.msgID
       WHERE m.conversationID = ?
         AND m.isDeleted = 0
         AND (m.deletedForID IS NULL OR m.deletedForID != ?)
@@ -196,10 +201,12 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
   if (clientId) {
     const [existing] = await _execute(conn,
       `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
-              p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
+              p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset,
+              TO_BASE64(mt.thumb) AS mediaThumb
        FROM message m
        JOIN users u ON m.senderID = u.alanyaID
        LEFT JOIN pays p ON u.idPays = p.idPays
+       LEFT JOIN message_thumb mt ON mt.msgID = m.msgID
        WHERE m.senderID = ? AND m.clientID = ? AND m.isDeleted = 0
        LIMIT 1`,
       [senderID, clientId],
@@ -262,7 +269,6 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
       mediaUrl,
       mediaName,
       mediaDuration,
-      mediaThumb,
       mediaSize,
       mediaPageCount,
       replyToID: resolvedReplyToID,
@@ -279,14 +285,21 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
   // affectedRows === 1 → ligne nouvelle ; sinon c'est un rejeu, on ne
   // touche ni unread ni lastMessage.
   const isNewInsert = result.affectedRows === 1;
+
+  // Écriture séparée dans message_thumb (audit scalabilité 06/08/2026 §2.2,
+  // migration 060) : idempotente, sûre à rejouer sur le chemin course.
+  await insertMessageThumb(conn ?? pool, msgID, mediaThumb);
+
   if (!isNewInsert) {
     const [existingRows] = await _execute(
       conn,
       `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
-              p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
+              p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset,
+              TO_BASE64(mt.thumb) AS mediaThumb
        FROM message m
        JOIN users u ON m.senderID = u.alanyaID
        LEFT JOIN pays p ON u.idPays = p.idPays
+       LEFT JOIN message_thumb mt ON mt.msgID = m.msgID
        WHERE m.msgID = ?`,
       [msgID],
     );
@@ -325,10 +338,12 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
 
   const [rows] = await _execute(conn,
     `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
-            p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
+            p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset,
+            TO_BASE64(mt.thumb) AS mediaThumb
      FROM message m
      JOIN users u ON m.senderID = u.alanyaID
      LEFT JOIN pays p ON u.idPays = p.idPays
+     LEFT JOIN message_thumb mt ON mt.msgID = m.msgID
      WHERE m.msgID = ?`,
     [msgID]
   );
@@ -439,7 +454,13 @@ const updateMessage = async (req, res) => {
       [content, id]
     );
 
-    const [rows] = await pool.execute('SELECT * FROM message WHERE msgID = ?', [id]);
+    const [rows] = await pool.execute(
+      `SELECT m.*, TO_BASE64(mt.thumb) AS mediaThumb
+       FROM message m
+       LEFT JOIN message_thumb mt ON mt.msgID = m.msgID
+       WHERE m.msgID = ?`,
+      [id],
+    );
     const updated = rows[0];
 
     const io = req.app.get('io');
@@ -678,13 +699,19 @@ const getConversationReactions = async (req, res) => {
       return res.status(404).json({ error: 'Conversation not found' });
     }
 
+    // `has_reactions` (migration 059) est une colonne générée STORED et
+    // indexée : remplace le filtre JSON_LENGTH(reactions) > 0, non sargable,
+    // qui forçait un scan complet de l'historique à chaque ouverture d'écran
+    // (audit scalabilité 06/08/2026 §5.1). LIMIT en dur comme plafond de
+    // sécurité — cet endpoint reste, par conception, une hydratation
+    // complète (pas de curseur, voir §3 du plan d'implémentation).
     const [rows] = await pool.execute(
       `SELECT msgID, reactions
        FROM message
        WHERE conversationID = ?
          AND isDeleted = 0
-         AND reactions IS NOT NULL
-         AND JSON_LENGTH(reactions) > 0`,
+         AND has_reactions = 1
+       LIMIT 5000`,
       [id],
     );
 
@@ -1098,11 +1125,13 @@ const getMessagesSince = async (req, res) => {
              u.avatar_url AS sender_avatar,
              p.timeZone   AS messageTz,
              p.decalageHoraire AS messageTzOffset,
-             (m.viewedAt IS NOT NULL) AS viewedByMe
+             (m.viewedAt IS NOT NULL) AS viewedByMe,
+             TO_BASE64(mt.thumb) AS mediaThumb
       FROM message m
       JOIN conv_participants cp ON cp.conversID = m.conversationID AND cp.alanyaID = ?
       JOIN users u ON m.senderID = u.alanyaID
       LEFT JOIN pays p ON u.idPays = p.idPays
+      LEFT JOIN message_thumb mt ON mt.msgID = m.msgID
       WHERE m.isDeleted = 0
         AND (m.deletedForID IS NULL OR m.deletedForID != ?)
         AND ${HISTORY_CUTOFF_SQL}

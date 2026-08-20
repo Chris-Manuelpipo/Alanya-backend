@@ -78,6 +78,7 @@ const { purgeExpiredWelcomeStatuses } = require('./src/services/welcomeService')
 const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
 const { startVerificationScheduler, stopVerificationScheduler } = require('./src/services/verificationScheduler');
 const { withLease } = require('./src/services/schedulerLease');
+const { runDataRetentionPurge } = require('./src/services/dataRetentionService');
 const {
   registerTripJobHandlers, setIo: setTripIo,
 } = require('./src/services/tripWorkers');
@@ -266,6 +267,12 @@ server.listen(PORT, () => {
     // de lui : ce balayage suffit.
     withLease('trip_nightly_purge', () => runNightlyTripPurge()).catch(
       (e) => console.error('[Trips] purge:', e.message),
+    );
+    // Statuts ordinaires expirés, historique d'appels, journal de connexions,
+    // jobs en échec terminal, appareils révoqués, OTP abandonnés — aucune de
+    // ces tables n'était purgée avant (audit scalabilité 06/08/2026 §2.5).
+    withLease('data_retention_purge', () => runDataRetentionPurge()).catch(
+      (e) => console.error('[DataRetention] purge:', e.message),
     );
   }, 24 * 60 * 60 * 1000);
 });

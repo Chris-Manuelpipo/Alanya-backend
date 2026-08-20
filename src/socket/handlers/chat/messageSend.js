@@ -11,14 +11,21 @@ const {
   getCachedParticipants,
   setCachedParticipants,
 } = require('../../../utils/conversationParticipantsCache');
-const { MESSAGE_INSERT_SQL, messageInsertParams } = require('../../../utils/messageInsert');
+const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../../../utils/messageInsert');
 
+// `mt.thumb` rejoint APRÈS m.* et réencodé en base64 : mysql2 retourne un
+// objet JS où la dernière colonne du même nom l'emporte, donc `mediaThumb`
+// prend la valeur de message_thumb sans qu'il soit nécessaire d'énumérer les
+// colonnes de `message` une par une. Contrat JSON inchangé côté client
+// (audit scalabilité 06/08/2026 §2.2, migration 060).
 const MSG_SELECT = `
   SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
-         p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
+         p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset,
+         TO_BASE64(mt.thumb) AS mediaThumb
   FROM message m
   JOIN users u ON m.senderID = u.alanyaID
   LEFT JOIN pays p ON u.idPays = p.idPays
+  LEFT JOIN message_thumb mt ON mt.msgID = m.msgID
 `;
 
 /** Normalise la ligne DB pour le client (clientId camelCase + msgID). */
@@ -227,7 +234,6 @@ const messageSend = (io, socket) => {
           mediaUrl,
           mediaName,
           mediaDuration,
-          mediaThumb,
           mediaSize,
           mediaPageCount,
           replyToID: resolvedReplyToID,
@@ -241,6 +247,11 @@ const messageSend = (io, socket) => {
       const msgID = result.insertId;
       const isNewInsert = result.affectedRows === 1;
       logMsgPath(clientId, 'insert_done', t0);
+
+      // Écriture séparée dans message_thumb (audit scalabilité 06/08/2026
+      // §2.2, migration 060) : idempotente (ON DUPLICATE KEY UPDATE), donc
+      // sûre à rejouer même sur le chemin replay/course ci-dessous.
+      await insertMessageThumb(pool, msgID, mediaThumb);
 
       // Replay / course : message déjà présent → ack seulement, pas de double unread.
       if (!isNewInsert) {
