@@ -25,9 +25,21 @@ pool.on('connection', (conn) => {
   // `connection` expose la connexion callback sous-jacente (pas l'API promesse).
   // max_execution_time (ms) ne s'applique qu'aux SELECT : garde-fou contre une
   // requête de lecture pathologique qui monopoliserait une connexion.
-  conn.query("SET time_zone = '+00:00', SESSION max_execution_time = 5000", (e) => {
-    if (e) console.error('[DB pool] init connexion échouée:', e.message);
-  });
+  //
+  // transaction_isolation en READ COMMITTED (au lieu du REPEATABLE READ par
+  // défaut de MySQL) : réduit les verrous d'intervalle (gap locks) posés par
+  // les UPDATE sur des plages, comme les accusés de lecture/livraison
+  // (`UPDATE message ... WHERE conversationID = ? AND status < 3`), sans
+  // changer la sémantique applicative — aucune requête de ce backend ne
+  // dépend de la répétabilité d'une lecture au sein d'une même transaction.
+  // Réglage par connexion (pas SET GLOBAL) : ne s'applique qu'à ce pool, pas
+  // à d'éventuels autres consommateurs de la même base.
+  conn.query(
+    "SET time_zone = '+00:00', SESSION max_execution_time = 5000, SESSION transaction_isolation = 'READ-COMMITTED'",
+    (e) => {
+      if (e) console.error('[DB pool] init connexion échouée:', e.message);
+    },
+  );
 });
 
 pool.on('error', (e) => {

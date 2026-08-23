@@ -1092,10 +1092,25 @@ const getMessagesSince = async (req, res) => {
       return res.json({ messages: [], hasMore: false });
     }
 
+    // Plafond défensif : la clause OR ci-dessous a une branche par curseur, donc
+    // par conversation. Sans borne, un client avec beaucoup de conversations
+    // construirait une requête de taille arbitraire à chaque sync (audit
+    // scalabilité 06/08/2026 §3.3). 100 est très généreux au regard du volume
+    // actuel par utilisateur ; ce log signale s'il faut un jour faire itérer
+    // le client sur plusieurs appels plutôt que tout envoyer d'un coup.
+    const MAX_SYNC_CURSORS = 100;
+    let cursorEntries = [...cursorByConv.entries()];
+    if (cursorEntries.length > MAX_SYNC_CURSORS) {
+      console.warn(
+        `[getMessagesSince] ${cursorEntries.length} curseurs reçus, plafonné à ${MAX_SYNC_CURSORS} (alanyaID=${alanyaID})`,
+      );
+      cursorEntries = cursorEntries.slice(0, MAX_SYNC_CURSORS);
+    }
+
     // Clauses OR (conversationID = ? AND msgID > ?) — bornées par participation.
     const orClauses = [];
     const orParams = [];
-    for (const [c, m] of cursorByConv.entries()) {
+    for (const [c, m] of cursorEntries) {
       orClauses.push('(m.conversationID = ? AND m.msgID > ?)');
       orParams.push(c, m);
     }
