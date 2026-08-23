@@ -45,10 +45,11 @@ const getUserById = async (req, res) => {
       // blocage. Sans lui il afficherait une fiche de contact ordinaire.
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
               u.avatar_url, u.type_compte, u.account_type, u.verification_status,
-              u.is_online, u.last_seen,
+              up.is_online AS is_online, up.last_seen AS last_seen,
               p.libelle AS pays_libelle, p.prefix AS pays_prefix
          FROM users u
          LEFT JOIN pays p ON u.idPays = p.idPays
+         LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
         WHERE u.alanyaID = ?`,
       [id]
     );
@@ -79,10 +80,11 @@ const getUserByPhone = async (req, res) => {
     const canonical = normalize(phone);
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
-              u.avatar_url, u.is_online,
+              u.avatar_url, up.is_online AS is_online,
               p.libelle AS pays_libelle, p.prefix AS pays_prefix
          FROM users u
          LEFT JOIN pays p ON u.idPays = p.idPays
+         LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
         WHERE u.alanyaPhone = ? AND u.exclus = 0 AND u.account_type != ?`,
       [canonical, ACCOUNT_TYPE.OFFICIEL]
     );
@@ -113,10 +115,11 @@ const searchUsers = async (req, res) => {
       const canonical = normalize(trimmed);
       [rows] = await pool.execute(
         `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
-                u.avatar_url, u.is_online,
+                u.avatar_url, up.is_online AS is_online,
                 p.libelle AS pays_libelle, p.prefix AS pays_prefix
            FROM users u
            LEFT JOIN pays p ON u.idPays = p.idPays
+           LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
           WHERE u.alanyaPhone = ? AND u.exclus = 0 AND u.account_type != ?
           LIMIT 20`,
         [canonical, ACCOUNT_TYPE.OFFICIEL]
@@ -124,10 +127,11 @@ const searchUsers = async (req, res) => {
     } else {
       [rows] = await pool.execute(
         `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
-                u.avatar_url, u.is_online,
+                u.avatar_url, up.is_online AS is_online,
                 p.libelle AS pays_libelle, p.prefix AS pays_prefix
            FROM users u
            LEFT JOIN pays p ON u.idPays = p.idPays
+           LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
           WHERE (u.nom = ? OR u.pseudo = ?) AND u.exclus = 0 AND u.account_type != ?
           LIMIT 20`,
         [trimmed, trimmed, ACCOUNT_TYPE.OFFICIEL]
@@ -217,8 +221,6 @@ const getBlockedUsers = async (req, res) => {
          u.alanyaPhone,
          u.idPays,
          u.avatar_url,
-         u.is_online,
-         u.last_seen,
          p.libelle AS pays_libelle,
          p.prefix AS pays_prefix,
          b.dateBlock

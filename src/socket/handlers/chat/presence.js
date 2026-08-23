@@ -38,9 +38,14 @@ const syncPresence = async (io, alanyaID) => {
 
   const lastSeen = new Date();
   try {
+    // is_online/last_seen vivent dans user_presence, pas `users` (audit
+    // scalabilité, fractionnement par colonnes — la contention avec le
+    // FOR UPDATE de materializeForUser disparaît puisque cette écriture ne
+    // touche plus la ligne `users`).
     await pool.execute(
-      'UPDATE users SET is_online = ?, last_seen = NOW() WHERE alanyaID = ?',
-      [online ? 1 : 0, uid],
+      `INSERT INTO user_presence (alanyaID, is_online, last_seen) VALUES (?, ?, NOW())
+       ON DUPLICATE KEY UPDATE is_online = VALUES(is_online), last_seen = VALUES(last_seen)`,
+      [uid, online ? 1 : 0],
     );
   } catch (e) {
     console.error('[Socket presence] DB update failed:', e.code || '', e.message);

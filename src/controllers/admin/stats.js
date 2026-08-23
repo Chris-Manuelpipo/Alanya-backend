@@ -18,7 +18,7 @@ const getStats = async (req, res) => {
       pool.execute(
         `SELECT
            (SELECT COUNT(*) FROM users)                                       AS totalUsers,
-           (SELECT COUNT(*) FROM users WHERE is_online = 1)                    AS onlineUsers,
+           (SELECT COUNT(*) FROM user_presence WHERE is_online = 1)            AS onlineUsers,
            (SELECT COUNT(*) FROM users WHERE exclus = 1)                       AS bannedUsers,
            (SELECT COUNT(*) FROM message     WHERE sendAt     BETWEEN ? AND ?) AS messagesPeriod,
            (SELECT COUNT(*) FROM callHistory WHERE created_at BETWEEN ? AND ?) AS callsPeriod,

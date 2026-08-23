@@ -238,8 +238,8 @@ const createUser = async (req, res) => {
     const [result] = await pool.execute(
       `INSERT INTO users
         (nom, pseudo, alanyaPhone, email, password, idPays, avatar_url,
-         type_compte, account_type, genre, recovery_code_enc, fcm_token, device_ID, last_seen, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INDEFINI', 'INDEFINI', NOW(), NOW())`,
+         type_compte, account_type, genre, recovery_code_enc, fcm_token, device_ID, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INDEFINI', 'INDEFINI', NOW())`,
       [
         nom.trim(),
         pseudo.trim(),
@@ -255,14 +255,22 @@ const createUser = async (req, res) => {
       ]
     );
 
+    // is_online/last_seen vivent dans user_presence (audit scalabilité,
+    // fractionnement par colonnes).
+    await pool.execute(
+      'INSERT INTO user_presence (alanyaID, is_online, last_seen) VALUES (?, 0, NOW())',
+      [result.insertId],
+    );
+
     await ensureDefaultContactLists(result.insertId);
 
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
-              u.type_compte, u.is_online, u.last_seen, u.created_at, u.idPays,
-              p.libelle AS pays_libelle
+              u.type_compte, up.is_online AS is_online, up.last_seen AS last_seen,
+              u.created_at, u.idPays, p.libelle AS pays_libelle
        FROM users u
        LEFT JOIN pays p ON u.idPays = p.idPays
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE u.alanyaID = ?`,
       [result.insertId]
     );

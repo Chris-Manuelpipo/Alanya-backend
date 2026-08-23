@@ -25,10 +25,11 @@ async function attachParticipantsBatch(pool, rows, viewerId, sanitizeUrl) {
   // 1) Tous les participants en une requête
   const [partRows] = await pool.execute(
     `SELECT cp.conversID, cp.role, cp.joinedAt, u.alanyaID, u.nom, u.pseudo,
-            u.avatar_url, u.alanyaPhone, u.is_online, u.last_seen,
+            u.avatar_url, u.alanyaPhone, up.is_online AS is_online, up.last_seen AS last_seen,
             u.account_type, u.verification_status, u.verified_until
      FROM conv_participants cp
      JOIN users u ON cp.alanyaID = u.alanyaID
+     LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
      WHERE cp.conversID IN (${placeholders})`,
     convIds,
   );

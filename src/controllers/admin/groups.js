@@ -52,9 +52,10 @@ const getGroupById = async (req, res) => {
 
     const [members] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.avatar_url, u.alanyaPhone,
-              u.is_online, u.last_seen, u.type_compte, cp.joinedAt, cp.role
+              up.is_online AS is_online, up.last_seen AS last_seen, u.type_compte, cp.joinedAt, cp.role
        FROM conv_participants cp
        JOIN users u ON u.alanyaID = cp.alanyaID
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE cp.conversID = ?
        ORDER BY cp.role DESC, cp.joinedAt ASC`,
       [id]

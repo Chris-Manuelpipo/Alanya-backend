@@ -8,7 +8,10 @@ const FIELD_MAP = Object.freeze({
   account_type: { col: 'account_type', type: 'int' },
   verification_status: { col: 'verification_status', type: 'int' },
   created_at: { col: 'created_at', type: 'date' },
-  last_seen: { col: 'last_seen', type: 'date' },
+  // last_seen vit dans user_presence, pas `users` (audit scalabilité,
+  // fractionnement par colonnes) — qualifié par `up` quel que soit l'alias
+  // appelant (voir compileToSql), les appelants ajoutant le LEFT JOIN requis.
+  last_seen: { col: 'last_seen', type: 'date', table: 'up' },
   verified_until: { col: 'verified_until', type: 'date' },
   alanyaID: { col: 'alanyaID', type: 'int' },
 });
@@ -66,7 +69,8 @@ const compileToSql = (criteria, { sentAt = new Date(), alias = 'u' } = {}) => {
   const params = [];
 
   for (const cond of criteria.conditions || []) {
-    const col = `${alias}.${FIELD_MAP[cond.field].col}`;
+    const fieldDef = FIELD_MAP[cond.field];
+    const col = `${fieldDef.table || alias}.${fieldDef.col}`;
     const { op, value } = cond;
 
     if (op === 'eq') {
@@ -156,7 +160,9 @@ const countAudience = async (pool, criteria, sentAt = new Date()) => {
   const resolved = resolveRelativeDates(criteria, sentAt);
   const { whereFragment, params } = compileToSql(resolved, { sentAt });
   const [[row]] = await pool.execute(
-    `SELECT COUNT(*) AS n FROM users u WHERE ${whereFragment}`,
+    `SELECT COUNT(*) AS n FROM users u
+     LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
+     WHERE ${whereFragment}`,
     params,
   );
   return { count: Number(row.n), criteria: resolved };

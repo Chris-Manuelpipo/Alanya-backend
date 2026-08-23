@@ -21,13 +21,14 @@ const getPreferredContacts = async (req, res) => {
          u.alanyaPhone,
          u.idPays,
          u.avatar_url,
-         u.is_online,
-         u.last_seen,
+         up.is_online AS is_online,
+         up.last_seen AS last_seen,
          p.libelle AS pays_libelle,
          p.prefix AS pays_prefix
        FROM preferredContact pc
        JOIN users u ON pc.idFriend = u.alanyaID
        LEFT JOIN pays p ON u.idPays = p.idPays
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE pc.alanyaID = ?
        ORDER BY u.nom ASC
        LIMIT 1000`,

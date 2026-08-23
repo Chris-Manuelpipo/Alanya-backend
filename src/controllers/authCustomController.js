@@ -19,11 +19,12 @@ const SALT_ROUNDS = 10;
 const _selectUserWithPays = `
   SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.idPays,
          u.avatar_url, u.bio, u.type_compte, u.account_type, u.verification_status,
-         u.verified_until, u.is_online, u.last_seen,
+         u.verified_until, up.is_online AS is_online, up.last_seen AS last_seen,
          u.genre, u.age, u.annee_naissance, u.ville, u.idVille,
          p.libelle AS pays_libelle, p.prefix AS pays_prefix
   FROM users u
   LEFT JOIN pays p ON u.idPays = p.idPays
+  LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
   WHERE u.alanyaID = ?
 `;
 
@@ -169,8 +170,8 @@ const register = async (req, res) => {
     const [result] = await pool.execute(
       `INSERT INTO users
         (nom, pseudo, alanyaPhone, email, password, idPays, avatar_url,
-         fcm_token, device_ID, recovery_code_enc, last_seen, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+         fcm_token, device_ID, recovery_code_enc, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
       [
         nom        || 'Utilisateur',
         pseudo     || nom || 'AlanyaUser',
@@ -183,6 +184,15 @@ const register = async (req, res) => {
         device_ID  || 'INDEFINI',
         recoveryEncrypted,
       ]
+    );
+
+    // is_online/last_seen vivent dans user_presence (audit scalabilité,
+    // fractionnement par colonnes) — semis obligatoire à la création, sinon
+    // ce compte n'aurait aucune ligne de présence tant qu'il ne se connecte
+    // pas en socket.
+    await pool.execute(
+      'INSERT INTO user_presence (alanyaID, is_online, last_seen) VALUES (?, 0, NOW())',
+      [result.insertId],
     );
 
     await ensureDefaultContactLists(result.insertId);
@@ -209,9 +219,12 @@ const register = async (req, res) => {
     const refreshToken  = generateRefreshToken(tokenPayload);
 
     const [rows] = await pool.execute(
-      `SELECT alanyaID, nom, pseudo, alanyaPhone, email, avatar_url, is_online, last_seen,
-              genre, age, annee_naissance, ville
-       FROM users WHERE alanyaID = ?`,
+      `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
+              up.is_online AS is_online, up.last_seen AS last_seen,
+              u.genre, u.age, u.annee_naissance, u.ville
+       FROM users u
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
+       WHERE u.alanyaID = ?`,
       [result.insertId]
     );
 
@@ -254,7 +267,7 @@ const login = async (req, res) => {
     const phoneCanonical = normalize(alanyaPhone);
 
     const [rows] = await pool.execute(
-      `SELECT alanyaID, nom, pseudo, alanyaPhone, email, password, avatar_url, is_online,
+      `SELECT alanyaID, nom, pseudo, alanyaPhone, email, password, avatar_url,
               genre, age, annee_naissance, ville,
               exclus, exclude_reason, delete_scheduled_at
        FROM users WHERE alanyaPhone = ?`,
@@ -782,20 +795,28 @@ const updateMe = async (req, res) => {
         values.push(ageNum, new Date().getFullYear() - ageNum);
       }
     }
+    // is_online/last_seen vivent dans user_presence, pas `users` (audit
+    // scalabilité, fractionnement par colonnes) — traité à part du builder
+    // dynamique ci-dessus, qui ne les alimente plus.
     if (is_online !== undefined) {
-      updates.push('is_online = ?, last_seen = NOW()');
-      values.push(is_online ? 1 : 0);
+      await pool.execute(
+        `INSERT INTO user_presence (alanyaID, is_online, last_seen) VALUES (?, ?, NOW())
+         ON DUPLICATE KEY UPDATE is_online = VALUES(is_online), last_seen = VALUES(last_seen)`,
+        [req.user.alanyaID, is_online ? 1 : 0],
+      );
     }
 
-    if (updates.length === 0) {
+    if (updates.length === 0 && is_online === undefined) {
       return res.status(400).json({ error: 'No fields to update' });
     }
 
-    values.push(req.user.alanyaID);
-    await pool.execute(
-      `UPDATE users SET ${updates.join(', ')} WHERE alanyaID = ?`,
-      values
-    );
+    if (updates.length > 0) {
+      values.push(req.user.alanyaID);
+      await pool.execute(
+        `UPDATE users SET ${updates.join(', ')} WHERE alanyaID = ?`,
+        values
+      );
+    }
 
     const [rows] = await pool.execute(_selectUserWithPays, [req.user.alanyaID]);
 

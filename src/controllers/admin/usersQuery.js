@@ -1,6 +1,6 @@
 /** Filtres et tri partagés entre GET /users et GET /users/export. */
 
-const ALLOWED_SORT = { created_at: 'u.created_at', nom: 'u.nom', last_seen: 'u.last_seen' };
+const ALLOWED_SORT = { created_at: 'u.created_at', nom: 'u.nom', last_seen: 'up.last_seen' };
 
 function buildUsersWhere(query) {
   const {
@@ -19,7 +19,7 @@ function buildUsersWhere(query) {
     const like = `%${search}%`;
     params.push(like, like, like);
   }
-  if (status === 'online') { where.push('u.is_online = ?'); params.push(1); }
+  if (status === 'online') { where.push('up.is_online = ?'); params.push(1); }
   if (status === 'banned') { where.push('u.exclus = ?'); params.push(1); }
   if (status === 'admin') { where.push('u.type_compte >= ?'); params.push(1); }
   if (query.account_type != null && query.account_type !== '') {
@@ -53,17 +53,20 @@ function parseExportLimit(limitParam) {
 const USERS_SELECT = `
   SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
          u.type_compte, u.account_type, u.verification_status, u.verified_until,
-         u.is_online, u.last_seen, u.exclus, u.exclude_at,
+         up.is_online AS is_online, up.last_seen AS last_seen, u.exclus, u.exclude_at,
          u.exclude_reason, u.created_at, u.idPays, p.libelle AS pays_libelle
   FROM users u
   LEFT JOIN pays p ON u.idPays = p.idPays
+  LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
 `;
 
 async function fetchUsersForExport(pool, query, exportLimit) {
   const { whereSql, params, sortCol, dir } = buildUsersWhere(query);
 
   const [[{ total }]] = await pool.execute(
-    `SELECT COUNT(*) AS total FROM users u ${whereSql}`,
+    `SELECT COUNT(*) AS total FROM users u
+     LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
+     ${whereSql}`,
     params,
   );
 

@@ -59,9 +59,10 @@ const createMeeting = async (req, res) => {
     );
 
     const [participants] = await pool.execute(
-      `SELECT p.*, u.nom, u.pseudo, u.avatar_url, u.is_online
+      `SELECT p.*, u.nom, u.pseudo, u.avatar_url, up.is_online AS is_online
        FROM participant p
        JOIN users u ON p.IDparticipant = u.alanyaID
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE p.idMeeting = ?`,
       [result.insertId]
     );
@@ -88,9 +89,10 @@ const getMeetingById = async (req, res) => {
     }
 
     const [participants] = await pool.execute(
-      `SELECT p.*, u.nom, u.pseudo, u.avatar_url, u.is_online
+      `SELECT p.*, u.nom, u.pseudo, u.avatar_url, up.is_online AS is_online
        FROM participant p
        JOIN users u ON p.IDparticipant = u.alanyaID
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE p.idMeeting = ?`,
       [id]
     );
@@ -119,9 +121,10 @@ const getMeetingByRoom = async (req, res) => {
     }
 
     const [participants] = await pool.execute(
-      `SELECT p.*, u.nom, u.pseudo, u.avatar_url, u.is_online
+      `SELECT p.*, u.nom, u.pseudo, u.avatar_url, up.is_online AS is_online
        FROM participant p
        JOIN users u ON p.IDparticipant = u.alanyaID
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE p.idMeeting = ?`,
       [rows[0].idMeeting]
     );

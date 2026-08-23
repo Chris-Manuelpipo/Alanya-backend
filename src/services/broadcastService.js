@@ -193,7 +193,8 @@ async function prepareBroadcast(broadcastId) {
     // LIMIT en littéral : mysql2 / certaines versions MySQL refusent LIMIT ?
     // en requête préparée (« Incorrect arguments to mysqld_stmt_execute »).
     const [users] = await pool.execute(
-      `SELECT alanyaID FROM users u
+      `SELECT u.alanyaID FROM users u
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE ${whereFragment} AND u.alanyaID > ?
        ORDER BY u.alanyaID ASC
        LIMIT ${USER_PAGE}`,
@@ -345,6 +346,7 @@ async function sendBroadcastPushBatch({ broadcastId, idFrom, idTo }) {
 
   const [users] = await pool.execute(
     `SELECT u.alanyaID, u.fcm_token FROM users u
+     LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
      WHERE ${whereFragment}
        AND u.alanyaID >= ? AND u.alanyaID <= ?
        AND u.exclus = 0`,
@@ -532,9 +534,10 @@ async function materializeForUser(alanyaID, { locale: localeHint } = {}) {
   // Chemin chaud : `GET /api/conversations` est appelé à chaque ouverture de
   // l'application. Tant que le filigrane a rattrapé la dernière diffusion
   // connue — la quasi-totalité des appels — on sort sans transaction et sans
-  // verrou. Le `FOR UPDATE` plus bas pose un verrou exclusif sur la ligne
-  // `users`, qui entrerait sinon en contention avec les écritures de présence
-  // (`is_online` / `last_seen`) à chaque ouverture.
+  // verrou. Le `FOR UPDATE OF u` plus bas pose un verrou exclusif sur la
+  // ligne `users` (et seulement elle : `is_online`/`last_seen` vivent
+  // désormais dans `user_presence`, hors de portée de ce verrou — audit
+  // scalabilité, fractionnement par colonnes).
   if (!maxBroadcastId) return;
 
   let watermark;
@@ -556,10 +559,17 @@ async function materializeForUser(alanyaID, { locale: localeHint } = {}) {
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+    // is_online/last_seen vivent dans user_presence (audit scalabilité,
+    // fractionnement par colonnes). `FOR UPDATE OF u` restreint le verrou
+    // exclusif à la ligne `users` — sans lui, le LEFT JOIN verrouillerait
+    // aussi `user_presence` et recréerait la contention avec `syncPresence`
+    // que cette extraction visait justement à éliminer.
     const [[userRow]] = await conn.execute(
-      `SELECT alanyaID, idPays, idVille, genre, age, account_type, verification_status,
-              created_at, last_seen, verified_until, last_broadcast_id
-       FROM users WHERE alanyaID = ? FOR UPDATE`,
+      `SELECT u.alanyaID, u.idPays, u.idVille, u.genre, u.age, u.account_type, u.verification_status,
+              u.created_at, up.last_seen AS last_seen, u.verified_until, u.last_broadcast_id
+       FROM users u
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
+       WHERE u.alanyaID = ? FOR UPDATE OF u`,
       [alanyaID],
     );
     if (!userRow) {

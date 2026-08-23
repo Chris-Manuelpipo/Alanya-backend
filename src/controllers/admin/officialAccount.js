@@ -25,10 +25,11 @@ const OFFICIAL_IDENTITY = Object.freeze({
 const SELECT_OFFICIAL = `
   SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
          u.type_compte, u.account_type, u.verification_status,
-         u.is_online, u.last_seen, u.created_at, u.idPays,
+         up.is_online AS is_online, up.last_seen AS last_seen, u.created_at, u.idPays,
          p.libelle AS pays_libelle
   FROM users u
   LEFT JOIN pays p ON u.idPays = p.idPays
+  LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
   WHERE u.account_type = ?
   ORDER BY u.alanyaID ASC
   LIMIT 1`;
@@ -122,8 +123,8 @@ const createOfficialAccount = async (req, res) => {
       `INSERT INTO users
         (nom, pseudo, alanyaPhone, email, password, idPays, avatar_url,
          type_compte, account_type, verification_status, recovery_code_enc,
-         fcm_token, device_ID, last_seen, created_at)
-       VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, 0, NULL, 'INDEFINI', 'INDEFINI', NOW(), NOW())`,
+         fcm_token, device_ID, created_at)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, 0, NULL, 'INDEFINI', 'INDEFINI', NOW())`,
       [
         OFFICIAL_IDENTITY.nom,
         OFFICIAL_IDENTITY.pseudo,
@@ -133,6 +134,13 @@ const createOfficialAccount = async (req, res) => {
         avatarUrl,
         ACCOUNT_TYPE.OFFICIEL,
       ],
+    );
+
+    // is_online/last_seen vivent dans user_presence (audit scalabilité,
+    // fractionnement par colonnes).
+    await conn.execute(
+      'INSERT INTO user_presence (alanyaID, is_online, last_seen) VALUES (?, 0, NOW())',
+      [result.insertId],
     );
 
     const [rows] = await conn.execute(

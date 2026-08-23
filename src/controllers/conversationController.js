@@ -41,11 +41,12 @@ async function attachParticipants(conversationRow, viewerId = null) {
   if (!conversationRow) return conversationRow;
   const [parts] = await pool.execute(
     `SELECT u.alanyaID, u.nom, u.pseudo, u.avatar_url,
-            u.alanyaPhone, u.is_online, u.last_seen,
+            u.alanyaPhone, up.is_online AS is_online, up.last_seen AS last_seen,
             u.account_type, u.verification_status, u.verified_until,
             cp.role, cp.joinedAt
      FROM conv_participants cp
      JOIN users u ON cp.alanyaID = u.alanyaID
+     LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
      WHERE cp.conversID = ?`,
     [conversationRow.conversID]
   );

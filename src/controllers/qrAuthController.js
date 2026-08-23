@@ -161,7 +161,11 @@ const approveQrSession = async (req, res) => {
     const alanyaID = req.user.alanyaID;
 
     const [rows] = await pool.execute(
-      'SELECT alanyaID, nom, pseudo, alanyaPhone, email, avatar_url, is_online FROM users WHERE alanyaID = ?',
+      `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
+              up.is_online AS is_online
+       FROM users u
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
+       WHERE u.alanyaID = ?`,
       [alanyaID]
     );
     if (rows.length === 0) {

@@ -13,10 +13,11 @@ async function getMe(req, res) {
   try {
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.email, u.alanyaPhone,
-              u.avatar_url, u.type_compte, u.created_at, u.last_seen,
+              u.avatar_url, u.type_compte, u.created_at, up.last_seen AS last_seen,
               p.libelle AS pays_libelle
        FROM users u
        LEFT JOIN pays p ON u.idPays = p.idPays
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE u.alanyaID = ?`,
       [req.user.alanyaID]
     );
@@ -115,10 +116,11 @@ async function updateMe(req, res) {
     // Retourner le profil mis à jour
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.email, u.alanyaPhone,
-              u.avatar_url, u.type_compte, u.created_at, u.last_seen,
+              u.avatar_url, u.type_compte, u.created_at, up.last_seen AS last_seen,
               p.libelle AS pays_libelle
        FROM users u
        LEFT JOIN pays p ON u.idPays = p.idPays
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE u.alanyaID = ?`,
       [req.user.alanyaID]
     );

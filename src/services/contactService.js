@@ -46,7 +46,10 @@ const addContactByFriendId = async (alanyaID, friendID, { addedVia = 'search' } 
 
   // Vérifier que l'ami existe
   const [userCheck] = await pool.execute(
-    'SELECT alanyaID, nom, pseudo, alanyaPhone, avatar_url, is_online FROM users WHERE alanyaID = ? AND exclus = 0',
+    `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.avatar_url, up.is_online AS is_online
+     FROM users u
+     LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
+     WHERE u.alanyaID = ? AND u.exclus = 0`,
     [friendID]
   );
   if (userCheck.length === 0) {

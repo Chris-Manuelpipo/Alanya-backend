@@ -18,10 +18,11 @@ const getUsers = async (req, res) => {
     const [items] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
               u.type_compte, u.account_type, u.verification_status, u.verified_until,
-              u.is_online, u.last_seen, u.exclus, u.exclude_at,
+              up.is_online AS is_online, up.last_seen AS last_seen, u.exclus, u.exclude_at,
               u.exclude_reason, u.created_at, u.idPays, p.libelle AS pays_libelle
        FROM users u
        LEFT JOIN pays p ON u.idPays = p.idPays
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        ${whereSql}
        ORDER BY ${sortCol} ${dir}
        LIMIT ${limitN} OFFSET ${offset}`,
@@ -29,7 +30,9 @@ const getUsers = async (req, res) => {
     );
 
     const [[{ total }]] = await pool.execute(
-      `SELECT COUNT(*) AS total FROM users u ${whereSql}`,
+      `SELECT COUNT(*) AS total FROM users u
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
+       ${whereSql}`,
       params,
     );
 
@@ -47,11 +50,12 @@ const getUserById = async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
               u.type_compte, u.account_type, u.verification_status, u.verified_until,
-              u.is_online, u.last_seen, u.exclus, u.exclude_at,
+              up.is_online AS is_online, up.last_seen AS last_seen, u.exclus, u.exclude_at,
               u.exclude_reason, u.created_at, u.idPays, u.fcm_token, u.device_ID,
               p.libelle AS pays_libelle, p.prefix AS pays_prefix
        FROM users u
        LEFT JOIN pays p ON u.idPays = p.idPays
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE u.alanyaID = ?`,
       [id]
     );

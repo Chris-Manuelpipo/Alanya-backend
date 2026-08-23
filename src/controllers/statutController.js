@@ -17,7 +17,7 @@ const getStatus = async (req, res) => {
 
     const [rows] = await pool.execute(
       `SELECT s.*,
-              u.nom, u.pseudo, u.avatar_url, u.is_online,
+              u.nom, u.pseudo, u.avatar_url, up.is_online AS is_online,
               u.account_type, u.verification_status,
               EXISTS(
                 SELECT 1 FROM statut_views sv
@@ -29,6 +29,7 @@ const getStatus = async (req, res) => {
               ) AS seenByMe
        FROM statut s
        JOIN users u              ON s.alanyaID = u.alanyaID
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        JOIN preferredContact pc1 ON pc1.alanyaID = s.alanyaID AND pc1.idFriend = ?
        JOIN preferredContact pc2 ON pc2.alanyaID = ?           AND pc2.idFriend = s.alanyaID
        WHERE s.expiredAt > NOW()
@@ -51,16 +52,18 @@ const getStatus = async (req, res) => {
     );
 
     const [userRows] = await pool.execute(
-      `SELECT alanyaID, idPays, idVille, genre, age, account_type, verification_status,
-              created_at, last_seen, verified_until
-       FROM users WHERE alanyaID = ?`,
+      `SELECT u.alanyaID, u.idPays, u.idVille, u.genre, u.age, u.account_type, u.verification_status,
+              u.created_at, up.last_seen AS last_seen, u.verified_until
+       FROM users u
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
+       WHERE u.alanyaID = ?`,
       [alanyaID],
     );
     const viewer = userRows[0] || {};
 
     const [officialRows] = await pool.execute(
       `SELECT s.*,
-              u.nom, u.pseudo, u.avatar_url, u.is_online,
+              u.nom, u.pseudo, u.avatar_url, up.is_online AS is_online,
               u.account_type, u.verification_status,
               b.criteria, b.sent_at AS broadcast_sent_at,
               EXISTS(
@@ -73,6 +76,7 @@ const getStatus = async (req, res) => {
               ) AS seenByMe
        FROM statut s
        JOIN users u ON s.alanyaID = u.alanyaID
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        JOIN broadcast b ON b.statut_id = s.ID
        WHERE s.expiredAt > NOW()
          AND u.account_type = ?
@@ -95,7 +99,7 @@ const getStatus = async (req, res) => {
     // sur la date d'inscription — il existe précisément pour les nouveaux.
     const [welcomeRows] = await pool.execute(
       `SELECT s.*,
-              u.nom, u.pseudo, u.avatar_url, u.is_online,
+              u.nom, u.pseudo, u.avatar_url, up.is_online AS is_online,
               u.account_type, u.verification_status,
               EXISTS(
                 SELECT 1 FROM statut_views sv
@@ -108,6 +112,7 @@ const getStatus = async (req, res) => {
        FROM statut s
        JOIN welcome_status_delivery w ON w.statut_id = s.ID
        JOIN users u ON s.alanyaID = u.alanyaID
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE w.alanyaID = ?
          AND s.expiredAt > NOW()
          AND NOT EXISTS (
@@ -137,9 +142,10 @@ const getMyStatus = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
     const [rows] = await pool.execute(
-      `SELECT s.*, u.nom, u.pseudo, u.avatar_url, u.is_online
+      `SELECT s.*, u.nom, u.pseudo, u.avatar_url, up.is_online AS is_online
        FROM statut s
        JOIN users u ON s.alanyaID = u.alanyaID
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE s.alanyaID = ? AND s.expiredAt > NOW()
        ORDER BY s.createdAt ASC`,
       [alanyaID]
@@ -214,8 +220,9 @@ const createStatus = async (req, res) => {
     );
 
     const [rows] = await pool.execute(
-      `SELECT s.*, u.nom, u.pseudo, u.avatar_url, u.is_online
+      `SELECT s.*, u.nom, u.pseudo, u.avatar_url, up.is_online AS is_online
        FROM statut s JOIN users u ON s.alanyaID = u.alanyaID
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
        WHERE s.ID = ?`,
       [result.insertId]
     );
