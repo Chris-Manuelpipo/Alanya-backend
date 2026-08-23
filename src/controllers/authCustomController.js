@@ -267,10 +267,13 @@ const login = async (req, res) => {
     const phoneCanonical = normalize(alanyaPhone);
 
     const [rows] = await pool.execute(
-      `SELECT alanyaID, nom, pseudo, alanyaPhone, email, password, avatar_url,
-              genre, age, annee_naissance, ville,
-              exclus, exclude_reason, delete_scheduled_at
-       FROM users WHERE alanyaPhone = ?`,
+      `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.password, u.avatar_url,
+              up.is_online AS is_online, up.last_seen AS last_seen,
+              u.genre, u.age, u.annee_naissance, u.ville,
+              u.exclus, u.exclude_reason, u.delete_scheduled_at
+       FROM users u
+       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
+       WHERE u.alanyaPhone = ?`,
       [phoneCanonical]
     );
 
