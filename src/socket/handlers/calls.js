@@ -1881,14 +1881,25 @@ const endGroupCall = (io, socket, userSockets) => {
       groupRooms.delete(rId);
       io.to(`group_${rId}`).emit('group_call_ended', {});
 
-      const roomSockets = io.sockets.adapter.rooms.get(`group_${rId}`);
-      if (roomSockets) {
-        for (const sid of roomSockets) {
+      // io.sockets.adapter.rooms/sockets ne voient que CE process : capturer
+      // les membres locaux avant socketsLeave() (cross-instance, ci-dessous),
+      // qui aura déjà vidé la room ici une fois appelé.
+      const localSids = io.sockets.adapter.rooms.get(`group_${rId}`);
+
+      // Cross-instance : propage le départ de la room via l'adapter Redis à
+      // toute socket membre, quelle que soit l'instance qui l'héberge — sans
+      // ça, un participant connecté à une AUTRE instance que celle traitant
+      // end_group_call continuerait de recevoir les diffusions de cette room.
+      io.in(`group_${rId}`).socketsLeave(`group_${rId}`);
+
+      // currentGroupRoom est une propriété brute lue uniquement en local
+      // (jamais via fetchSockets()) : la réinitialiser ne vaut donc que pour
+      // les sockets de CE process — une RemoteSocket ne peut pas être mutée
+      // à distance.
+      if (localSids) {
+        for (const sid of localSids) {
           const s = io.sockets.sockets.get(sid);
-          if (s) {
-            s.leave(`group_${rId}`);
-            s.currentGroupRoom = null;
-          }
+          if (s) s.currentGroupRoom = null;
         }
       }
     } catch (error) {
