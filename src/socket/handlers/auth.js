@@ -63,7 +63,7 @@ const socketAuth = (io, socket, userSockets) => {
       // pour le code non migré qui la lit en local sur ce même socket.
       socket.data.deviceId = socket.deviceId;
       socket.data.appareilId = socket.appareilId;
-      _registerSocket(socket, alanyaID, userSockets, io);
+      await _registerSocket(socket, alanyaID, userSockets, io);
       console.log(`[Socket] Authentifié: User ${alanyaID} (socket ${socket.id})`);
 
     } catch (error) {
@@ -73,7 +73,7 @@ const socketAuth = (io, socket, userSockets) => {
   });
 };
 
-function _registerSocket(socket, alanyaID, userSockets, io) {
+async function _registerSocket(socket, alanyaID, userSockets, io) {
   socket.alanyaID      = alanyaID;
   socket.authenticated = true;
   // Une socket authentifiée n'est PAS en ligne tant qu'elle ne l'a pas déclaré
@@ -91,29 +91,29 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
   // Reconnexion pendant un appel : ne PAS annuler la grâce disconnect tant que
   // le client n'a pas confirmé (call_resume_ack). Sinon un auth:login idle
   // ressuscite un in_call fantôme et bloque les nouveaux appels (CALLER_BUSY).
-  const activeCall = callState.getEntry(alanyaID);
+  const activeCall = await callState.getEntry(alanyaID);
   if (activeCall?.status === 'in_call') {
     const { offerCallResume } = require('./calls');
-    offerCallResume(io, socket, userSockets, alanyaID);
+    await offerCallResume(io, socket, userSockets, alanyaID);
   } else {
-    callState.cancelDisconnectGrace(alanyaID);
+    await callState.cancelDisconnectGrace(alanyaID);
   }
 
   // Rejeu d'un appel entrant en attente : si l'utilisateur vient d'être réveillé
   // par un push FCM (app fermée), l'event `incoming_call` initial a été perdu.
   // On le lui rejoue maintenant que son socket est authentifié, avec l'offre WebRTC.
   if (!REPLAY_ENABLED) {
-    pendingCalls.clear(alanyaID);
+    await pendingCalls.clear(alanyaID);
     console.log(`[PhantomCallFix] pending:replay-disabled target=${alanyaID}`);
     return;
   }
 
-  const pending = pendingCalls.getReplayable(alanyaID);
+  const pending = await pendingCalls.getReplayable(alanyaID);
   if (pending) {
     // Garde autoritaire : ne rejouer que si l'appel est TOUJOURS en sonnerie pour
     // ce callId côté callState. Sinon (refusé / terminé / timeout, ou tout état
     // désynchronisé du buffer) on purge et on ne rejoue pas un écran fantôme.
-    const entry = callState.getEntry(alanyaID);
+    const entry = await callState.getEntry(alanyaID);
     const stillRinging =
       !!entry &&
       entry.status === 'ringing' &&
@@ -123,17 +123,17 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
       console.log(
         `[PhantomCallFix] pending:stale-skip target=${alanyaID} status=${entry?.status ?? 'idle'} callId=${pending.callId ?? 'none'}`,
       );
-      pendingCalls.clear(alanyaID);
+      await pendingCalls.clear(alanyaID);
     } else {
       console.log(`[Socket] !! Rejeu incoming_call à User ${alanyaID} (appel en attente)`);
       socket.emit('incoming_call', pending);
-      const delivery = pendingCalls.markDelivered(alanyaID, 'auth-replay');
+      const delivery = await pendingCalls.markDelivered(alanyaID, 'auth-replay');
       if (delivery) {
         console.log(
           `[PhantomCallFix] pending:replay target=${alanyaID} callId=${delivery.callId ?? 'none'} attempts=${delivery.attempts}`,
         );
       }
-      pendingCalls.clear(alanyaID);
+      await pendingCalls.clear(alanyaID);
     }
   } else {
     console.log(`[PhantomCallFix] pending:skip-replay target=${alanyaID}`);

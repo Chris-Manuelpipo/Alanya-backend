@@ -94,13 +94,13 @@ const handleDisconnect = async (io, socket, userSockets) => {
 
   // Appel actif : impact média seulement si ce socket/device est propriétaire,
   // ou dernier socket du compte sans ownership (legacy).
-  const entry = callState.getEntry(userID);
+  const entry = await callState.getEntry(userID);
   const callKey = entry?.callId != null ? String(entry.callId) : null;
   const deviceId = normalizeDeviceId(socket.deviceId);
   const isMediaOwner = callKey
-    ? (callDeviceOwnership.isOwnerDevice(callKey, userID, deviceId)
-      || callDeviceOwnership.isOwnerSocket(callKey, userID, socket.id)
-      || !callDeviceOwnership.getActiveDeviceId(callKey, userID))
+    ? ((await callDeviceOwnership.isOwnerDevice(callKey, userID, deviceId))
+      || (await callDeviceOwnership.isOwnerSocket(callKey, userID, socket.id))
+      || !(await callDeviceOwnership.getActiveDeviceId(callKey, userID)))
     : (socket.currentCallID != null);
   const hasActiveCall =
     !!entry && (entry.status === 'in_call' || entry.status === 'ringing');
@@ -108,20 +108,20 @@ const handleDisconnect = async (io, socket, userSockets) => {
   if (hasActiveCall && isMediaOwner && (lastSocket || socket.currentCallID != null)) {
     try {
       if (entry.status === 'in_call') {
-        callState.scheduleDisconnectGrace(userID, async () => {
+        await callState.scheduleDisconnectGrace(userID, async () => {
           try {
             await endActiveCallForUser(io, userSockets, userID, 'disconnect_grace_expired');
-            if (callKey) callDeviceOwnership.release(callKey);
+            if (callKey) await callDeviceOwnership.release(callKey);
           } catch (e) {
             console.warn('[Socket disconnect] grace endActiveCallForUser failed:', e.message);
           }
         });
         console.log(`[Socket disconnect] Grace period armée user=${userID} callId=${entry.callId ?? 'none'}`);
       } else {
-        callState.scheduleRingingDisconnectGrace(userID, async () => {
+        await callState.scheduleRingingDisconnectGrace(userID, async () => {
           try {
             await endActiveCallForUser(io, userSockets, userID, 'ringing_disconnect_grace_expired');
-            if (callKey) callDeviceOwnership.release(callKey);
+            if (callKey) await callDeviceOwnership.release(callKey);
           } catch (e) {
             console.warn('[Socket disconnect] ringing grace endActiveCallForUser failed:', e.message);
           }
@@ -136,7 +136,7 @@ const handleDisconnect = async (io, socket, userSockets) => {
   // Rejeu de l'appel entrant en attente : seulement quand le compte est totalement
   // hors-ligne (aucun autre socket pour recevoir l'offre en temps réel).
   if (lastSocket) {
-    pendingCalls.markUndelivered(userID);
+    await pendingCalls.markUndelivered(userID);
   }
 
   // Appel de groupe : symétrique du bloc meetings ci-dessous. Sans lui, un

@@ -20,7 +20,7 @@
  */
 
 const pool = require('../config/db');
-const { enqueue, registerJobHandler } = require('./jobQueue');
+const { enqueue, registerJobHandler, cancelByDedupeKey } = require('./jobQueue');
 const policy = require('../constants/tripPolicy');
 const {
   findTripById,
@@ -65,11 +65,8 @@ const setIo = (io) => { _io = io; };
  * de déduplication existe déjà : prolonger un trajet sans supprimer d'abord
  * *paraîtrait* fonctionner, et l'alerte partirait à l'heure initiale.
  */
-const disarm = async (tripId, executor = pool) => {
-  await executor.execute(
-    `DELETE FROM job_queue WHERE dedupe_key = ? AND kind IN (${KINDS.map(() => '?').join(',')})`,
-    [dedupe(tripId), ...KINDS],
-  );
+const disarm = async (tripId) => {
+  await cancelByDedupeKey(dedupe(tripId), KINDS);
 };
 
 /** Arme la chaîne complète pour un trajet, à partir de son `eta_at`. */

@@ -201,7 +201,7 @@ async function finalizeCallAndNotify(io, userSockets, callID) {
 // Nettoie l'état des deux participants, prévient l'appelant (call_no_answer) et
 // coupe la sonnerie du destinataire (FCM call_ended).
 async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
-  const entry = callState.getEntry(targetID);
+  const entry = await callState.getEntry(targetID);
   // Le timer peut avoir été neutralisé entre-temps (réponse/refus/nouvel appel).
   if (!entry || entry.status !== 'ringing' || String(entry.callId) !== String(callID)) {
     return;
@@ -209,9 +209,9 @@ async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
 
   console.log(`[Socket call_user] ⏰ Pas de réponse: callId=${callID} caller=${callerID} target=${targetID}`);
 
-  pendingCalls.clear(targetID);
-  callState.clear(targetID);
-  callState.clear(callerID);
+  await pendingCalls.clear(targetID);
+  await callState.clear(targetID);
+  await callState.clear(callerID);
 
   if (callID) {
     try {
@@ -242,7 +242,7 @@ async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
   notifyCallEnded(targetID, callerID, 'Appel manqué', callID, { reason: 'no_answer' })
     .catch((err) => console.warn('[Socket call_user] no-answer notifyCallEnded error:', err.message));
 
-  if (callID != null) callDeviceOwnership.release(String(callID));
+  if (callID != null) await callDeviceOwnership.release(String(callID));
 }
 
 function createRoomState(isVideo, callerID, callerInfo) {
@@ -343,17 +343,17 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
     if (presentCount <= 2) {
       await failInvite(io, sessionId, reason === 'disconnect' ? 'offline' : 'caller_left');
       // Session détruite. On termine le départ comme un hangup 1-à-1.
-      callState.cancelDisconnectGrace(userID);
-      const entry = callState.getEntry(userID);
+      await callState.cancelDisconnectGrace(userID);
+      const entry = await callState.getEntry(userID);
       const peerID = entry?.peerId != null ? toInt(entry.peerId) : null;
       const callID = entry?.callId ?? originCallId ?? null;
-      callState.clear(userID);
-      pendingCalls.clear(userID);
+      await callState.clear(userID);
+      await pendingCalls.clear(userID);
 
       if (peerID != null) {
-        callState.cancelDisconnectGrace(peerID);
-        callState.clear(peerID);
-        pendingCalls.clear(peerID);
+        await callState.cancelDisconnectGrace(peerID);
+        await callState.clear(peerID);
+        await pendingCalls.clear(peerID);
         emitToUser(io, peerID, 'call_ended', {
           callId: callID != null ? String(callID) : null,
         });
@@ -377,13 +377,13 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
     `pending=${wasPending} restants=[${remaining}] reason=${reason}`,
   );
 
-  callState.cancelDisconnectGrace(userID);
-  pendingCalls.clear(userID);
+  await callState.cancelDisconnectGrace(userID);
+  await pendingCalls.clear(userID);
 
   // Si destroy a emporté un pending (ex. départ → <2 présents), couper CallKit C.
   if (!wasPending && hadPendingInvitee != null && !callSessions.get(sessionId)) {
-    callState.clear(hadPendingInvitee);
-    pendingCalls.clear(hadPendingInvitee);
+    await callState.clear(hadPendingInvitee);
+    await pendingCalls.clear(hadPendingInvitee);
     emitToUser(io, hadPendingInvitee, 'call_ended', { callId: sessionId });
     notifyCallEnded(hadPendingInvitee, userID, 'Correspondant', sessionId)
       .catch((err) => console.warn('[Socket leaveCallSession] FCM pending error:', err.message));
@@ -391,7 +391,7 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
 
   // L'invité s'en va avant d'être entré : simple échec d'invitation.
   if (wasPending) {
-    callState.clear(userID);
+    await callState.clear(userID);
     const failReason = reason === 'disconnect'
       ? 'offline'
       : (reason === 'media_not_ready' ? 'media_not_ready' : 'declined');
@@ -406,7 +406,7 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
     return true;
   }
 
-  callState.clear(userID);
+  await callState.clear(userID);
 
   try {
     await closeSessionHistoryFor(sessionId, userID);
@@ -446,8 +446,8 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
 
   if (remaining.length >= 2) {
     const [first, second] = remaining;
-    callState.setPeer(first, second);
-    callState.setPeer(second, first);
+    await callState.setPeer(first, second);
+    await callState.setPeer(second, first);
 
     const leftPayload = {
       sessionId,
@@ -466,12 +466,12 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
 
   if (remaining.length === 1) {
     const last = remaining[0];
-    const lastEntry = callState.getEntry(last);
+    const lastEntry = await callState.getEntry(last);
     const lastCallId = lastEntry?.callId ?? originCallId ?? null;
 
-    callState.cancelDisconnectGrace(last);
-    callState.clear(last);
-    pendingCalls.clear(last);
+    await callState.cancelDisconnectGrace(last);
+    await callState.clear(last);
+    await pendingCalls.clear(last);
 
     emitToUser(io, last, 'call_ended', {
       callId: lastCallId != null ? String(lastCallId) : null,
@@ -505,8 +505,8 @@ async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnec
     return true;
   }
 
-  callState.cancelDisconnectGrace(userID);
-  const entry = callState.getEntry(userID);
+  await callState.cancelDisconnectGrace(userID);
+  const entry = await callState.getEntry(userID);
   if (!entry || (entry.status !== 'ringing' && entry.status !== 'in_call')) {
     return false;
   }
@@ -519,12 +519,12 @@ async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnec
     `[Socket] endActiveCallForUser user=${userID} peer=${peerID} callId=${callIdStr ?? 'none'} reason=${reason}`,
   );
 
-  pendingCalls.clear(userID);
-  if (peerID) pendingCalls.clear(peerID);
-  callState.cancelDisconnectGrace(userID);
-  if (peerID) callState.cancelDisconnectGrace(peerID);
-  callState.clear(userID);
-  if (peerID) callState.clear(peerID);
+  await pendingCalls.clear(userID);
+  if (peerID) await pendingCalls.clear(peerID);
+  await callState.cancelDisconnectGrace(userID);
+  if (peerID) await callState.cancelDisconnectGrace(peerID);
+  await callState.clear(userID);
+  if (peerID) await callState.clear(peerID);
 
   await closeCallHistory(io, userSockets, callID);
 
@@ -549,7 +549,7 @@ async function reclaimStaleSession(io, userID) {
   const session = callSessions.getByUser(userID);
   if (!session) return false;
   if (await isUserOnline(io, userID)) return false;
-  if (callState.getEntry(userID)?.disconnectTimer) return false;
+  if (await callState.hasDisconnectGrace(userID)) return false;
 
   console.log(
     `[callSessions] reclaimStaleSession user=${userID} session=${session.sessionId} (hors-ligne, sans grâce)`,
@@ -560,22 +560,22 @@ async function reclaimStaleSession(io, userID) {
 
 async function reclaimStaleBusy(io, userID) {
   await reclaimStaleSession(io, userID);
-  const entry = callState.getEntry(userID);
+  const entry = await callState.getEntry(userID);
   if (!entry) return false;
   if (entry.status !== 'in_call' && entry.status !== 'ringing') return false;
   if (await isUserOnline(io, userID)) return false;   // en ligne : appel en arrière-plan légitime
-  if (entry.disconnectTimer) return false;       // grâce de reconnexion déjà armée
+  if (await callState.hasDisconnectGrace(userID)) return false; // grâce de reconnexion déjà armée
   const peerID = entry.peerId != null ? toInt(entry.peerId) : null;
   console.log(
     `[callState] reclaimStaleBusy user=${userID} status=${entry.status} (offline, sans grâce)`,
   );
-  callState.clear(userID);
-  pendingCalls.clear(userID);
+  await callState.clear(userID);
+  await pendingCalls.clear(userID);
   if (peerID) {
-    const peerEntry = callState.getEntry(peerID);
+    const peerEntry = await callState.getEntry(peerID);
     if (peerEntry && String(peerEntry.peerId) === String(userID)) {
-      callState.clear(peerID);
-      pendingCalls.clear(peerID);
+      await callState.clear(peerID);
+      await pendingCalls.clear(peerID);
     }
   }
   return true;
@@ -646,17 +646,17 @@ const callUser = (io, socket, userSockets) => {
       }
 
       // État autoritaire : cible déjà en sonnerie avec quelqu'un d'autre ou en communication.
-      const existingPair = callState.findExistingRingingPair(callerID, targetID);
+      const existingPair = await callState.findExistingRingingPair(callerID, targetID);
       if (existingPair) {
         console.log(
           `[Socket call_user] 🔁 Paire déjà en sonnerie callId=${existingPair.callId ?? 'none'} caller=${callerID} target=${targetID}`,
         );
-        const pending = pendingCalls.get(targetID);
+        const pending = await pendingCalls.get(targetID);
         if (pending && (await isUserOnline(io, targetID))) {
           emitToUser(io, targetID, 'incoming_call', pending);
         }
         // Glare : l'appelant est aussi la cible de l'autre sonnerie → lui renvoyer l'entrant.
-        const pendingForCaller = pendingCalls.get(callerID);
+        const pendingForCaller = await pendingCalls.get(callerID);
         if (pendingForCaller && (await isUserOnline(io, callerID))) {
           emitToUser(io, callerID, 'incoming_call', pendingForCaller);
         }
@@ -668,8 +668,8 @@ const callUser = (io, socket, userSockets) => {
       await reclaimStaleBusy(io, targetID);
       await reclaimStaleBusy(io, callerID);
 
-      if (callState.isBusyForNewCall(callerID, targetID, pendingCalls)) {
-        console.log(`[Socket call_user] ⛔ Appelant occupé: caller=${callerID} (${callState.get(callerID)})`);
+      if (await callState.isBusyForNewCall(callerID, targetID, pendingCalls)) {
+        console.log(`[Socket call_user] ⛔ Appelant occupé: caller=${callerID} (${await callState.get(callerID)})`);
         socket.emit('call_failed', {
           reason: 'Un appel est déjà en cours de votre côté',
           code: 'CALLER_BUSY',
@@ -677,8 +677,8 @@ const callUser = (io, socket, userSockets) => {
         return;
       }
 
-      if (callState.isBusyForNewCall(targetID, callerID, pendingCalls)) {
-        console.log(`[Socket call_user] ⛔ Cible occupée: target=${targetID} (${callState.get(targetID)})`);
+      if (await callState.isBusyForNewCall(targetID, callerID, pendingCalls)) {
+        console.log(`[Socket call_user] ⛔ Cible occupée: target=${targetID} (${await callState.get(targetID)})`);
         socket.emit('call_busy', {
           callId:   null,
           targetId: String(targetID),
@@ -711,11 +711,11 @@ const callUser = (io, socket, userSockets) => {
       }
 
       const callKey = String(callID);
-      callDeviceOwnership.setCalling(callKey, callerID, {
+      await callDeviceOwnership.setCalling(callKey, callerID, {
         activeDeviceId: callerDeviceId,
         activeSocketId: socket.id,
       });
-      callDeviceOwnership.ring(callKey, targetID);
+      await callDeviceOwnership.ring(callKey, targetID);
 
       const incomingPayload = {
         callId:      callKey,
@@ -728,13 +728,13 @@ const callUser = (io, socket, userSockets) => {
 
       // Bufferise l'appel : si le destinataire est hors-ligne (app fermée), il sera
       // réveillé par FCM puis l'event `incoming_call` lui sera rejoué à sa reconnexion.
-      pendingCalls.set(targetID, incomingPayload);
+      await pendingCalls.set(targetID, incomingPayload);
       console.log(`[PhantomCallFix] pending:set target=${targetID} callId=${incomingPayload.callId ?? 'none'}`);
 
       if (await isUserOnline(io, targetID)) {
         console.log(`[Socket call_user] !! Envoi incoming_call à user_${targetID}`);
         emitToUser(io, targetID, 'incoming_call', incomingPayload);
-        const delivery = pendingCalls.markDelivered(targetID, 'socket-live');
+        const delivery = await pendingCalls.markDelivered(targetID, 'socket-live');
         if (delivery) {
           console.log(
             `[PhantomCallFix] pending:delivered-live target=${targetID} callId=${delivery.callId ?? 'none'} attempts=${delivery.attempts}`,
@@ -744,13 +744,11 @@ const callUser = (io, socket, userSockets) => {
         console.warn(`[Socket call_user] ** Utilisateur ${targetID} non trouvé en socket — fallback FCM + rejeu à la reconnexion`);
       }
 
-      // Marque les deux participants « ringing » et arme le timeout côté cible.
-      const noAnswerTimer = setTimeout(
-        () => onNoAnswer(io, userSockets, callID, callerID, targetID),
-        NO_ANSWER_MS,
-      );
-      callState.setRinging(targetID, { callId: callID, peerId: callerID, timer: noAnswerTimer, isVideo: !!isVideo });
-      callState.setRinging(callerID, { callId: callID, peerId: targetID, isVideo: !!isVideo });
+      // Marque les deux participants « ringing » et arme le timeout côté cible
+      // (séparément : un handle setTimeout ne se sérialise pas vers job_queue).
+      await callState.setRinging(targetID, { callId: callID, peerId: callerID, isVideo: !!isVideo });
+      await callState.scheduleNoAnswer(targetID, () => onNoAnswer(io, userSockets, callID, callerID, targetID));
+      await callState.setRinging(callerID, { callId: callID, peerId: targetID, isVideo: !!isVideo });
 
       notifyIncomingCall(targetID, callerID, callerName, callerPhoto, isVideo, callID)
         .catch((err) => console.warn('[Socket call_user] FCM error:', err.message));
@@ -789,8 +787,8 @@ const answerCall = (io, socket, userSockets) => {
       }
       const callKey = String(callId);
 
-      const receiverEntry = callState.getEntry(receiverID);
-      const callerEntry = callState.getEntry(callerID);
+      const receiverEntry = await callState.getEntry(receiverID);
+      const callerEntry = await callState.getEntry(callerID);
       const pairOk =
         receiverEntry &&
         receiverEntry.status === 'ringing' &&
@@ -809,7 +807,7 @@ const answerCall = (io, socket, userSockets) => {
         return;
       }
 
-      const claim = callDeviceOwnership.tryClaim(
+      const claim = await callDeviceOwnership.tryClaim(
         callKey,
         receiverID,
         deviceId,
@@ -825,11 +823,11 @@ const answerCall = (io, socket, userSockets) => {
 
       console.log(`[Socket answer_call] 📞 Réponse: Receiver ${receiverID} device=${deviceId} → Caller ${callerID} callId=${callKey}`);
 
-      pendingCalls.clear(receiverID);
+      await pendingCalls.clear(receiverID);
 
       const isVideo = !!callerEntry?.isVideo;
-      callState.setInCall(receiverID, { callId, peerId: callerID, isVideo });
-      callState.setInCall(callerID, { callId, peerId: receiverID, lastAnswer: answer, isVideo });
+      await callState.setInCall(receiverID, { callId, peerId: callerID, isVideo });
+      await callState.setInCall(callerID, { callId, peerId: receiverID, lastAnswer: answer, isVideo });
 
       socket.currentCallID = callId;
       socket.currentCallTarget = callerID;
@@ -864,7 +862,7 @@ const answerCall = (io, socket, userSockets) => {
         console.warn('[Socket answer_call] DB update failed:', dbErr.message);
       }
 
-      const callerDeviceId = callDeviceOwnership.getActiveDeviceId(callKey, callerID);
+      const callerDeviceId = await callDeviceOwnership.getActiveDeviceId(callKey, callerID);
       const answeredPayload = {
         answer,
         callId: callKey,
@@ -922,7 +920,7 @@ async function processRejectCall({
 
   const hintID = toInt(callIdHint);
   if (hintID) {
-    const receiverEntry = callState.getEntry(toInt(receiverID));
+    const receiverEntry = await callState.getEntry(toInt(receiverID));
     const currentPairCallID =
       receiverEntry && String(receiverEntry.peerId) === String(callerID)
         ? toInt(receiverEntry.callId)
@@ -945,11 +943,11 @@ async function processRejectCall({
 
   let rejectedCallID = toInt(callIdHint);
   if (!rejectedCallID) {
-    rejectedCallID = callState.getEntry(receiverID)?.callId ?? null;
+    rejectedCallID = (await callState.getEntry(receiverID))?.callId ?? null;
   }
   const callKey = rejectedCallID != null ? String(rejectedCallID) : null;
   if (callKey) {
-    const owner = callDeviceOwnership.getEntry(callKey, receiverID);
+    const owner = await callDeviceOwnership.getEntry(callKey, receiverID);
     if (owner?.state === 'active' && owner.activeDeviceId) {
       const rejDid = normalizeDeviceId(rejectingDeviceId);
       if (!rejDid || owner.activeDeviceId !== rejDid) {
@@ -961,10 +959,10 @@ async function processRejectCall({
     }
   }
 
-  pendingCalls.clear(receiverID);
-  callState.clear(receiverID);
-  callState.clear(callerID);
-  if (callKey) callDeviceOwnership.release(callKey);
+  await pendingCalls.clear(receiverID);
+  await callState.clear(receiverID);
+  await callState.clear(callerID);
+  if (callKey) await callDeviceOwnership.release(callKey);
 
   try {
     if (!rejectedCallID) {
@@ -1014,7 +1012,7 @@ async function processRejectCall({
 }
 
 const iceCandidate = (io, socket, userSockets) => {
-  socket.on('ice_candidate', (data) => {
+  socket.on('ice_candidate', async (data) => {
     try {
       if (!socket.authenticated) return;
       const { targetUserId, candidate } = data;
@@ -1023,16 +1021,16 @@ const iceCandidate = (io, socket, userSockets) => {
 
       const selfId = socket.alanyaID;
       const deviceId = normalizeDeviceId(socket.deviceId);
-      const selfEntry = callState.getEntry(selfId);
+      const selfEntry = await callState.getEntry(selfId);
       const callKey = selfEntry?.callId != null ? String(selfEntry.callId) : null;
-      if (!callKey || !deviceId || !callDeviceOwnership.isOwnerDevice(callKey, selfId, deviceId)) {
+      if (!callKey || !deviceId || !(await callDeviceOwnership.isOwnerDevice(callKey, selfId, deviceId))) {
         return;
       }
       // Signal média = preuve de session locale (clients sans call_resume_ack).
-      if (selfEntry.resumeAckTimer) {
-        callState.confirmResume(selfId);
+      if (await callState.hasResumeAckTimer(selfId)) {
+        await callState.confirmResume(selfId);
       }
-      const targetDeviceId = callDeviceOwnership.getActiveDeviceId(callKey, targetID);
+      const targetDeviceId = await callDeviceOwnership.getActiveDeviceId(callKey, targetID);
       if (!targetDeviceId) {
         console.warn(`[Socket ice_candidate] pas de device cible user=${targetID} — drop`);
         return;
@@ -1069,7 +1067,7 @@ const endCall = (io, socket, userSockets) => {
       // Déjà hors appel (ex. 2ᵉ end_call CallKit après leaveCallSession) :
       // ne pas retomber en teardown 1-à-1 vers targetUserId — sinon on envoie
       // call_ended à l'inviteur alors que les deux restants continuent.
-      const selfStillActive = callState.getEntry(callerID);
+      const selfStillActive = await callState.getEntry(callerID);
       if (
         !selfStillActive ||
         (selfStillActive.status !== 'ringing' && selfStillActive.status !== 'in_call')
@@ -1082,7 +1080,7 @@ const endCall = (io, socket, userSockets) => {
       // Préférer le callId d'état (fiable) avant clear — évite un FCM call_ended
       // sans callId qui ne pourrait pas bloquer un FCM `call` tardif.
       const selfEntry = selfStillActive;
-      const peerEntry = targetID ? callState.getEntry(targetID) : null;
+      const peerEntry = targetID ? await callState.getEntry(targetID) : null;
       let endedCallID =
         (selfEntry?.callId != null ? selfEntry.callId : null) ??
         (peerEntry?.callId != null ? peerEntry.callId : null) ??
@@ -1090,13 +1088,13 @@ const endCall = (io, socket, userSockets) => {
         null;
 
       // Appel terminé/annulé : ne pas le rejouer au destinataire.
-      if (targetID) pendingCalls.clear(targetID);
-      pendingCalls.clear(callerID);
+      if (targetID) await pendingCalls.clear(targetID);
+      await pendingCalls.clear(callerID);
 
       // État autoritaire : les deux participants repassent « idle ».
-      callState.clear(callerID);
-      if (targetID) callState.clear(targetID);
-      if (endedCallID != null) callDeviceOwnership.release(String(endedCallID));
+      await callState.clear(callerID);
+      if (targetID) await callState.clear(targetID);
+      if (endedCallID != null) await callDeviceOwnership.release(String(endedCallID));
 
       if (callerID && endedCallID == null) {
         try {
@@ -1240,9 +1238,9 @@ async function failInvite(io, sessionId, reason, { decliningDeviceId = null } = 
   console.log(`[Socket call_add] ✖ invitation soldée session=${sessionId} invité=${inviteeID} raison=${reason}`);
 
   callSessions.abortPending(sessionId);
-  callState.clear(inviteeID);
-  pendingCalls.clear(inviteeID);
-  callDeviceOwnership.release(sessionId);
+  await callState.clear(inviteeID);
+  await pendingCalls.clear(inviteeID);
+  await callDeviceOwnership.release(sessionId);
 
   for (const uid of present) {
     emitToUser(io, uid, 'call_conf_failed', {
@@ -1332,7 +1330,7 @@ const addParticipant = (io, socket, userSockets) => {
       if (!inviteeID || !requesterID) return reject('INVALID');
       if (inviteeID === requesterID) return reject('TARGET_SELF');
 
-      const entry = callState.getEntry(requesterID);
+      const entry = await callState.getEntry(requesterID);
       if (!entry || entry.status !== 'in_call' || entry.peerId == null) {
         return reject('NOT_IN_CALL');
       }
@@ -1341,8 +1339,8 @@ const addParticipant = (io, socket, userSockets) => {
       if (peerID === inviteeID) return reject('TARGET_ALREADY_IN_CALL');
 
       await reclaimStaleBusy(io, inviteeID);
-      if (callState.isBusyForNewCall(inviteeID, requesterID, pendingCalls)) {
-        console.log(`[Socket call_add] ⛔ invité occupé: ${inviteeID} (${callState.get(inviteeID)})`);
+      if (await callState.isBusyForNewCall(inviteeID, requesterID, pendingCalls)) {
+        console.log(`[Socket call_add] ⛔ invité occupé: ${inviteeID} (${await callState.get(inviteeID)})`);
         return reject('TARGET_BUSY');
       }
 
@@ -1361,17 +1359,15 @@ const addParticipant = (io, socket, userSockets) => {
       const { sessionId } = session;
 
       // Ownership session : A/B depuis l'appel d'origine, C en ringing.
-      callDeviceOwnership.ring(sessionId, inviteeID);
+      await callDeviceOwnership.ring(sessionId, inviteeID);
       if (entry.callId != null) {
         for (const uid of [requesterID, peerID]) {
-          const prev = callDeviceOwnership.getEntry(String(entry.callId), uid);
+          const prev = await callDeviceOwnership.getEntry(String(entry.callId), uid);
           if (prev?.activeDeviceId) {
-            callDeviceOwnership.setCalling(sessionId, uid, {
+            await callDeviceOwnership.setActive(sessionId, uid, {
               activeDeviceId: prev.activeDeviceId,
               activeSocketId: prev.activeSocketId,
             });
-            const e = callDeviceOwnership.getEntry(sessionId, uid);
-            if (e) e.state = 'active';
           }
         }
       }
@@ -1386,7 +1382,7 @@ const addParticipant = (io, socket, userSockets) => {
         return reject('TARGET_BLOCKED');
       }
 
-      callState.setRinging(inviteeID, {
+      await callState.setRinging(inviteeID, {
         callId: sessionId,
         peerId: requesterID,
         isVideo: !!entry.isVideo,
@@ -1510,10 +1506,10 @@ const confJoin = (io, socket, userSockets) => {
         return;
       }
 
-      if (!callDeviceOwnership.getEntry(sessionId, inviteeID)) {
-        callDeviceOwnership.ring(sessionId, inviteeID);
+      if (!(await callDeviceOwnership.getEntry(sessionId, inviteeID))) {
+        await callDeviceOwnership.ring(sessionId, inviteeID);
       }
-      const claim = callDeviceOwnership.tryClaim(
+      const claim = await callDeviceOwnership.tryClaim(
         sessionId,
         inviteeID,
         deviceId,
@@ -1540,21 +1536,19 @@ const confJoin = (io, socket, userSockets) => {
       // Ownership A/B : reprise depuis originCallId si pas encore migrés à l'invite.
       if (session.originCallId) {
         for (const uid of present) {
-          if (callDeviceOwnership.getActiveDeviceId(sessionId, uid)) continue;
-          const prev = callDeviceOwnership.getEntry(String(session.originCallId), uid);
+          if (await callDeviceOwnership.getActiveDeviceId(sessionId, uid)) continue;
+          const prev = await callDeviceOwnership.getEntry(String(session.originCallId), uid);
           if (prev?.activeDeviceId) {
-            callDeviceOwnership.setCalling(sessionId, uid, {
+            await callDeviceOwnership.setActive(sessionId, uid, {
               activeDeviceId: prev.activeDeviceId,
               activeSocketId: prev.activeSocketId,
             });
-            const e = callDeviceOwnership.getEntry(sessionId, uid);
-            if (e) e.state = 'active';
           }
         }
       }
 
-      pendingCalls.clear(inviteeID);
-      callState.setInCall(inviteeID, {
+      await pendingCalls.clear(inviteeID);
+      await callState.setInCall(inviteeID, {
         callId: sessionId,
         peerId: present[0] ?? null,
         isVideo: session.isVideo,
@@ -1596,7 +1590,7 @@ const confJoin = (io, socket, userSockets) => {
       const inviteeCard = cards.get(inviteeID) ?? fallback(inviteeID);
 
       for (const uid of present) {
-        const activeDid = callDeviceOwnership.getActiveDeviceId(sessionId, uid);
+        const activeDid = await callDeviceOwnership.getActiveDeviceId(sessionId, uid);
         const payload = { sessionId, user: inviteeCard, mode };
         if (!activeDid) {
           console.warn(`[Socket call_conf_join] pas de device actif user=${uid} — drop conf_joined`);
@@ -1618,7 +1612,7 @@ const confJoin = (io, socket, userSockets) => {
 };
 
 const confReady = (io, socket, userSockets) => {
-  socket.on('call_conf_ready', (data) => {
+  socket.on('call_conf_ready', async (data) => {
     try {
       if (!socket.authenticated) return;
       const reporterID = socket.alanyaID;
@@ -1627,7 +1621,7 @@ const confReady = (io, socket, userSockets) => {
       if (!sessionId || !peerId) return;
 
       const deviceId = normalizeDeviceId(socket.deviceId);
-      if (!deviceId || !callDeviceOwnership.isOwnerDevice(sessionId, reporterID, deviceId)) {
+      if (!deviceId || !(await callDeviceOwnership.isOwnerDevice(sessionId, reporterID, deviceId))) {
         console.log(
           `[Socket call_conf_ready] ignored reporter=${reporterID} reason=not_owner_device`,
         );
@@ -1658,7 +1652,7 @@ const confReady = (io, socket, userSockets) => {
           `[Socket call_conf_ready] ✔ armed session=${sessionId} ` +
           `reporter=${reporterID} peer=${peerId} → leave ${initiatorId} in ${TRANSFER_AUTO_LEAVE_MS}ms`,
         );
-        const initDid = callDeviceOwnership.getActiveDeviceId(sessionId, initiatorId);
+        const initDid = await callDeviceOwnership.getActiveDeviceId(sessionId, initiatorId);
         const armedPayload = {
           sessionId,
           leaveInMs: TRANSFER_AUTO_LEAVE_MS,
@@ -1718,16 +1712,14 @@ const createGroupCall = (io, socket, userSockets) => {
 
       socket.join(`group_${roomId}`);
       socket.currentGroupRoom = roomId;
-      callDeviceOwnership.setCalling(String(roomId), callerID, {
+      await callDeviceOwnership.setActive(String(roomId), callerID, {
         activeDeviceId: callerDeviceId,
         activeSocketId: socket.id,
       });
-      const callerOwn = callDeviceOwnership.getEntry(String(roomId), callerID);
-      if (callerOwn) callerOwn.state = 'active';
 
       const fcmTargets = [];
       for (const targetID of uniqueTargets) {
-        callDeviceOwnership.ring(String(roomId), targetID);
+        await callDeviceOwnership.ring(String(roomId), targetID);
         fcmTargets.push(targetID);
         if (await isUserOnline(io, targetID)) {
           emitToUser(io, targetID, 'group_call_invite', {
@@ -1768,10 +1760,10 @@ const joinGroupCall = (io, socket, userSockets) => {
 
       const roomKey = String(roomId);
       // Inviteé sans entrée ownership (join tardif) : ring serveur puis claim.
-      if (!callDeviceOwnership.getEntry(roomKey, userID)) {
-        callDeviceOwnership.ring(roomKey, userID);
+      if (!(await callDeviceOwnership.getEntry(roomKey, userID))) {
+        await callDeviceOwnership.ring(roomKey, userID);
       }
-      const claim = callDeviceOwnership.tryClaim(roomKey, userID, deviceId, socket.id);
+      const claim = await callDeviceOwnership.tryClaim(roomKey, userID, deviceId, socket.id);
       if (!claim.ok) {
         return socket.emit('call_error', {
           code: claim.reason === 'CALL_ANSWERED_ELSEWHERE'
@@ -1909,7 +1901,7 @@ const endGroupCall = (io, socket, userSockets) => {
 };
 
 const groupOffer = (io, socket, userSockets) => {
-  socket.on('group_offer', (data) => {
+  socket.on('group_offer', async (data) => {
     try {
       if (!socket.authenticated) return;
       const { toUserId, offer, roomId } = data;
@@ -1917,10 +1909,10 @@ const groupOffer = (io, socket, userSockets) => {
       if (!targetID || !offer) return;
       const rId = roomId != null ? String(roomId) : (socket.currentGroupRoom != null ? String(socket.currentGroupRoom) : null);
       const deviceId = normalizeDeviceId(socket.deviceId);
-      if (!rId || !deviceId || !callDeviceOwnership.isOwnerDevice(rId, socket.alanyaID, deviceId)) {
+      if (!rId || !deviceId || !(await callDeviceOwnership.isOwnerDevice(rId, socket.alanyaID, deviceId))) {
         return;
       }
-      const targetDid = callDeviceOwnership.getActiveDeviceId(rId, targetID);
+      const targetDid = await callDeviceOwnership.getActiveDeviceId(rId, targetID);
       if (!targetDid) {
         console.warn(`[Socket group_offer] pas de device cible user=${targetID} — drop`);
         return;
@@ -1938,7 +1930,7 @@ const groupOffer = (io, socket, userSockets) => {
 };
 
 const groupAnswer = (io, socket, userSockets) => {
-  socket.on('group_answer', (data) => {
+  socket.on('group_answer', async (data) => {
     try {
       if (!socket.authenticated) return;
       const { toUserId, answer, roomId } = data;
@@ -1946,10 +1938,10 @@ const groupAnswer = (io, socket, userSockets) => {
       if (!targetID || !answer) return;
       const rId = roomId != null ? String(roomId) : (socket.currentGroupRoom != null ? String(socket.currentGroupRoom) : null);
       const deviceId = normalizeDeviceId(socket.deviceId);
-      if (!rId || !deviceId || !callDeviceOwnership.isOwnerDevice(rId, socket.alanyaID, deviceId)) {
+      if (!rId || !deviceId || !(await callDeviceOwnership.isOwnerDevice(rId, socket.alanyaID, deviceId))) {
         return;
       }
-      const targetDid = callDeviceOwnership.getActiveDeviceId(rId, targetID);
+      const targetDid = await callDeviceOwnership.getActiveDeviceId(rId, targetID);
       if (!targetDid) {
         console.warn(`[Socket group_answer] pas de device cible user=${targetID} — drop`);
         return;
@@ -1967,7 +1959,7 @@ const groupAnswer = (io, socket, userSockets) => {
 };
 
 const groupIceCandidate = (io, socket, userSockets) => {
-  socket.on('group_ice_candidate', (data) => {
+  socket.on('group_ice_candidate', async (data) => {
     try {
       if (!socket.authenticated) return;
       const { toUserId, candidate, roomId } = data;
@@ -1975,10 +1967,10 @@ const groupIceCandidate = (io, socket, userSockets) => {
       if (!targetID || !candidate) return;
       const rId = roomId != null ? String(roomId) : (socket.currentGroupRoom != null ? String(socket.currentGroupRoom) : null);
       const deviceId = normalizeDeviceId(socket.deviceId);
-      if (!rId || !deviceId || !callDeviceOwnership.isOwnerDevice(rId, socket.alanyaID, deviceId)) {
+      if (!rId || !deviceId || !(await callDeviceOwnership.isOwnerDevice(rId, socket.alanyaID, deviceId))) {
         return;
       }
-      const targetDid = callDeviceOwnership.getActiveDeviceId(rId, targetID);
+      const targetDid = await callDeviceOwnership.getActiveDeviceId(rId, targetID);
       if (!targetDid) {
         console.warn(`[Socket group_ice_candidate] pas de device cible user=${targetID} — drop`);
         return;
@@ -2025,7 +2017,7 @@ const callMuteState = (io, socket, userSockets) => {
 // pas cette room. On relaie donc cette session vers les seuls appareils owners,
 // sans changer le chemin historique des groupes classiques.
 const groupMuteState = (io, socket, userSockets) => {
-  socket.on('group:mute_state', (data) => {
+  socket.on('group:mute_state', async (data) => {
     try {
       if (!socket.authenticated) return;
       const rId = (data && data.roomId) || socket.currentGroupRoom;
@@ -2041,7 +2033,7 @@ const groupMuteState = (io, socket, userSockets) => {
       if (session && String(session.sessionId) === String(rId)) {
         for (const participantId of callSessions.participantIds(session)) {
           if (Number(participantId) === Number(socket.alanyaID)) continue;
-          const deviceId = callDeviceOwnership.getActiveDeviceId(
+          const deviceId = await callDeviceOwnership.getActiveDeviceId(
             session.sessionId,
             participantId,
           );
@@ -2103,27 +2095,27 @@ const groupVideoState = (io, socket, userSockets) => {
  * Auth ne doit plus appeler cancelDisconnectGrace pour un in_call.
  * Pas d'owner → pas d'emitToUser de secours ; timer RESUME_OWNER_MISSING dédié.
  */
-function offerCallResume(io, socket, userSockets, userID) {
-  const entry = callState.getEntry(userID);
+async function offerCallResume(io, socket, userSockets, userID) {
+  const entry = await callState.getEntry(userID);
   if (!entry || entry.status !== 'in_call') return false;
 
   const peerId = entry.peerId;
   const callKey = entry.callId != null ? String(entry.callId) : null;
   const ownerDeviceId = callKey
-    ? callDeviceOwnership.getActiveDeviceId(callKey, userID)
+    ? await callDeviceOwnership.getActiveDeviceId(callKey, userID)
     : null;
 
   if (!ownerDeviceId) {
     console.log(
       `[Socket] call_resume skipped (no owner) user=${userID} callId=${callKey ?? 'none'}`,
     );
-    callState.scheduleResumeOwnerMissing(userID, async () => {
+    await callState.scheduleResumeOwnerMissing(userID, async () => {
       try {
         console.log(
           `[Socket] resume_owner_missing timeout user=${userID} callId=${callKey ?? 'none'}`,
         );
         await endActiveCallForUser(io, userSockets, userID, 'resume_owner_missing');
-        if (callKey) callDeviceOwnership.release(callKey);
+        if (callKey) await callDeviceOwnership.release(callKey);
       } catch (e) {
         console.warn('[Socket] resume_owner_missing endActiveCallForUser failed:', e.message);
       }
@@ -2150,13 +2142,13 @@ function offerCallResume(io, socket, userSockets, userID) {
   console.log(`[Socket] call_resume user=${userID} callId=${payload.callId ?? 'none'} device=${ownerDeviceId}`);
   emitToDevice(io, userID, ownerDeviceId, 'call_resume', payload);
 
-  callState.scheduleResumeAck(userID, async () => {
+  await callState.scheduleResumeAck(userID, async () => {
     try {
       console.log(
         `[Socket] call_resume_ack timeout user=${userID} callId=${callKey ?? 'none'}`,
       );
       await endActiveCallForUser(io, userSockets, userID, 'resume_ack_timeout');
-      if (callKey) callDeviceOwnership.release(callKey);
+      if (callKey) await callDeviceOwnership.release(callKey);
     } catch (e) {
       console.warn('[Socket] resume_ack_timeout endActiveCallForUser failed:', e.message);
     }
@@ -2165,7 +2157,7 @@ function offerCallResume(io, socket, userSockets, userID) {
 }
 
 async function _settleResumeReject(io, userSockets, userID, callId, reason) {
-  const entry = callState.getEntry(userID);
+  const entry = await callState.getEntry(userID);
   if (!entry || entry.status !== 'in_call') return false;
   if (callId != null && entry.callId != null && String(entry.callId) !== String(callId)) {
     return false;
@@ -2175,17 +2167,17 @@ async function _settleResumeReject(io, userSockets, userID, callId, reason) {
     `[Socket] call_resume_reject user=${userID} callId=${callKey ?? 'none'} reason=${reason}`,
   );
   await endActiveCallForUser(io, userSockets, userID, reason);
-  if (callKey) callDeviceOwnership.release(callKey);
+  if (callKey) await callDeviceOwnership.release(callKey);
   return true;
 }
 
 const callResumeHandshake = (io, socket, userSockets) => {
-  socket.on('call_resume_ack', (data) => {
+  socket.on('call_resume_ack', async (data) => {
     try {
       if (!socket.authenticated) return;
       const userID = socket.alanyaID;
       const callId = data?.callId != null ? String(data.callId) : null;
-      const entry = callState.getEntry(userID);
+      const entry = await callState.getEntry(userID);
       if (!entry || entry.status !== 'in_call') return;
       if (callId != null && entry.callId != null && String(entry.callId) !== callId) {
         console.warn(
@@ -2198,15 +2190,15 @@ const callResumeHandshake = (io, socket, userSockets) => {
       // Seul le device owner peut confirmer la reprise.
       if (
         callKey &&
-        callDeviceOwnership.getActiveDeviceId(callKey, userID) &&
-        (!deviceId || !callDeviceOwnership.isOwnerDevice(callKey, userID, deviceId))
+        (await callDeviceOwnership.getActiveDeviceId(callKey, userID)) &&
+        (!deviceId || !(await callDeviceOwnership.isOwnerDevice(callKey, userID, deviceId)))
       ) {
         console.log(
           `[Socket] call_resume_ack ignored (non-owner) user=${userID} device=${deviceId ?? 'none'}`,
         );
         return;
       }
-      callState.confirmResume(userID);
+      await callState.confirmResume(userID);
       console.log(
         `[Socket] call_resume_ack user=${userID} callId=${entry.callId ?? 'none'}`,
       );
@@ -2221,15 +2213,15 @@ const callResumeHandshake = (io, socket, userSockets) => {
       const userID = socket.alanyaID;
       const callId = data?.callId != null ? String(data.callId) : null;
       const reason = data?.reason != null ? String(data.reason) : 'no_local_call_state';
-      const entry = callState.getEntry(userID);
+      const entry = await callState.getEntry(userID);
       if (!entry || entry.status !== 'in_call') return;
       const callKey = entry.callId != null ? String(entry.callId) : null;
       const deviceId = normalizeDeviceId(socket.deviceId);
       // Non-owner : ignore — ne jamais solder un appel actif sur le device owner.
       if (
         callKey &&
-        callDeviceOwnership.getActiveDeviceId(callKey, userID) &&
-        (!deviceId || !callDeviceOwnership.isOwnerDevice(callKey, userID, deviceId))
+        (await callDeviceOwnership.getActiveDeviceId(callKey, userID)) &&
+        (!deviceId || !(await callDeviceOwnership.isOwnerDevice(callKey, userID, deviceId)))
       ) {
         console.log(
           `[Socket] call_resume_reject ignored (non-owner) user=${userID} device=${deviceId ?? 'none'}`,
@@ -2258,7 +2250,7 @@ const callRejoin = (io, socket, userSockets) => {
       const userID = socket.alanyaID;
       if (!targetID || !offer) return;
 
-      const entry = callState.getEntry(userID);
+      const entry = await callState.getEntry(userID);
       if (!entry || entry.status !== 'in_call' || Number(entry.peerId) !== targetID) {
         socket.emit('call_failed', { reason: 'Aucun appel actif à reprendre', code: 'CALL_REJOIN_INVALID' });
         return;
@@ -2269,7 +2261,7 @@ const callRejoin = (io, socket, userSockets) => {
       if (
         !callKey ||
         !sourceDeviceId ||
-        !callDeviceOwnership.isOwnerDevice(callKey, userID, sourceDeviceId)
+        !(await callDeviceOwnership.isOwnerDevice(callKey, userID, sourceDeviceId))
       ) {
         console.log(
           `[Socket call_rejoin] ignored (non-owner) user=${userID} device=${sourceDeviceId ?? 'none'}`,
@@ -2278,9 +2270,9 @@ const callRejoin = (io, socket, userSockets) => {
       }
 
       // Clients anciens : call_rejoin vaut confirmation de reprise.
-      callState.confirmResume(userID);
+      await callState.confirmResume(userID);
 
-      const targetDeviceId = callDeviceOwnership.getActiveDeviceId(callKey, targetID);
+      const targetDeviceId = await callDeviceOwnership.getActiveDeviceId(callKey, targetID);
       if (!targetDeviceId) {
         console.warn(
           `[Socket call_rejoin] pas de device cible user=${targetID} callId=${callKey} — drop (pas emitToUser)`,
@@ -2308,7 +2300,7 @@ const callRejoin = (io, socket, userSockets) => {
       const userID = socket.alanyaID;
       if (!targetID || !answer) return;
 
-      const entry = callState.getEntry(userID);
+      const entry = await callState.getEntry(userID);
       if (!entry || entry.status !== 'in_call' || Number(entry.peerId) !== targetID) {
         return;
       }
@@ -2318,7 +2310,7 @@ const callRejoin = (io, socket, userSockets) => {
       if (
         !callKey ||
         !sourceDeviceId ||
-        !callDeviceOwnership.isOwnerDevice(callKey, userID, sourceDeviceId)
+        !(await callDeviceOwnership.isOwnerDevice(callKey, userID, sourceDeviceId))
       ) {
         console.log(
           `[Socket call_rejoin_answer] ignored (non-owner) user=${userID} device=${sourceDeviceId ?? 'none'}`,
@@ -2326,9 +2318,9 @@ const callRejoin = (io, socket, userSockets) => {
         return;
       }
 
-      callState.confirmResume(userID);
+      await callState.confirmResume(userID);
 
-      const targetDeviceId = callDeviceOwnership.getActiveDeviceId(callKey, targetID);
+      const targetDeviceId = await callDeviceOwnership.getActiveDeviceId(callKey, targetID);
       if (!targetDeviceId) {
         console.warn(
           `[Socket call_rejoin_answer] pas de device cible user=${targetID} callId=${callKey} — drop (pas emitToUser)`,
@@ -2352,6 +2344,7 @@ const callRejoin = (io, socket, userSockets) => {
 module.exports = {
   reclaimStaleBusy,
   offerCallResume,
+  onNoAnswer,
   callUser,
   answerCall,
   rejectCall,

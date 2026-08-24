@@ -10,6 +10,7 @@ const { createAdapter } = require('@socket.io/redis-adapter');
 const cors       = require('cors');
 const path       = require('path');
 const { REDIS_ENABLED, REDIS_URL, createRedisClient, connectWithTimeout } = require('./src/config/redis');
+const { setDataClient } = require('./src/config/redisData');
 
 const errorHandler = require('./src/middleware/errorHandler');
 const { generalLimiter } = require('./src/middleware/rateLimiter');
@@ -84,6 +85,9 @@ const { runDataRetentionPurge } = require('./src/services/dataRetentionService')
 const {
   registerTripJobHandlers, setIo: setTripIo,
 } = require('./src/services/tripWorkers');
+const {
+  registerCallStateJobHandlers, setIo: setCallStateIo, setUserSockets: setCallStateUserSockets,
+} = require('./src/services/callStateWorkers');
 const { runNightlyTripPurge } = require('./src/services/tripRetention');
 const { runNightlyMediaPurge } = require('./src/services/mediaRetention');
 
@@ -253,16 +257,22 @@ async function start() {
     const pubClient = createRedisClient('pub');
     const subClient = pubClient.duplicate();
     subClient.on('error', (e) => console.error('[Redis:sub] erreur:', e.message));
+    // Client « data » (état applicatif : pendingCalls, callDeviceOwnership,
+    // callState, …) — distinct du pub/sub ci-dessus, réservé au protocole de
+    // l'adapter Socket.IO. Voir src/config/redisData.js.
+    const dataClient = createRedisClient('data');
     try {
       await Promise.all([
         connectWithTimeout(pubClient, 5000, 'pub'),
         connectWithTimeout(subClient, 5000, 'sub'),
+        connectWithTimeout(dataClient, 5000, 'data'),
       ]);
     } catch (e) {
       console.error('[Redis] connexion échouée au démarrage — arrêt du serveur:', e.message);
       process.exit(1);
     }
     io.adapter(createAdapter(pubClient, subClient));
+    setDataClient(dataClient);
     console.log('[Redis] adapter Socket.IO actif —', REDIS_URL.replace(/:\/\/[^@]*@/, '://***@'));
   } else {
     console.log('[Redis] REDIS_URL absent — adapter en mémoire (mono-instance uniquement)');
@@ -277,6 +287,9 @@ async function start() {
     // req.app.get('io'), il faut donc le leur donner explicitement.
     setTripIo(io);
     registerTripJobHandlers();
+    setCallStateIo(io);
+    setCallStateUserSockets(userSockets);
+    registerCallStateJobHandlers();
     initBroadcastCache().catch((e) => console.error('[Broadcast] init cache:', e.message));
     startJobWorker();
     startMeetingScheduler();

@@ -1,5 +1,11 @@
 // Tests protocole transfert (fake timers) — cas A–H du contrat leaveTimer.
 // Invitation / acceptation ≠ timer. Seul call_conf_ready valide arme 10 s.
+//
+// callState/callDeviceOwnership/pendingCalls sont async depuis la phase 2
+// Redis (repli mémoire ici, aucun Redis configuré dans ce test). callSessions
+// reste synchrone — pas encore migrée (hors périmètre de cette phase).
+// confReady (calls.js) est également async depuis cette phase : son handler
+// call_conf_ready doit être attendu avant toute assertion sur les timers.
 const assert = require('assert');
 const { leaveCallSession, failInvite, confReady } = require('./calls');
 const callState = require('../state/callState');
@@ -28,18 +34,18 @@ function fakeIo() {
   };
 }
 
-function reset() {
-  [CHRIS, AWA, NADIA].forEach((id) => {
-    callState.clear(id);
-    pendingCalls.clear(id);
-  });
+async function reset() {
+  for (const id of [CHRIS, AWA, NADIA]) {
+    await callState.clear(id);
+    await pendingCalls.clear(id);
+  }
   callSessions._reset();
   callDeviceOwnership._reset();
 }
 
-function twoWay(callId = 50) {
-  callState.setInCall(CHRIS, { peerId: AWA, callId });
-  callState.setInCall(AWA, { peerId: CHRIS, callId });
+async function twoWay(callId = 50) {
+  await callState.setInCall(CHRIS, { peerId: AWA, callId });
+  await callState.setInCall(AWA, { peerId: CHRIS, callId });
 }
 
 function openTransfer(callId = 50) {
@@ -52,17 +58,15 @@ function openTransfer(callId = 50) {
   });
 }
 
-function claimOwners(sessionId) {
-  callDeviceOwnership.setCalling(sessionId, CHRIS, {
+async function claimOwners(sessionId) {
+  await callDeviceOwnership.setActive(sessionId, CHRIS, {
     activeDeviceId: 'dev-A',
     activeSocketId: 'sa',
   });
-  const eA = callDeviceOwnership.getEntry(sessionId, CHRIS);
-  if (eA) eA.state = 'active';
-  callDeviceOwnership.ring(sessionId, AWA);
-  callDeviceOwnership.ring(sessionId, NADIA);
-  assert.ok(callDeviceOwnership.tryClaim(sessionId, AWA, 'dev-B', 'sb').ok);
-  assert.ok(callDeviceOwnership.tryClaim(sessionId, NADIA, 'dev-C', 'sc').ok);
+  await callDeviceOwnership.ring(sessionId, AWA);
+  await callDeviceOwnership.ring(sessionId, NADIA);
+  assert.ok((await callDeviceOwnership.tryClaim(sessionId, AWA, 'dev-B', 'sb')).ok);
+  assert.ok((await callDeviceOwnership.tryClaim(sessionId, NADIA, 'dev-C', 'sc')).ok);
 }
 
 function installFakeTimers() {
@@ -109,14 +113,14 @@ function installFakeTimers() {
 
 async function waitUntil(pred, realSetTimeout, tries = 120) {
   for (let i = 0; i < tries; i++) {
-    if (pred()) return;
+    if (await pred()) return;
     await new Promise((r) => realSetTimeout(r, 25));
   }
 }
 
-function promoteJoined(sessionId) {
+async function promoteJoined(sessionId) {
   callSessions.promotePending(sessionId);
-  callState.setInCall(NADIA, { peerId: CHRIS, callId: sessionId });
+  await callState.setInCall(NADIA, { peerId: CHRIS, callId: sessionId });
 }
 
 function armMediaReadyTimer(sessionId) {
@@ -126,7 +130,9 @@ function armMediaReadyTimer(sessionId) {
   );
 }
 
-function fireConfReady(io, sessionId) {
+// Retourne les handlers ET attend la résolution de call_conf_ready (async
+// depuis la phase 2) avant de rendre la main à l'appelant.
+async function fireConfReady(io, sessionId) {
   const handlers = {};
   confReady(io, {
     authenticated: true,
@@ -134,15 +140,15 @@ function fireConfReady(io, sessionId) {
     deviceId: 'dev-B',
     on(event, fn) { handlers[event] = fn; },
   }, null);
-  handlers.call_conf_ready({ sessionId, peerId: String(NADIA) });
+  await handlers.call_conf_ready({ sessionId, peerId: String(NADIA) });
   return handlers;
 }
 
 (async () => {
   // ── A. Transfer lancé, C ne répond pas ─────────────────────────────────────
   {
-    reset();
-    twoWay();
+    await reset();
+    await twoWay();
     const timers = installFakeTimers();
     try {
       const s = openTransfer();
@@ -162,8 +168,8 @@ function fireConfReady(io, sessionId) {
       assert.strictEqual(early.ok, false);
       assert.strictEqual(early.reason, 'NOT_JOINED');
       assert.strictEqual(timers.activeLeave().length, 0);
-      assert.strictEqual(callState.get(CHRIS), 'in_call');
-      assert.strictEqual(callState.get(AWA), 'in_call');
+      assert.strictEqual(await callState.get(CHRIS), 'in_call');
+      assert.strictEqual(await callState.get(AWA), 'in_call');
     } finally {
       timers.restore();
     }
@@ -171,17 +177,17 @@ function fireConfReady(io, sessionId) {
 
   // ── B. C refuse ────────────────────────────────────────────────────────────
   {
-    reset();
-    twoWay();
+    await reset();
+    await twoWay();
     const timers = installFakeTimers();
     try {
       const s = openTransfer();
-      callState.setRinging(NADIA, { callId: s.sessionId, peerId: CHRIS });
+      await callState.setRinging(NADIA, { callId: s.sessionId, peerId: CHRIS });
       await failInvite(fakeIo(), s.sessionId, 'declined');
       assert.strictEqual(callSessions.get(s.sessionId), null);
       assert.strictEqual(timers.activeLeave().length, 0, 'B: refus ≠ leaveTimer');
-      assert.strictEqual(callState.get(CHRIS), 'in_call');
-      assert.strictEqual(callState.get(AWA), 'in_call');
+      assert.strictEqual(await callState.get(CHRIS), 'in_call');
+      assert.strictEqual(await callState.get(AWA), 'in_call');
     } finally {
       timers.restore();
     }
@@ -189,12 +195,12 @@ function fireConfReady(io, sessionId) {
 
   // ── C. join sans ready : pas de leave à 10 s ; media timeout retire C ───────
   {
-    reset();
-    twoWay();
+    await reset();
+    await twoWay();
     const timers = installFakeTimers();
     try {
       const s = openTransfer();
-      promoteJoined(s.sessionId);
+      await promoteJoined(s.sessionId);
       armMediaReadyTimer(s.sessionId);
 
       assert.deepStrictEqual(
@@ -205,15 +211,15 @@ function fireConfReady(io, sessionId) {
       assert.strictEqual(timers.activeReady().length, 1);
 
       // Toujours A↔B↔C après « 10 s » (aucun leaveTimer)
-      assert.strictEqual(callState.get(CHRIS), 'in_call');
-      assert.strictEqual(callState.get(AWA), 'in_call');
-      assert.strictEqual(callState.get(NADIA), 'in_call');
+      assert.strictEqual(await callState.get(CHRIS), 'in_call');
+      assert.strictEqual(await callState.get(AWA), 'in_call');
+      assert.strictEqual(await callState.get(NADIA), 'in_call');
 
       callSessions.cancelTransfer(s.sessionId, 'media_not_ready');
       await leaveCallSession(fakeIo(), null, NADIA, 'media_not_ready');
-      assert.strictEqual(callState.get(CHRIS), 'in_call');
-      assert.strictEqual(callState.get(AWA), 'in_call');
-      assert.strictEqual(callState.get(NADIA), 'idle');
+      assert.strictEqual(await callState.get(CHRIS), 'in_call');
+      assert.strictEqual(await callState.get(AWA), 'in_call');
+      assert.strictEqual(await callState.get(NADIA), 'idle');
       assert.strictEqual(timers.activeLeave().length, 0);
     } finally {
       timers.restore();
@@ -222,22 +228,22 @@ function fireConfReady(io, sessionId) {
 
   // ── D. ready → leaveTimer ; A sort à t+10 ; B↔C restent ────────────────────
   {
-    reset();
-    twoWay(78);
+    await reset();
+    await twoWay(78);
     const timers = installFakeTimers();
     try {
       const s = openTransfer(78);
-      promoteJoined(s.sessionId);
+      await promoteJoined(s.sessionId);
       armMediaReadyTimer(s.sessionId);
-      claimOwners(s.sessionId);
+      await claimOwners(s.sessionId);
       const io = fakeIo();
-      fireConfReady(io, s.sessionId);
+      await fireConfReady(io, s.sessionId);
 
       assert.ok(io.sent.some((e) => e.event === 'call_transfer_armed'));
       assert.strictEqual(callSessions.getTransferTimerFlags(s.sessionId).state, 'armed');
       assert.strictEqual(timers.activeLeave().length, 1, 'D: leaveTimer après ready');
       assert.strictEqual(timers.activeReady().length, 0, 'D: readyTimer annulé');
-      assert.strictEqual(callState.get(CHRIS), 'in_call', 'D: A présent avant expiration');
+      assert.strictEqual(await callState.get(CHRIS), 'in_call', 'D: A présent avant expiration');
 
       const leaveFn = timers.activeLeave()[0].fn;
       const realSetTimeout = timers.realSetTimeout;
@@ -248,9 +254,9 @@ function fireConfReady(io, sessionId) {
         realSetTimeout,
       );
 
-      assert.strictEqual(callState.get(CHRIS), 'idle');
-      assert.strictEqual(callState.get(AWA), 'in_call');
-      assert.strictEqual(callState.get(NADIA), 'in_call');
+      assert.strictEqual(await callState.get(CHRIS), 'idle');
+      assert.strictEqual(await callState.get(AWA), 'in_call');
+      assert.strictEqual(await callState.get(NADIA), 'in_call');
       assert.ok(io.eventsFor(CHRIS).includes('call_transfer_done'));
       // call_ended socket volontairement omis (transfer_done + FCM suffisent) ;
       // évite un raccrochage parasite côté restants.
@@ -266,12 +272,12 @@ function fireConfReady(io, sessionId) {
 
   // ── E. A raccroche avant t+10 ──────────────────────────────────────────────
   {
-    reset();
-    twoWay();
+    await reset();
+    await twoWay();
     const timers = installFakeTimers();
     try {
       const s = openTransfer();
-      promoteJoined(s.sessionId);
+      await promoteJoined(s.sessionId);
       armMediaReadyTimer(s.sessionId);
       callSessions.registerTransferReady({
         sessionId: s.sessionId,
@@ -284,8 +290,8 @@ function fireConfReady(io, sessionId) {
       assert.strictEqual(timers.activeLeave().length, 1);
       await leaveCallSession(fakeIo(), null, CHRIS, 'hangup');
       assert.strictEqual(timers.activeLeave().length, 0, 'E: leaveTimer annulé');
-      assert.strictEqual(callState.get(AWA), 'in_call');
-      assert.strictEqual(callState.get(NADIA), 'in_call');
+      assert.strictEqual(await callState.get(AWA), 'in_call');
+      assert.strictEqual(await callState.get(NADIA), 'in_call');
     } finally {
       timers.restore();
     }
@@ -293,12 +299,12 @@ function fireConfReady(io, sessionId) {
 
   // ── F. C quitte pendant le délai ───────────────────────────────────────────
   {
-    reset();
-    twoWay();
+    await reset();
+    await twoWay();
     const timers = installFakeTimers();
     try {
       const s = openTransfer();
-      promoteJoined(s.sessionId);
+      await promoteJoined(s.sessionId);
       armMediaReadyTimer(s.sessionId);
       callSessions.registerTransferReady({
         sessionId: s.sessionId,
@@ -310,8 +316,8 @@ function fireConfReady(io, sessionId) {
       });
       await leaveCallSession(fakeIo(), null, NADIA, 'hangup');
       assert.strictEqual(timers.activeLeave().length, 0, 'F: leaveTimer annulé');
-      assert.strictEqual(callState.get(CHRIS), 'in_call');
-      assert.strictEqual(callState.get(AWA), 'in_call');
+      assert.strictEqual(await callState.get(CHRIS), 'in_call');
+      assert.strictEqual(await callState.get(AWA), 'in_call');
       assert.strictEqual(callSessions.getByUser(CHRIS).transfer.state, 'cancelled');
     } finally {
       timers.restore();
@@ -320,12 +326,12 @@ function fireConfReady(io, sessionId) {
 
   // ── G. B quitte pendant le délai : A non retiré ────────────────────────────
   {
-    reset();
-    twoWay();
+    await reset();
+    await twoWay();
     const timers = installFakeTimers();
     try {
       const s = openTransfer();
-      promoteJoined(s.sessionId);
+      await promoteJoined(s.sessionId);
       armMediaReadyTimer(s.sessionId);
       callSessions.registerTransferReady({
         sessionId: s.sessionId,
@@ -337,8 +343,8 @@ function fireConfReady(io, sessionId) {
       });
       await leaveCallSession(fakeIo(), null, AWA, 'hangup');
       assert.strictEqual(timers.activeLeave().length, 0, 'G: leaveTimer annulé');
-      assert.strictEqual(callState.get(CHRIS), 'in_call');
-      assert.strictEqual(callState.get(NADIA), 'in_call');
+      assert.strictEqual(await callState.get(CHRIS), 'in_call');
+      assert.strictEqual(await callState.get(NADIA), 'in_call');
       assert.ok(!callSessions.canCompleteTransfer(callSessions.getByUser(CHRIS)));
     } finally {
       timers.restore();
@@ -347,18 +353,18 @@ function fireConfReady(io, sessionId) {
 
   // ── H. Double call_conf_ready : un seul timer ──────────────────────────────
   {
-    reset();
-    twoWay(88);
+    await reset();
+    await twoWay(88);
     const timers = installFakeTimers();
     try {
       const s = openTransfer(88);
-      promoteJoined(s.sessionId);
+      await promoteJoined(s.sessionId);
       armMediaReadyTimer(s.sessionId);
-      claimOwners(s.sessionId);
+      await claimOwners(s.sessionId);
       const io = fakeIo();
-      const handlers = fireConfReady(io, s.sessionId);
-      handlers.call_conf_ready({ sessionId: s.sessionId, peerId: String(NADIA) });
-      handlers.call_conf_ready({ sessionId: s.sessionId, peerId: String(NADIA) });
+      const handlers = await fireConfReady(io, s.sessionId);
+      await handlers.call_conf_ready({ sessionId: s.sessionId, peerId: String(NADIA) });
+      await handlers.call_conf_ready({ sessionId: s.sessionId, peerId: String(NADIA) });
 
       assert.strictEqual(timers.activeLeave().length, 1, 'H: un seul leaveTimer');
       assert.strictEqual(
@@ -371,10 +377,10 @@ function fireConfReady(io, sessionId) {
       const realSetTimeout = timers.realSetTimeout;
       leaveFn();
       timers.restore();
-      await waitUntil(() => callState.get(CHRIS) === 'idle', realSetTimeout);
-      assert.strictEqual(callState.get(CHRIS), 'idle');
-      assert.strictEqual(callState.get(AWA), 'in_call');
-      assert.strictEqual(callState.get(NADIA), 'in_call');
+      await waitUntil(async () => (await callState.get(CHRIS)) === 'idle', realSetTimeout);
+      assert.strictEqual(await callState.get(CHRIS), 'idle');
+      assert.strictEqual(await callState.get(AWA), 'in_call');
+      assert.strictEqual(await callState.get(NADIA), 'in_call');
     } catch (e) {
       timers.restore();
       throw e;
@@ -383,10 +389,10 @@ function fireConfReady(io, sessionId) {
 
   // ── Gardes reporter / peer ─────────────────────────────────────────────────
   {
-    reset();
-    twoWay();
+    await reset();
+    await twoWay();
     const s = openTransfer();
-    promoteJoined(s.sessionId);
+    await promoteJoined(s.sessionId);
     assert.strictEqual(
       callSessions.registerTransferReady({
         sessionId: s.sessionId,

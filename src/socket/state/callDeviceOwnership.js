@@ -6,11 +6,27 @@
  * Valeur : Map<userId, { activeDeviceId, activeSocketId, claimedAt, state }>
  *
  * states: calling | ringing | active | left
+ *
+ * Deux implémentations : Redis (HASH par clé, field=userId — partagé entre
+ * instances pm2) si REDIS_URL est configuré, sinon repli sur des Map locales
+ * au process (comportement mono-instance identique à avant l'intégration
+ * Redis). Le choix se fait à chaque appel via getDataClient().
+ *
+ * `tryClaim` est LE cas d'usage qui justifie un script Lua plutôt qu'un
+ * simple GET+SET : deux devices du même compte peuvent décrocher « en même
+ * temps » sur deux instances différentes. Un GET+SET naïf laisserait les deux
+ * gagner silencieusement (double flux média, le perdant ne recevant jamais le
+ * call_ended qui devrait fermer son CallKit) — voir callDeviceOwnership.race.test.js.
  */
 
 const { normalizeDeviceId } = require('../../utils/deviceId');
+const { getDataClient } = require('../../config/redisData');
+const { runScript } = require('../../utils/redisScript');
 
-const _byKey = new Map(); // key -> Map<userId, entry>
+const keyOf = (key) => `alanya:callDeviceOwnership:${key}`;
+
+// ── Repli mémoire (key -> Map<userId, entry>) ───────────────────────────────
+const _byKey = new Map();
 
 function _key(k) {
   if (k == null || k === '') return null;
@@ -28,20 +44,13 @@ function _userMap(key) {
   return m;
 }
 
-function getEntry(key, userId) {
+function _memGetEntry(key, userId) {
   const m = _byKey.get(_key(key));
   if (!m) return null;
   return m.get(Number(userId)) ?? null;
 }
 
-function getActiveDeviceId(key, userId) {
-  return getEntry(key, userId)?.activeDeviceId ?? null;
-}
-
-/**
- * Enregistre le caller au démarrage (call_user).
- */
-function setCalling(key, userId, { activeDeviceId, activeSocketId }) {
+function _memSetCalling(key, userId, { activeDeviceId, activeSocketId }) {
   const m = _userMap(key);
   if (!m) return false;
   const did = normalizeDeviceId(activeDeviceId);
@@ -55,10 +64,21 @@ function setCalling(key, userId, { activeDeviceId, activeSocketId }) {
   return true;
 }
 
-/**
- * Callee en sonnerie (pas encore de device actif).
- */
-function ring(key, userId) {
+function _memSetActive(key, userId, { activeDeviceId, activeSocketId }) {
+  const m = _userMap(key);
+  if (!m) return false;
+  const did = normalizeDeviceId(activeDeviceId);
+  if (!did) return false;
+  m.set(Number(userId), {
+    activeDeviceId: did,
+    activeSocketId: activeSocketId ?? null,
+    claimedAt: Date.now(),
+    state: 'active',
+  });
+  return true;
+}
+
+function _memRing(key, userId) {
   const m = _userMap(key);
   if (!m) return false;
   m.set(Number(userId), {
@@ -70,12 +90,7 @@ function ring(key, userId) {
   return true;
 }
 
-/**
- * Claim atomique : premier device qui gagne.
- * N'invente jamais d'entrée : la session doit exister (ring/setCalling).
- * @returns {{ ok: boolean, reason?: string, entry?: object, alreadyOwner?: boolean }}
- */
-function tryClaim(key, userId, deviceId, socketId) {
+function _memTryClaim(key, userId, deviceId, socketId) {
   const k = _key(key);
   if (!k) return { ok: false, reason: 'NO_SESSION' };
   const m = _byKey.get(k);
@@ -106,24 +121,10 @@ function tryClaim(key, userId, deviceId, socketId) {
   return { ok: true, entry, alreadyOwner: false };
 }
 
-function isOwnerDevice(key, userId, deviceId) {
-  const did = normalizeDeviceId(deviceId);
-  if (!did) return false;
-  const entry = getEntry(key, userId);
-  return !!(entry && entry.activeDeviceId === did && entry.state !== 'left');
-}
-
-function isOwnerSocket(key, userId, socketId) {
-  const entry = getEntry(key, userId);
-  if (!entry || !socketId) return false;
-  return entry.activeSocketId === socketId && entry.state !== 'left';
-}
-
-function releaseUser(key, userId) {
+function _memReleaseUser(key, userId) {
   const m = _byKey.get(_key(key));
   if (!m) return;
-  const uid = Number(userId);
-  const entry = m.get(uid);
+  const entry = m.get(Number(userId));
   if (entry) {
     entry.state = 'left';
     entry.activeDeviceId = null;
@@ -131,17 +132,186 @@ function releaseUser(key, userId) {
   }
 }
 
-function release(key) {
+function _memRelease(key) {
   const k = _key(key);
   if (k) _byKey.delete(k);
 }
 
+// ── Redis ────────────────────────────────────────────────────────────────
+
+async function _redisGetEntry(client, key, userId) {
+  const raw = await client.hGet(keyOf(key), String(Number(userId)));
+  return raw ? JSON.parse(raw) : null;
+}
+
+async function _redisSetCalling(client, key, userId, { activeDeviceId, activeSocketId }) {
+  const did = normalizeDeviceId(activeDeviceId);
+  if (!did) return false;
+  const entry = {
+    activeDeviceId: did,
+    activeSocketId: activeSocketId ?? null,
+    claimedAt: Date.now(),
+    state: 'calling',
+  };
+  await client.hSet(keyOf(key), String(Number(userId)), JSON.stringify(entry));
+  return true;
+}
+
+async function _redisSetActive(client, key, userId, { activeDeviceId, activeSocketId }) {
+  const did = normalizeDeviceId(activeDeviceId);
+  if (!did) return false;
+  const entry = {
+    activeDeviceId: did,
+    activeSocketId: activeSocketId ?? null,
+    claimedAt: Date.now(),
+    state: 'active',
+  };
+  await client.hSet(keyOf(key), String(Number(userId)), JSON.stringify(entry));
+  return true;
+}
+
+async function _redisRing(client, key, userId) {
+  const entry = { activeDeviceId: null, activeSocketId: null, claimedAt: null, state: 'ringing' };
+  await client.hSet(keyOf(key), String(Number(userId)), JSON.stringify(entry));
+  return true;
+}
+
+// Rejoue exactement _memTryClaim en une seule opération atomique côté serveur
+// Redis — voir le commentaire d'en-tête du fichier.
+const TRY_CLAIM_SCRIPT = `
+local raw = redis.call('HGET', KEYS[1], ARGV[1])
+if not raw then return cjson.encode({ok=false, reason='NO_SESSION'}) end
+local entry = cjson.decode(raw)
+if entry.state == 'active' and entry.activeDeviceId then
+  if entry.activeDeviceId == ARGV[2] then
+    entry.activeSocketId = ARGV[3]
+    redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(entry))
+    return cjson.encode({ok=true, alreadyOwner=true, entry=entry})
+  end
+  return cjson.encode({ok=false, reason='CALL_ANSWERED_ELSEWHERE', entry=entry})
+end
+if entry.state == 'left' then return cjson.encode({ok=false, reason='CALL_LEFT'}) end
+entry.activeDeviceId = ARGV[2]
+entry.activeSocketId = ARGV[3]
+entry.claimedAt = tonumber(ARGV[4])
+entry.state = 'active'
+redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(entry))
+return cjson.encode({ok=true, alreadyOwner=false, entry=entry})
+`;
+
+async function _redisTryClaim(client, key, userId, deviceId, socketId) {
+  const k = _key(key);
+  if (!k) return { ok: false, reason: 'NO_SESSION' };
+  const did = normalizeDeviceId(deviceId);
+  if (!did) return { ok: false, reason: 'DEVICE_ID_REQUIRED' };
+  const raw = await runScript(
+    client,
+    TRY_CLAIM_SCRIPT,
+    [keyOf(k)],
+    [String(Number(userId)), did, socketId ?? '', Date.now()],
+  );
+  const result = JSON.parse(raw);
+  if (result.entry && result.entry.activeSocketId === '') result.entry.activeSocketId = null;
+  return result;
+}
+
+async function _redisReleaseUser(client, key, userId) {
+  const entry = await _redisGetEntry(client, key, userId);
+  if (!entry) return;
+  entry.state = 'left';
+  entry.activeDeviceId = null;
+  entry.activeSocketId = null;
+  await client.hSet(keyOf(key), String(Number(userId)), JSON.stringify(entry));
+}
+
+async function _redisRelease(client, key) {
+  const k = _key(key);
+  if (k) await client.del(keyOf(k));
+}
+
+// ── API publique (inchangée) ────────────────────────────────────────────────
+
+async function getEntry(key, userId) {
+  const client = getDataClient();
+  if (client) return _redisGetEntry(client, key, userId);
+  return _memGetEntry(key, userId);
+}
+
+async function getActiveDeviceId(key, userId) {
+  const entry = await getEntry(key, userId);
+  return entry?.activeDeviceId ?? null;
+}
+
+/** Enregistre le caller au démarrage (call_user). */
+async function setCalling(key, userId, opts) {
+  const client = getDataClient();
+  if (client) return _redisSetCalling(client, key, userId, opts);
+  return _memSetCalling(key, userId, opts);
+}
+
+/** Callee en sonnerie (pas encore de device actif). */
+async function ring(key, userId) {
+  const client = getDataClient();
+  if (client) return _redisRing(client, key, userId);
+  return _memRing(key, userId);
+}
+
+/**
+ * Reprise directe d'un ownership déjà établi ailleurs (ex. migration d'un
+ * originCallId vers une nouvelle session) — écrit state='active' d'emblée,
+ * sans repasser par tryClaim (aucune contention : le device était déjà
+ * propriétaire côté source).
+ */
+async function setActive(key, userId, opts) {
+  const client = getDataClient();
+  if (client) return _redisSetActive(client, key, userId, opts);
+  return _memSetActive(key, userId, opts);
+}
+
+/**
+ * Claim atomique : premier device qui gagne.
+ * N'invente jamais d'entrée : la session doit exister (ring/setCalling).
+ * @returns {{ ok: boolean, reason?: string, entry?: object, alreadyOwner?: boolean }}
+ */
+async function tryClaim(key, userId, deviceId, socketId) {
+  const client = getDataClient();
+  if (client) return _redisTryClaim(client, key, userId, deviceId, socketId);
+  return _memTryClaim(key, userId, deviceId, socketId);
+}
+
+async function isOwnerDevice(key, userId, deviceId) {
+  const did = normalizeDeviceId(deviceId);
+  if (!did) return false;
+  const entry = await getEntry(key, userId);
+  return !!(entry && entry.activeDeviceId === did && entry.state !== 'left');
+}
+
+async function isOwnerSocket(key, userId, socketId) {
+  const entry = await getEntry(key, userId);
+  if (!entry || !socketId) return false;
+  return entry.activeSocketId === socketId && entry.state !== 'left';
+}
+
+async function releaseUser(key, userId) {
+  const client = getDataClient();
+  if (client) return _redisReleaseUser(client, key, userId);
+  return _memReleaseUser(key, userId);
+}
+
+async function release(key) {
+  const client = getDataClient();
+  if (client) return _redisRelease(client, key);
+  return _memRelease(key);
+}
+
+/** Réservé aux tests du repli mémoire — le chemin Redis gère son propre nettoyage. */
 function _reset() {
   _byKey.clear();
 }
 
 module.exports = {
   setCalling,
+  setActive,
   ring,
   tryClaim,
   getEntry,

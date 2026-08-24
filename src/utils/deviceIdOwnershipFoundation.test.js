@@ -64,22 +64,22 @@ const { makeFakeIo, fakeSocket } = require('../testUtils/fakeIo');
 
   // ── ownership claim atomique ───────────────────────────────────────────────
   callDeviceOwnership._reset();
-  callDeviceOwnership.setCalling('100', 1, {
+  await callDeviceOwnership.setCalling('100', 1, {
     activeDeviceId: 'dev-A',
     activeSocketId: 'sa',
   });
-  callDeviceOwnership.ring('100', 2);
-  const c1 = callDeviceOwnership.tryClaim('100', 2, 'dev-B1', 'sb1');
+  await callDeviceOwnership.ring('100', 2);
+  const c1 = await callDeviceOwnership.tryClaim('100', 2, 'dev-B1', 'sb1');
   assert.strictEqual(c1.ok, true);
-  const c2 = callDeviceOwnership.tryClaim('100', 2, 'dev-B2', 'sb2');
+  const c2 = await callDeviceOwnership.tryClaim('100', 2, 'dev-B2', 'sb2');
   assert.strictEqual(c2.ok, false);
   assert.strictEqual(c2.reason, 'CALL_ANSWERED_ELSEWHERE');
-  assert.strictEqual(callDeviceOwnership.getActiveDeviceId('100', 1), 'dev-A');
-  assert.strictEqual(callDeviceOwnership.isOwnerDevice('100', 2, 'dev-B1'), true);
-  assert.strictEqual(callDeviceOwnership.isOwnerDevice('100', 2, 'dev-B2'), false);
+  assert.strictEqual(await callDeviceOwnership.getActiveDeviceId('100', 1), 'dev-A');
+  assert.strictEqual(await callDeviceOwnership.isOwnerDevice('100', 2, 'dev-B1'), true);
+  assert.strictEqual(await callDeviceOwnership.isOwnerDevice('100', 2, 'dev-B2'), false);
 
   // tryClaim n'invente pas de session
-  const ghost = callDeviceOwnership.tryClaim('missing', 9, 'dev-X', 'sx');
+  const ghost = await callDeviceOwnership.tryClaim('missing', 9, 'dev-X', 'sx');
   assert.strictEqual(ghost.ok, false);
   assert.strictEqual(ghost.reason, 'NO_SESSION');
 

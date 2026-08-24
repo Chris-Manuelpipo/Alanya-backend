@@ -51,6 +51,31 @@ async function enqueue(
   return res.insertId || null;
 }
 
+/**
+ * Désarme tous les jobs en attente pour une clé de déduplication + une liste
+ * de kinds. Indispensable avant tout ré-armement : `enqueue` fait
+ * `ON DUPLICATE KEY UPDATE id = id` et renvoie `null` en silence si la clé
+ * existe déjà — sans désarmer d'abord, un ré-armement paraîtrait fonctionner
+ * mais l'ancienne échéance resterait celle qui compte.
+ */
+async function cancelByDedupeKey(dedupeKey, kinds) {
+  if (!dedupeKey || !kinds?.length) return;
+  await pool.execute(
+    `DELETE FROM job_queue WHERE dedupe_key = ? AND kind IN (${kinds.map(() => '?').join(',')})`,
+    [dedupeKey, ...kinds],
+  );
+}
+
+/** Un job de ce kind/dedupeKey est-il actuellement en attente (armé) ? */
+async function hasJob(dedupeKey, kind) {
+  if (!dedupeKey) return false;
+  const [rows] = await pool.execute(
+    'SELECT 1 FROM job_queue WHERE dedupe_key = ? AND kind = ? LIMIT 1',
+    [dedupeKey, kind],
+  );
+  return rows.length > 0;
+}
+
 async function reclaimOrphans() {
   await pool.execute(
     `UPDATE job_queue
@@ -186,6 +211,8 @@ function stopJobWorker() {
 
 module.exports = {
   enqueue,
+  cancelByDedupeKey,
+  hasJob,
   isJobWorkerEnabled,
   registerJobHandler,
   startJobWorker,
