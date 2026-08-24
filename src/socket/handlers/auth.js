@@ -56,6 +56,13 @@ const socketAuth = (io, socket, userSockets) => {
       // `appareils.device_id` — seul `appareilId` désigne la même ligne des
       // deux côtés.
       socket.appareilId = decoded.appareilId ?? null;
+      // Doublé dans `socket.data.*` : c'est le seul sous-objet que l'adapter
+      // Redis sérialise vers un RemoteSocket distant (intégration Redis
+      // phase 1) — nécessaire pour que userSocketRegistry.js lise ces
+      // valeurs cross-instance via fetchSockets(). La propriété à plat reste
+      // pour le code non migré qui la lit en local sur ce même socket.
+      socket.data.deviceId = socket.deviceId;
+      socket.data.appareilId = socket.appareilId;
       _registerSocket(socket, alanyaID, userSockets, io);
       console.log(`[Socket] Authentifié: User ${alanyaID} (socket ${socket.id})`);
 
@@ -73,6 +80,7 @@ function _registerSocket(socket, alanyaID, userSockets, io) {
   // via `presence:online` : l'app peut se (re)connecter en arrière-plan, par
   // exemple réveillée par une push d'appel.
   socket.isForeground  = false;
+  socket.data.isForeground = false; // doublé dans socket.data.* — voir plus haut
 
   registerUserSocket(userSockets, alanyaID, socket.id);
   socket.join(`user_${alanyaID}`);

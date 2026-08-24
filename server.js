@@ -6,8 +6,10 @@ require('./src/config/firebase');
 const express    = require('express');
 const http       = require('http');
 const { Server } = require('socket.io');
+const { createAdapter } = require('@socket.io/redis-adapter');
 const cors       = require('cors');
 const path       = require('path');
+const { REDIS_ENABLED, REDIS_URL, createRedisClient, connectWithTimeout } = require('./src/config/redis');
 
 const errorHandler = require('./src/middleware/errorHandler');
 const { generalLimiter } = require('./src/middleware/rateLimiter');
@@ -237,53 +239,85 @@ const resetStalePresence = async () => {
 };
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Serveur en marche sur le port ${PORT}`);
-  resetStalePresence();
-  registerBroadcastJobHandlers();
-  registerWelcomeJobHandlers();
-  // Les jobs de trajet tournent hors requête : ils n'ont pas accès à
-  // req.app.get('io'), il faut donc le leur donner explicitement.
-  setTripIo(io);
-  registerTripJobHandlers();
-  initBroadcastCache().catch((e) => console.error('[Broadcast] init cache:', e.message));
-  startJobWorker();
-  startMeetingScheduler();
-  startVerificationScheduler();
-  stopAccountLifecycleSchedulers = startAccountLifecycleSchedulers();
 
-  setInterval(() => {
-    withLease('broadcast_nightly_purge', () => runNightlyDeliveryMaintenance()).catch(
-      (e) => console.error('[Broadcast] nightly:', e.message),
-    );
-    // Sans cette purge, `statut` grossit d'une ligne par inscription et ne
-    // rétrécit jamais : l'app cesse d'afficher un statut expiré, mais rien ne
-    // le supprimait.
-    withLease('welcome_status_purge', () => purgeExpiredWelcomeStatuses()).catch(
-      (e) => console.error('[Welcome] purge statuts:', e.message),
-    );
-    // Trace GPS : 30 jours après clôture (TRIP_POINTS_RETENTION_H), autant si
-    // le trajet s'est clos sur une alerte. Sans cette purge, `trip_point`
-    // deviendrait un registre permanent des déplacements de tous les
-    // utilisateurs. L'admin peut la déclencher à la main, mais rien ne dépend
-    // de lui : ce balayage suffit.
-    withLease('trip_nightly_purge', () => runNightlyTripPurge()).catch(
-      (e) => console.error('[Trips] purge:', e.message),
-    );
-    // Statuts ordinaires expirés, historique d'appels, journal de connexions,
-    // jobs en échec terminal, appareils révoqués, OTP abandonnés — aucune de
-    // ces tables n'était purgée avant (audit scalabilité 06/08/2026 §2.5).
-    withLease('data_retention_purge', () => runDataRetentionPurge()).catch(
-      (e) => console.error('[DataRetention] purge:', e.message),
-    );
-    // Fichiers média (uploads/) : 30 jours après l'envoi (MEDIA_RETENTION_DAYS).
-    // Le message reste, seule mediaUrl est vidée — une copie déjà téléchargée
-    // sur un appareil n'est jamais concernée par cette purge.
-    withLease('media_nightly_purge', () => runNightlyMediaPurge()).catch(
-      (e) => console.error('[Media] purge:', e.message),
-    );
-  }, 24 * 60 * 60 * 1000);
-});
+/**
+ * Adapter Socket.IO Redis (intégration Redis phase 1) : sans lui,
+ * `io.to(room).emit()` n'atteint que les sockets connectées à CE process —
+ * bloquant pour tout passage à `pm2 -i > 1`. `REDIS_URL` absent : aucun
+ * changement de comportement, adapter en mémoire. `REDIS_URL` injoignable au
+ * démarrage : on préfère un échec bruyant à un serveur qui tourne en pensant
+ * émettre cluster-wide alors que ce n'est pas le cas.
+ */
+async function start() {
+  if (REDIS_ENABLED) {
+    const pubClient = createRedisClient('pub');
+    const subClient = pubClient.duplicate();
+    subClient.on('error', (e) => console.error('[Redis:sub] erreur:', e.message));
+    try {
+      await Promise.all([
+        connectWithTimeout(pubClient, 5000, 'pub'),
+        connectWithTimeout(subClient, 5000, 'sub'),
+      ]);
+    } catch (e) {
+      console.error('[Redis] connexion échouée au démarrage — arrêt du serveur:', e.message);
+      process.exit(1);
+    }
+    io.adapter(createAdapter(pubClient, subClient));
+    console.log('[Redis] adapter Socket.IO actif —', REDIS_URL.replace(/:\/\/[^@]*@/, '://***@'));
+  } else {
+    console.log('[Redis] REDIS_URL absent — adapter en mémoire (mono-instance uniquement)');
+  }
+
+  server.listen(PORT, () => {
+    console.log(`Serveur en marche sur le port ${PORT}`);
+    resetStalePresence();
+    registerBroadcastJobHandlers();
+    registerWelcomeJobHandlers();
+    // Les jobs de trajet tournent hors requête : ils n'ont pas accès à
+    // req.app.get('io'), il faut donc le leur donner explicitement.
+    setTripIo(io);
+    registerTripJobHandlers();
+    initBroadcastCache().catch((e) => console.error('[Broadcast] init cache:', e.message));
+    startJobWorker();
+    startMeetingScheduler();
+    startVerificationScheduler();
+    stopAccountLifecycleSchedulers = startAccountLifecycleSchedulers();
+
+    setInterval(() => {
+      withLease('broadcast_nightly_purge', () => runNightlyDeliveryMaintenance()).catch(
+        (e) => console.error('[Broadcast] nightly:', e.message),
+      );
+      // Sans cette purge, `statut` grossit d'une ligne par inscription et ne
+      // rétrécit jamais : l'app cesse d'afficher un statut expiré, mais rien ne
+      // le supprimait.
+      withLease('welcome_status_purge', () => purgeExpiredWelcomeStatuses()).catch(
+        (e) => console.error('[Welcome] purge statuts:', e.message),
+      );
+      // Trace GPS : 30 jours après clôture (TRIP_POINTS_RETENTION_H), autant si
+      // le trajet s'est clos sur une alerte. Sans cette purge, `trip_point`
+      // deviendrait un registre permanent des déplacements de tous les
+      // utilisateurs. L'admin peut la déclencher à la main, mais rien ne dépend
+      // de lui : ce balayage suffit.
+      withLease('trip_nightly_purge', () => runNightlyTripPurge()).catch(
+        (e) => console.error('[Trips] purge:', e.message),
+      );
+      // Statuts ordinaires expirés, historique d'appels, journal de connexions,
+      // jobs en échec terminal, appareils révoqués, OTP abandonnés — aucune de
+      // ces tables n'était purgée avant (audit scalabilité 06/08/2026 §2.5).
+      withLease('data_retention_purge', () => runDataRetentionPurge()).catch(
+        (e) => console.error('[DataRetention] purge:', e.message),
+      );
+      // Fichiers média (uploads/) : 30 jours après l'envoi (MEDIA_RETENTION_DAYS).
+      // Le message reste, seule mediaUrl est vidée — une copie déjà téléchargée
+      // sur un appareil n'est jamais concernée par cette purge.
+      withLease('media_nightly_purge', () => runNightlyMediaPurge()).catch(
+        (e) => console.error('[Media] purge:', e.message),
+      );
+    }, 24 * 60 * 60 * 1000);
+  });
+}
+
+start();
 
 // Filet de dernier recours. Express 4 ne capture PAS le rejet d'un handler
 // `async` : toute erreur non rattrapée y remonte en unhandled rejection, et

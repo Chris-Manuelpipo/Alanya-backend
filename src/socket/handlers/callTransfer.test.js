@@ -177,7 +177,7 @@ function fireConfReady(io, sessionId) {
     try {
       const s = openTransfer();
       callState.setRinging(NADIA, { callId: s.sessionId, peerId: CHRIS });
-      failInvite(fakeIo(), s.sessionId, 'declined');
+      await failInvite(fakeIo(), s.sessionId, 'declined');
       assert.strictEqual(callSessions.get(s.sessionId), null);
       assert.strictEqual(timers.activeLeave().length, 0, 'B: refus ≠ leaveTimer');
       assert.strictEqual(callState.get(CHRIS), 'in_call');

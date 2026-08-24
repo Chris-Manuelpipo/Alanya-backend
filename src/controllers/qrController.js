@@ -261,15 +261,18 @@ const _prevenirProprietaire = async (req, ownerID, scannerID) => {
       alreadyMutual,
       at: new Date().toISOString(),
     });
+    // Un seul aller-retour (Redis en multi-instance) : deux appels indépendants
+    // pourraient incohérer si une socket se (dé)connecte entre les deux lectures.
+    const foreground = await hasForegroundSocket(io, ownerID);
     console.log(
       `[QrContact] scan notifié owner=${ownerID} par=${scannerID}` +
-      ` mutual=${alreadyMutual} push=${!hasForegroundSocket(io, ownerID)}`,
+      ` mutual=${alreadyMutual} push=${!foreground}`,
     );
 
     // App fermée ou en arrière-plan : le push prend le relais — et transporte
     // l'identité du scanneur, pour que le tap rejoue le dialogue d'ajout en
     // retour que l'événement socket ne peut plus livrer.
-    if (!hasForegroundSocket(io, ownerID)) {
+    if (!foreground) {
       await notifyQrContactScanned(ownerID, scanner, alreadyMutual);
     }
   } catch (error) {

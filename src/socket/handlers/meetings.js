@@ -266,14 +266,24 @@ const meetingEnd = (io, socket, userSockets) => {
     meetingVideoStates.clearMeeting(meetingID);
     meetingDevicePresence.clearMeeting(meetingID);
 
-    const roomSockets = io.sockets.adapter.rooms.get(`meeting_${meetingID}`);
-    if (roomSockets) {
-      for (const sid of roomSockets) {
+    // io.sockets.adapter.rooms/sockets ne voient que CE process : capturer les
+    // membres locaux avant de faire partir tout le monde de la room, sinon
+    // socketsLeave() (cross-instance, voir plus bas) l'aura déjà vidée ici.
+    const localSids = io.sockets.adapter.rooms.get(`meeting_${meetingID}`);
+
+    // Cross-instance : propage le départ de la room via l'adapter Redis à
+    // toute socket membre, quelle que soit l'instance qui l'héberge — sans
+    // ça, un participant connecté à une AUTRE instance que celle traitant
+    // meeting:end continuerait de recevoir les diffusions de cette room.
+    io.in(`meeting_${meetingID}`).socketsLeave(`meeting_${meetingID}`);
+
+    // currentMeetingID est une propriété brute lue uniquement en local (jamais
+    // via fetchSockets()) : la réinitialiser ne vaut donc que pour les sockets
+    // de CE process — une RemoteSocket ne peut pas être mutée à distance.
+    if (localSids) {
+      for (const sid of localSids) {
         const s = io.sockets.sockets.get(sid);
-        if (s) {
-          s.leave(`meeting_${meetingID}`);
-          s.currentMeetingID = null;
-        }
+        if (s) s.currentMeetingID = null;
       }
     }
   });

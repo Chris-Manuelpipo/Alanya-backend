@@ -64,66 +64,78 @@ function emitToDevice(io, userId, deviceId, event, payload) {
 /**
  * Émet à tous les sockets du compte sauf ceux du device exclu.
  * Primitive primaire pour stopper les appareils frères (CallKit / média).
+ * Cross-instance via fetchSockets() — voir commentaire ci-dessous.
  */
-function emitToUserExceptDevice(io, userId, excludedDeviceId, event, payload) {
+async function emitToUserExceptDevice(io, userId, excludedDeviceId, event, payload) {
   if (!io || userId == null) return;
-  const room = io.sockets?.adapter?.rooms?.get(`user_${Number(userId)}`);
-  if (!room) return;
   const excluded = normalizeDeviceId(excludedDeviceId);
-  for (const sid of room) {
-    const s = io.sockets.sockets.get(sid);
-    if (!s) continue;
-    const did = normalizeDeviceId(s.deviceId);
+  let sockets;
+  try {
+    sockets = await io.in(`user_${Number(userId)}`).fetchSockets();
+  } catch (e) {
+    console.error('[userSocketRegistry] emitToUserExceptDevice fetchSockets échoué:', e.message);
+    return;
+  }
+  for (const s of sockets) {
+    const did = normalizeDeviceId(s.data?.deviceId);
     if (excluded && did && did === excluded) continue;
     s.emit(event, payload);
   }
 }
 
 /**
- * Émet à tous sauf un socketId (actions locales uniquement — pas pour stop CallKit).
+ * `io.sockets.adapter.rooms`/`io.sockets.sockets` ne sont visibles que dans
+ * CE process. Même avec l'adapter Redis attaché, ils ne reflètent jamais les
+ * sockets connectées à une autre instance : ce sont ces 5 fonctions qu'il
+ * faut faire passer par `io.in(room).fetchSockets()` (async, cross-instance)
+ * pour rester correctes en multi-instance. Seul `socket.data.*` est
+ * sérialisé par l'adapter vers un `RemoteSocket` distant — les propriétés à
+ * plat (`socket.isForeground`, `.deviceId`, `.appareilId`) restent posées en
+ * plus, pour le code non migré qui les lit localement (voir auth.js/presence.js).
  */
-function emitToUserExceptSocket(io, userId, exceptSocketId, event, payload) {
-  if (!io || userId == null) return;
-  const room = io.sockets?.adapter?.rooms?.get(`user_${Number(userId)}`);
-  if (!room) return;
-  for (const sid of room) {
-    if (exceptSocketId && sid === exceptSocketId) continue;
-    const s = io.sockets.sockets.get(sid);
-    if (s) s.emit(event, payload);
+async function isUserOnline(io, alanyaID) {
+  if (!io) return false;
+  try {
+    const sockets = await io.in(`user_${Number(alanyaID)}`).fetchSockets();
+    return sockets.length > 0;
+  } catch (e) {
+    console.error('[userSocketRegistry] isUserOnline fetchSockets échoué:', e.message);
+    return false;
   }
-}
-
-function isUserOnline(io, alanyaID) {
-  if (!io?.sockets?.adapter?.rooms) return false;
-  const room = io.sockets.adapter.rooms.get(`user_${Number(alanyaID)}`);
-  return !!(room && room.size > 0);
 }
 
 /**
  * Vrai si AU MOINS UNE socket du compte se déclare au premier plan.
  */
-function hasForegroundSocket(io, alanyaID) {
-  if (!io?.sockets?.adapter?.rooms) return false;
-  const room = io.sockets.adapter.rooms.get(`user_${Number(alanyaID)}`);
-  if (!room) return false;
-  for (const sid of room) {
-    if (io.sockets.sockets.get(sid)?.isForeground === true) return true;
+async function hasForegroundSocket(io, alanyaID) {
+  if (!io) return false;
+  try {
+    const sockets = await io.in(`user_${Number(alanyaID)}`).fetchSockets();
+    return sockets.some((s) => s.data?.isForeground === true);
+  } catch (e) {
+    console.error('[userSocketRegistry] hasForegroundSocket fetchSockets échoué:', e.message);
+    return false;
   }
-  return false;
 }
 
 /**
- * Ferme les sockets d'un appareil précis, à sa révocation.
+ * Ferme les sockets d'un appareil précis, à sa révocation — cross-instance :
+ * sans passer par fetchSockets(), un appareil révoqué resterait connecté sur
+ * toute autre instance que celle ayant traité la requête de révocation.
  * @returns {number} nombre de sockets fermées
  */
-function disconnectAppareilSockets(io, alanyaID, appareilId) {
-  if (!io?.sockets?.adapter?.rooms || appareilId == null) return 0;
-  const room = io.sockets.adapter.rooms.get(`user_${Number(alanyaID)}`);
-  if (!room) return 0;
+async function disconnectAppareilSockets(io, alanyaID, appareilId) {
+  if (!io || appareilId == null) return 0;
+  let sockets;
+  try {
+    sockets = await io.in(`user_${Number(alanyaID)}`).fetchSockets();
+  } catch (e) {
+    console.error('[userSocketRegistry] disconnectAppareilSockets fetchSockets échoué:', e.message);
+    return 0;
+  }
   let closed = 0;
-  for (const sid of [...room]) {
-    const s = io.sockets.sockets.get(sid);
-    if (s && s.appareilId != null && Number(s.appareilId) === Number(appareilId)) {
+  for (const s of sockets) {
+    if (s.data?.appareilId != null && Number(s.data.appareilId) === Number(appareilId)) {
       s.disconnect(true);
       closed++;
     }
@@ -132,14 +144,18 @@ function disconnectAppareilSockets(io, alanyaID, appareilId) {
 }
 
 /** deviceId normalisés des sockets authentifiés dans user_{alanyaID}. */
-function getConnectedDeviceIds(io, alanyaID) {
+async function getConnectedDeviceIds(io, alanyaID) {
   const ids = new Set();
-  if (!io?.sockets?.adapter?.rooms) return ids;
-  const room = io.sockets.adapter.rooms.get(`user_${Number(alanyaID)}`);
-  if (!room) return ids;
-  for (const sid of room) {
-    const s = io.sockets.sockets.get(sid);
-    const did = normalizeDeviceId(s?.deviceId);
+  if (!io) return ids;
+  let sockets;
+  try {
+    sockets = await io.in(`user_${Number(alanyaID)}`).fetchSockets();
+  } catch (e) {
+    console.error('[userSocketRegistry] getConnectedDeviceIds fetchSockets échoué:', e.message);
+    return ids;
+  }
+  for (const s of sockets) {
+    const did = normalizeDeviceId(s.data?.deviceId);
     if (did) ids.add(did);
   }
   return ids;
@@ -155,7 +171,6 @@ module.exports = {
   emitToSocket,
   emitToDevice,
   emitToUserExceptDevice,
-  emitToUserExceptSocket,
   isUserOnline,
   getConnectedDeviceIds,
   disconnectAppareilSockets,

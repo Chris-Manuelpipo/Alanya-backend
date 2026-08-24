@@ -325,7 +325,7 @@ const revokeDeviceSession = async (req, res) => {
     // Garantie dure, elle : le 401 du middleware ferme REST, cette fermeture
     // ferme le temps réel. Après l'emit, pour que le client reçoive l'event
     // avant que sa socket ne tombe.
-    const fermees = disconnectAppareilSockets(io, req.user.alanyaID, id);
+    const fermees = await disconnectAppareilSockets(io, req.user.alanyaID, id);
 
     console.log(`[QrAuth] appareil révoqué id=${id} user=${req.user.alanyaID} sockets=${fermees}`);
     res.json({ ok: true });

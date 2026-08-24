@@ -32,7 +32,7 @@ const syncPresence = async (io, alanyaID) => {
   const uid = Number(alanyaID);
   if (!uid) return;
 
-  const online = hasForegroundSocket(io, uid);
+  const online = await hasForegroundSocket(io, uid);
   if (_lastBroadcast.get(uid) === online) return;
   _lastBroadcast.set(uid, online);
 
@@ -69,6 +69,7 @@ const presenceOnline = (io, socket) => {
     // sinon n'importe quelle socket pourrait mettre n'importe qui en ligne.
     if (!socket.authenticated || !socket.alanyaID) return;
     socket.isForeground = true;
+    socket.data.isForeground = true; // doublé pour fetchSockets() cross-instance
     await syncPresence(io, socket.alanyaID);
   });
 };
@@ -80,6 +81,7 @@ const presenceOffline = (io, socket) => {
     // enregistrée (routage des appels, réception des messages), seul son
     // drapeau premier plan tombe.
     socket.isForeground = false;
+    socket.data.isForeground = false; // doublé pour fetchSockets() cross-instance
     await syncPresence(io, socket.alanyaID);
   });
 };

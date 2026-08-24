@@ -264,7 +264,7 @@ const sendToUserLegacy = async (alanyaID, data = {}, options = {}) => {
   try {
     const { io = null, skipIfDeviceOnline = false } = options;
     const connectedDevices =
-      skipIfDeviceOnline && io ? getConnectedDeviceIds(io, alanyaID) : new Set();
+      skipIfDeviceOnline && io ? await getConnectedDeviceIds(io, alanyaID) : new Set();
 
     const pool = require('../config/db');
     const [rows] = await pool.execute(

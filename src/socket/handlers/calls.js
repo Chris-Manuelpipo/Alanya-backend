@@ -341,7 +341,7 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
   if (!wasPending && pendingInvitee != null) {
     const presentCount = callSessions.participantIds(session).length;
     if (presentCount <= 2) {
-      failInvite(io, sessionId, reason === 'disconnect' ? 'offline' : 'caller_left');
+      await failInvite(io, sessionId, reason === 'disconnect' ? 'offline' : 'caller_left');
       // Session détruite. On termine le départ comme un hangup 1-à-1.
       callState.cancelDisconnectGrace(userID);
       const entry = callState.getEntry(userID);
@@ -545,10 +545,10 @@ async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnec
 // reconnexion en grâce — son client a terminé sans prévenir (crash, kill, bug).
 // Sans ce nettoyage, la session le maintiendrait « occupé » et confisquerait le
 // droit d'ajout de l'appel indéfiniment.
-function reclaimStaleSession(io, userID) {
+async function reclaimStaleSession(io, userID) {
   const session = callSessions.getByUser(userID);
   if (!session) return false;
-  if (isUserOnline(io, userID)) return false;
+  if (await isUserOnline(io, userID)) return false;
   if (callState.getEntry(userID)?.disconnectTimer) return false;
 
   console.log(
@@ -558,12 +558,12 @@ function reclaimStaleSession(io, userID) {
   return true;
 }
 
-function reclaimStaleBusy(io, userID) {
-  reclaimStaleSession(io, userID);
+async function reclaimStaleBusy(io, userID) {
+  await reclaimStaleSession(io, userID);
   const entry = callState.getEntry(userID);
   if (!entry) return false;
   if (entry.status !== 'in_call' && entry.status !== 'ringing') return false;
-  if (isUserOnline(io, userID)) return false;   // en ligne : appel en arrière-plan légitime
+  if (await isUserOnline(io, userID)) return false;   // en ligne : appel en arrière-plan légitime
   if (entry.disconnectTimer) return false;       // grâce de reconnexion déjà armée
   const peerID = entry.peerId != null ? toInt(entry.peerId) : null;
   console.log(
@@ -652,12 +652,12 @@ const callUser = (io, socket, userSockets) => {
           `[Socket call_user] 🔁 Paire déjà en sonnerie callId=${existingPair.callId ?? 'none'} caller=${callerID} target=${targetID}`,
         );
         const pending = pendingCalls.get(targetID);
-        if (pending && isUserOnline(io, targetID)) {
+        if (pending && (await isUserOnline(io, targetID))) {
           emitToUser(io, targetID, 'incoming_call', pending);
         }
         // Glare : l'appelant est aussi la cible de l'autre sonnerie → lui renvoyer l'entrant.
         const pendingForCaller = pendingCalls.get(callerID);
-        if (pendingForCaller && isUserOnline(io, callerID)) {
+        if (pendingForCaller && (await isUserOnline(io, callerID))) {
           emitToUser(io, callerID, 'incoming_call', pendingForCaller);
         }
         return;
@@ -665,8 +665,8 @@ const callUser = (io, socket, userSockets) => {
 
       // Purge un éventuel « occupé » fantôme (appel précédent jamais nettoyé)
       // avant d'évaluer la disponibilité réelle des deux participants.
-      reclaimStaleBusy(io, targetID);
-      reclaimStaleBusy(io, callerID);
+      await reclaimStaleBusy(io, targetID);
+      await reclaimStaleBusy(io, callerID);
 
       if (callState.isBusyForNewCall(callerID, targetID, pendingCalls)) {
         console.log(`[Socket call_user] ⛔ Appelant occupé: caller=${callerID} (${callState.get(callerID)})`);
@@ -731,7 +731,7 @@ const callUser = (io, socket, userSockets) => {
       pendingCalls.set(targetID, incomingPayload);
       console.log(`[PhantomCallFix] pending:set target=${targetID} callId=${incomingPayload.callId ?? 'none'}`);
 
-      if (isUserOnline(io, targetID)) {
+      if (await isUserOnline(io, targetID)) {
         console.log(`[Socket call_user] !! Envoi incoming_call à user_${targetID}`);
         emitToUser(io, targetID, 'incoming_call', incomingPayload);
         const delivery = pendingCalls.markDelivered(targetID, 'socket-live');
@@ -839,7 +839,7 @@ const answerCall = (io, socket, userSockets) => {
         reason: 'answered_elsewhere',
         claimedByAnotherDevice: true,
       };
-      emitToUserExceptDevice(
+      await emitToUserExceptDevice(
         io,
         receiverID,
         deviceId,
@@ -999,7 +999,7 @@ async function processRejectCall({
     claimedByAnotherDevice: true,
   };
   if (rejectingDeviceId) {
-    emitToUserExceptDevice(io, receiverID, rejectingDeviceId, 'call_ended', siblingPayload);
+    await emitToUserExceptDevice(io, receiverID, rejectingDeviceId, 'call_ended', siblingPayload);
     notifyCallEnded(receiverID, callerID, 'Appel refusé sur un autre appareil', rejectedCallID, {
       excludeDeviceId: rejectingDeviceId,
       reason: 'rejected_elsewhere',
@@ -1229,7 +1229,7 @@ async function closeSessionHistoryFor(sessionId, userID) {
   }
 }
 
-function failInvite(io, sessionId, reason, { decliningDeviceId = null } = {}) {
+async function failInvite(io, sessionId, reason, { decliningDeviceId = null } = {}) {
   const session = callSessions.get(sessionId);
   if (!session?.pending) return;
 
@@ -1260,7 +1260,7 @@ function failInvite(io, sessionId, reason, { decliningDeviceId = null } = {}) {
     claimedByAnotherDevice: reason === 'declined',
   };
   if (decliningDeviceId) {
-    emitToUserExceptDevice(io, inviteeID, decliningDeviceId, 'call_ended', endedPayload);
+    await emitToUserExceptDevice(io, inviteeID, decliningDeviceId, 'call_ended', endedPayload);
     notifyCallEnded(inviteeID, present[0] ?? null, 'Correspondant', sessionId, {
       excludeDeviceId: decliningDeviceId,
       reason: endedPayload.reason,
@@ -1340,7 +1340,7 @@ const addParticipant = (io, socket, userSockets) => {
       if (!peerID) return reject('NOT_IN_CALL');
       if (peerID === inviteeID) return reject('TARGET_ALREADY_IN_CALL');
 
-      reclaimStaleBusy(io, inviteeID);
+      await reclaimStaleBusy(io, inviteeID);
       if (callState.isBusyForNewCall(inviteeID, requesterID, pendingCalls)) {
         console.log(`[Socket call_add] ⛔ invité occupé: ${inviteeID} (${callState.get(inviteeID)})`);
         return reject('TARGET_BUSY');
@@ -1394,7 +1394,11 @@ const addParticipant = (io, socket, userSockets) => {
 
       callSessions.setPendingTimer(
         sessionId,
-        setTimeout(() => failInvite(io, sessionId, 'no_answer'), NO_ANSWER_MS),
+        setTimeout(() => {
+          failInvite(io, sessionId, 'no_answer').catch((err) =>
+            console.warn('[Socket call_add] failInvite no_answer:', err.message),
+          );
+        }, NO_ANSWER_MS),
       );
 
       const cards = await fetchUserCards([requesterID, peerID, inviteeID]);
@@ -1454,14 +1458,14 @@ const addParticipant = (io, socket, userSockets) => {
 };
 
 const cancelAddParticipant = (io, socket, userSockets) => {
-  socket.on('call_add_cancel', () => {
+  socket.on('call_add_cancel', async () => {
     try {
       if (!socket.authenticated) return;
       const session = callSessions.getByUser(socket.alanyaID);
       if (!session?.pending) return;
       // L'invitation appartient à celui qui l'a lancée : lui seul l'annule.
       if (session.pending.byUserId !== socket.alanyaID) return;
-      failInvite(io, session.sessionId, 'cancelled');
+      await failInvite(io, session.sessionId, 'cancelled');
     } catch (error) {
       console.error('[Socket call_add_cancel]', error.message);
     }
@@ -1469,12 +1473,12 @@ const cancelAddParticipant = (io, socket, userSockets) => {
 };
 
 const confReject = (io, socket, userSockets) => {
-  socket.on('call_conf_reject', () => {
+  socket.on('call_conf_reject', async () => {
     try {
       if (!socket.authenticated) return;
       const session = callSessions.getByUser(socket.alanyaID);
       if (!session || !callSessions.isPending(session, socket.alanyaID)) return;
-      failInvite(io, session.sessionId, 'declined', {
+      await failInvite(io, session.sessionId, 'declined', {
         decliningDeviceId: normalizeDeviceId(socket.deviceId),
       });
     } catch (error) {
@@ -1564,7 +1568,7 @@ const confJoin = (io, socket, userSockets) => {
         reason: 'answered_elsewhere',
         claimedByAnotherDevice: true,
       };
-      emitToUserExceptDevice(io, inviteeID, deviceId, 'call_ended', elsewherePayload);
+      await emitToUserExceptDevice(io, inviteeID, deviceId, 'call_ended', elsewherePayload);
       notifyCallEnded(inviteeID, present[0] ?? null, 'Appel répondu sur un autre appareil', sessionId, {
         excludeDeviceId: deviceId,
         reason: 'answered_elsewhere',
@@ -1676,7 +1680,7 @@ const confReady = (io, socket, userSockets) => {
 //  APPELS DE GROUPE
 
 const createGroupCall = (io, socket, userSockets) => {
-  socket.on('create_group_call', (data) => {
+  socket.on('create_group_call', async (data) => {
     try {
       if (!socket.authenticated) return;
       const { roomId, callerId, callerName, callerPhoto, isVideo, targetUserIds } = data;
@@ -1725,7 +1729,7 @@ const createGroupCall = (io, socket, userSockets) => {
       for (const targetID of uniqueTargets) {
         callDeviceOwnership.ring(String(roomId), targetID);
         fcmTargets.push(targetID);
-        if (isUserOnline(io, targetID)) {
+        if (await isUserOnline(io, targetID)) {
           emitToUser(io, targetID, 'group_call_invite', {
             callerId:    String(callerID),
             callerName:  callerName  || '',
@@ -1746,7 +1750,7 @@ const createGroupCall = (io, socket, userSockets) => {
 };
 
 const joinGroupCall = (io, socket, userSockets) => {
-  socket.on('join_group_call', (data) => {
+  socket.on('join_group_call', async (data) => {
     try {
       if (!socket.authenticated) return;
       const { roomId, userId, userName, userPhoto } = data;
@@ -1798,7 +1802,7 @@ const joinGroupCall = (io, socket, userSockets) => {
       socket.currentGroupRoom = roomId;
 
       if (!claim.alreadyOwner) {
-        emitToUserExceptDevice(io, userID, deviceId, 'call_ended', {
+        await emitToUserExceptDevice(io, userID, deviceId, 'call_ended', {
           callId: roomKey,
           reason: 'answered_elsewhere',
           claimedByAnotherDevice: true,

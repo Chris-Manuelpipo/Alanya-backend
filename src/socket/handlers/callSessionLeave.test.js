@@ -10,24 +10,19 @@ const { leaveCallSession, failInvite } = require('./calls');
 const callState = require('../state/callState');
 const callSessions = require('../state/callSessions');
 const pendingCalls = require('../state/pendingCalls');
+const { makeFakeIo, fakeSocket } = require('../../testUtils/fakeIo');
 
 const CHRIS = 1;
 const AWA = 2;
 const NADIA = 3;
 
-// io factice : capture les événements émis par utilisateur / socket device.
+// io factice : capture les événements émis par utilisateur (via .to().emit(),
+// toujours local — l'adapter le propage cross-instance sans changement de
+// code) + délègue fetchSockets() cross-instance à makeFakeIo pour
+// emitToUserExceptDevice (async depuis l'intégration Redis phase 1).
 function fakeIo(extraSockets = []) {
   const sent = [];
-  const socketsMap = new Map();
-  const rooms = new Map();
-
-  for (const s of extraSockets) {
-    socketsMap.set(s.id, s);
-    for (const room of s.rooms || []) {
-      if (!rooms.has(room)) rooms.set(room, new Set());
-      rooms.get(room).add(s.id);
-    }
-  }
+  const base = makeFakeIo(extraSockets);
 
   return {
     sent,
@@ -35,33 +30,23 @@ function fakeIo(extraSockets = []) {
       return {
         emit(event, payload) {
           sent.push({ room, event, payload });
+          base.to(room).emit(event, payload);
         },
       };
     },
+    in: base.in,
     eventsFor(userId) {
       return sent.filter((e) => e.room === `user_${userId}`).map((e) => e.event);
     },
     payloadFor(userId, event) {
       return sent.find((e) => e.room === `user_${userId}` && e.event === event)?.payload;
     },
-    sockets: {
-      sockets: socketsMap,
-      adapter: { rooms },
-    },
+    sockets: base.sockets,
   };
 }
 
 function deviceSocket(id, userId, deviceId) {
-  const events = [];
-  return {
-    id,
-    deviceId,
-    rooms: [`user_${userId}`],
-    events,
-    emit(event, payload) {
-      events.push({ event, payload });
-    },
-  };
+  return fakeSocket(id, { userId, deviceId });
 }
 
 function reset() {
@@ -191,7 +176,7 @@ function threeWaySession() {
   callState.setRinging(NADIA, { peerId: CHRIS });
 
   io = fakeIo();
-  failInvite(io, pending.sessionId, 'no_answer');
+  await failInvite(io, pending.sessionId, 'no_answer');
   assert.strictEqual(io.payloadFor(CHRIS, 'call_conf_failed').reason, 'no_answer');
   assert.strictEqual(io.payloadFor(AWA, 'call_conf_failed').reason, 'no_answer');
   // L'invité qui n'a pas répondu doit voir sa sonnerie coupée.
@@ -210,7 +195,7 @@ function threeWaySession() {
   const c1 = deviceSocket('c1', NADIA, 'dev-C1');
   const c2 = deviceSocket('c2', NADIA, 'dev-C2');
   io = fakeIo([c1, c2]);
-  failInvite(io, declined.sessionId, 'declined', { decliningDeviceId: 'dev-C1' });
+  await failInvite(io, declined.sessionId, 'declined', { decliningDeviceId: 'dev-C1' });
   assert.strictEqual(io.payloadFor(CHRIS, 'call_conf_failed').reason, 'declined');
   assert.strictEqual(c1.events.length, 0, 'C1 (refuseur) exclu du stop distant');
   assert.strictEqual(c2.events.length, 1, 'C2 reçoit call_ended');
