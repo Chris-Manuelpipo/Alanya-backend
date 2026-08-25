@@ -19,6 +19,7 @@
 
 const pool = require('../../config/db');
 const tripState = require('../state/tripState');
+const { signalerPerte } = require('../../services/tripStaleWorkers');
 const policy = require('../../constants/tripPolicy');
 const {
   findTripById,
@@ -86,7 +87,7 @@ const tripSubscribe = (io, socket) => {
       socket.emit('trip:state', {
         tripId,
         state: trip.state,
-        stale: tripState.isStale(tripId),
+        stale: await tripState.isStale(tripId),
         policy: policy.publicPolicy(),
       });
     } catch (e) {
@@ -115,10 +116,10 @@ const tripUnsubscribe = (io, socket) => {
 const ingest = async (io, socket, trip, raw) => {
   const p = validPoint(raw);
   if (!p) return;
-  if (p.clientSeq != null && tripState.isDuplicate(trip.id, p.clientSeq)) return;
-  tripState.rememberSeq(trip.id, p.clientSeq);
+  if (p.clientSeq != null && await tripState.isDuplicate(trip.id, p.clientSeq)) return;
+  await tripState.rememberSeq(trip.id, p.clientSeq);
 
-  const { broadcast, persist } = tripState.admit(trip.id, p);
+  const { broadcast, persist } = await tripState.admit(trip.id, p);
 
   // La dernière position vit dans `trip` et s'écrase ; `trip_point` ne sert
   // qu'à rejouer la trace.
@@ -158,7 +159,7 @@ const ingest = async (io, socket, trip, raw) => {
   // Détection d'arrivée. Elle POSE LA QUESTION — elle ne clôt jamais. Le coût
   // d'un faux positif est alors une question à balayer, pas un filet rompu.
   if (trip.state === 'active' && trip.dest_lat != null) {
-    const arrive = tripState.checkArrival(
+    const arrive = await tripState.checkArrival(
       trip.id,
       p,
       { lat: Number(trip.dest_lat), lng: Number(trip.dest_lng) },
@@ -186,29 +187,23 @@ const ingest = async (io, socket, trip, raw) => {
   const msToEta = trip.eta_at ? new Date(trip.eta_at).getTime() - Date.now() : null;
   const distDest = trip.dest_lat == null ? null : tripState.distanceM(
     { lat: Number(trip.dest_lat), lng: Number(trip.dest_lng) }, p);
-  tripState.setRegime(trip.id, policy.regimeFor({
+  await tripState.setRegime(trip.id, policy.regimeFor({
     state: trip.state,
     kind: trip.kind,
     msToEta,
     distanceToDestM: distDest,
     batteryPct: p.battery,
   }).name);
-  tripState.armStale(trip.id, onStale(io));
+  await tripState.armStale(trip.id, onStale(io));
 };
 
 /** Passage en péremption : on informe, on n'alerte pas. La chaîne d'échéance
- *  continue de tourner de son côté, indépendamment du GPS. */
-const onStale = (io) => async (tripId, lastPoint) => {
-  try {
-    await pool.execute('UPDATE trip SET stale = 1 WHERE id = ?', [tripId]);
-    await logEvent(tripId, 'signal_lost', {
-      meta: lastPoint ? { lat: lastPoint.lat, lng: lastPoint.lng } : null,
-    });
-    io.to(room(tripId)).emit('trip:stale', { tripId, stale: true });
-  } catch (e) {
-    console.error('[Trip] onStale:', e.message);
-  }
-};
+ *  continue de tourner de son côté, indépendamment du GPS.
+ *
+ *  La cascade elle-même vit dans services/tripStaleWorkers.js : sans Redis
+ *  c'est le minuteur du process qui l'appelle (ici), avec Redis c'est le
+ *  balayage périodique. Une seule implémentation pour les deux chemins. */
+const onStale = (io) => async (tripId, lastPoint) => signalerPerte(io, tripId, lastPoint);
 
 const tripPosition = (io, socket) => {
   socket.on('trip:position', async (data) => {

@@ -96,6 +96,9 @@ const {
   registerCallSessionsJobHandlers, setIo: setCallSessionsIo,
   setUserSockets: setCallSessionsUserSockets,
 } = require('./src/services/callSessionsWorkers');
+const {
+  startTripStaleSweeper, stopTripStaleSweeper,
+} = require('./src/services/tripStaleWorkers');
 const { runNightlyTripPurge } = require('./src/services/tripRetention');
 const { runNightlyMediaPurge } = require('./src/services/mediaRetention');
 
@@ -303,6 +306,9 @@ async function start() {
     setCallSessionsIo(io);
     setCallSessionsUserSockets(userSockets);
     registerCallSessionsJobHandlers();
+    // Péremption des trajets : un balayage unique remplace un minuteur par
+    // trajet, sans quoi chaque position GPS coûterait une écriture en base.
+    startTripStaleSweeper(io);
     initBroadcastCache().catch((e) => console.error('[Broadcast] init cache:', e.message));
     startJobWorker();
     startMeetingScheduler();
@@ -377,6 +383,7 @@ process.on('SIGINT', () => {
   stopMeetingScheduler();
   stopVerificationScheduler();
   stopJobWorker();
+  stopTripStaleSweeper();
   stopAccountLifecycleSchedulers();
   process.exit(0);
 });
