@@ -5,18 +5,22 @@ const callDeviceOwnership = require('../state/callDeviceOwnership');
 const { callRejoin } = require('./calls');
 const { deviceRoom } = require('../../utils/deviceId');
 
-function reset() {
-  [10, 77].forEach((id) => callState.clear(id));
-  callDeviceOwnership.release('1329');
+async function reset() {
+  for (const id of [10, 77]) await callState.clear(id);
+  await callDeviceOwnership.release('1329');
 }
 
-function setOwner(callId, userId, deviceId) {
-  callDeviceOwnership.setCalling(callId, userId, {
+// `setActive` et non `setCalling` suivi d'une mutation de l'entrée : celle-ci
+// posait `state = 'active'` sur l'objet rendu, ce qui n'a plus aucun effet
+// depuis que le store rend une copie (et posait la propriété sur une PROMESSE
+// depuis qu'il est asynchrone). Le test passait quand même, parce que
+// `setCalling` renseigne déjà `activeDeviceId` — ce qui suffit à
+// `isOwnerDevice`. Il vérifiait donc moins que ce qu'il annonçait.
+async function setOwner(callId, userId, deviceId) {
+  await callDeviceOwnership.setActive(callId, userId, {
     activeDeviceId: deviceId,
     activeSocketId: `s_${userId}`,
   });
-  const e = callDeviceOwnership.getEntry(callId, userId);
-  e.state = 'active';
 }
 
 function fakeSocket(userId, deviceId) {
@@ -71,11 +75,11 @@ async function main() {
   const userSockets = new Map();
 
   // 1) Owner → emitToDevice call_rejoin_offer
-  reset();
-  callState.setInCall(10, { callId: '1329', peerId: 77 });
-  callState.setInCall(77, { callId: '1329', peerId: 10 });
-  setOwner('1329', 10, 'dev_10');
-  setOwner('1329', 77, 'dev_77');
+  await reset();
+  await callState.setInCall(10, { callId: '1329', peerId: 77 });
+  await callState.setInCall(77, { callId: '1329', peerId: 10 });
+  await setOwner('1329', 10, 'dev_10');
+  await setOwner('1329', 77, 'dev_77');
   const io = fakeIo();
   const sock = fakeSocket(10, 'dev_10');
   callRejoin(io, sock, userSockets);
@@ -91,11 +95,11 @@ async function main() {
   assert.strictEqual(io.userEmits.length, 0, 'pas de fan-out user_*');
 
   // 2) Non-owner source → ignore
-  reset();
-  callState.setInCall(10, { callId: '1329', peerId: 77 });
-  callState.setInCall(77, { callId: '1329', peerId: 10 });
-  setOwner('1329', 10, 'dev_10');
-  setOwner('1329', 77, 'dev_77');
+  await reset();
+  await callState.setInCall(10, { callId: '1329', peerId: 77 });
+  await callState.setInCall(77, { callId: '1329', peerId: 10 });
+  await setOwner('1329', 10, 'dev_10');
+  await setOwner('1329', 77, 'dev_77');
   const io2 = fakeIo();
   const sockSecondary = fakeSocket(10, 'dev_other');
   callRejoin(io2, sockSecondary, userSockets);
@@ -107,10 +111,10 @@ async function main() {
   assert.strictEqual(io2.userEmits.length, 0);
 
   // 3) Owner cible absent → drop, pas emitToUser
-  reset();
-  callState.setInCall(10, { callId: '1329', peerId: 77 });
-  callState.setInCall(77, { callId: '1329', peerId: 10 });
-  setOwner('1329', 10, 'dev_10');
+  await reset();
+  await callState.setInCall(10, { callId: '1329', peerId: 77 });
+  await callState.setInCall(77, { callId: '1329', peerId: 10 });
+  await setOwner('1329', 10, 'dev_10');
   // pas d'owner pour 77
   const io3 = fakeIo();
   const sock3 = fakeSocket(10, 'dev_10');
@@ -123,11 +127,11 @@ async function main() {
   assert.strictEqual(io3.userEmits.length, 0, 'jamais emitToUser fallback');
 
   // 4) call_rejoin_answer owner → device cible
-  reset();
-  callState.setInCall(77, { callId: '1329', peerId: 10 });
-  callState.setInCall(10, { callId: '1329', peerId: 77 });
-  setOwner('1329', 77, 'dev_77');
-  setOwner('1329', 10, 'dev_10');
+  await reset();
+  await callState.setInCall(77, { callId: '1329', peerId: 10 });
+  await callState.setInCall(10, { callId: '1329', peerId: 77 });
+  await setOwner('1329', 77, 'dev_77');
+  await setOwner('1329', 10, 'dev_10');
   const io4 = fakeIo();
   const sockAns = fakeSocket(77, 'dev_77');
   callRejoin(io4, sockAns, userSockets);
@@ -141,7 +145,7 @@ async function main() {
   assert.strictEqual(ansEmit.room, deviceRoom(10, 'dev_10'));
   assert.strictEqual(io4.userEmits.length, 0);
 
-  reset();
+  await reset();
   console.log('callRejoinOwnership.test.js OK');
 }
 
