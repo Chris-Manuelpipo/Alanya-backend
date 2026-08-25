@@ -322,7 +322,13 @@ const startAccountLifecycleSchedulers = () => {
     ).catch((e) => console.error('[AccountLifecycle] lease error:', e.message));
   };
   tick();
-  return setInterval(tick, 60 * 60 * 1000);
+  // Rendre une fonction d'ARRÊT, pas le handle : `server.js` stocke ce retour
+  // dans `stopAccountLifecycleSchedulers` et l'appelle à l'extinction. Rendre
+  // le Timeout faisait échouer l'arrêt sur un TypeError, avant le
+  // `process.exit(0)` qui le suit — le process ne se terminait alors que sur
+  // SIGKILL de pm2.
+  const handle = setInterval(tick, 60 * 60 * 1000);
+  return () => clearInterval(handle);
 };
 
 const exportAccountData = async (req, res) => {

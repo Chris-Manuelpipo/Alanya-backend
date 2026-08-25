@@ -52,7 +52,15 @@ async function main() {
     assert.strictEqual(db.calls.length, 2);
 
     const [sel, upd] = db.calls;
-    assert.ok(sel.sql.startsWith('SELECT msgID, mediaUrl FROM message'));
+    // L'alias `m` doit être déclaré dans le FROM : le prédicat qualifie ses
+    // colonnes (`m.mediaUrl`, `m.sendAt`). Sans lui, MySQL rejette la requête
+    // (« Unknown column 'm.mediaUrl' ») et la purge n'a jamais lieu — ce test,
+    // qui n'enregistre le SQL sans jamais l'exécuter, l'avait laissé passer.
+    assert.ok(sel.sql.startsWith('SELECT m.msgID, m.mediaUrl FROM message m'));
+    assert.ok(
+      /FROM message m\b/.test(sel.sql),
+      'le FROM doit aliaser la table en `m` pour que le prédicat soit résoluble',
+    );
     assert.deepStrictEqual(sel.params, [policy.RETENTION.mediaDays]);
 
     // Le message lui-même n'est JAMAIS supprimé : seule mediaUrl est vidée.

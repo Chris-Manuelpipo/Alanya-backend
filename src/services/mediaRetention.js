@@ -39,7 +39,9 @@ const expiredMediaWhere = () => ({
 const purgeExpiredMediaBatch = async (db = pool) => {
   const cible = expiredMediaWhere();
   const [rows] = await db.execute(
-    `SELECT msgID, mediaUrl FROM message WHERE ${cible.sql} LIMIT ${BATCH_SIZE}`,
+    // Alias `m` obligatoire : `expiredMediaWhere()` qualifie ses colonnes
+    // (`m.mediaUrl`, `m.sendAt`) pour rester utilisable dans une jointure.
+    `SELECT m.msgID, m.mediaUrl FROM message m WHERE ${cible.sql} LIMIT ${BATCH_SIZE}`,
     cible.params,
   );
   if (rows.length === 0) return 0;
