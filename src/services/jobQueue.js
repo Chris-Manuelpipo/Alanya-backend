@@ -94,6 +94,19 @@ function backoffSeconds(attempts) {
 }
 
 async function processOneJob(conn) {
+  // Ne verrouiller que les types que CETTE instance sait exécuter.
+  //
+  // La file est partagée par toutes les instances qui pointent sur la même
+  // base. Sans ce filtre, une instance restée sur une version antérieure du
+  // code (déploiement progressif, serveur oublié) verrouille un job d'un
+  // type qu'elle ne connaît pas, échoue, et le job s'épuise en tentatives
+  // alors qu'une autre instance savait parfaitement le traiter — un délai
+  // d'appel ou une échéance de trajet partirait en retard, ou pas du tout.
+  // Ici, elle ne le voit tout simplement pas, et il reste disponible pour
+  // qui sait s'en occuper.
+  const kinds = [...handlers.keys()];
+  if (kinds.length === 0) return false;
+
   await conn.beginTransaction();
   const [rows] = await conn.execute(
     `SELECT id, kind, payload, attempts, max_attempts
@@ -101,9 +114,11 @@ async function processOneJob(conn) {
      WHERE failed_at IS NULL
        AND locked_at IS NULL
        AND run_after <= NOW()
+       AND kind IN (${kinds.map(() => '?').join(',')})
      ORDER BY run_after ASC, id ASC
      LIMIT 1
      FOR UPDATE SKIP LOCKED`,
+    kinds,
   );
   if (!rows.length) {
     await conn.commit();
@@ -120,6 +135,8 @@ async function processOneJob(conn) {
   const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
 
   try {
+    // Invariant : le SELECT ci-dessus filtre déjà sur les kinds connus. Un
+    // handler manquant ici signalerait un désenregistrement en cours de route.
     if (!handler) throw new Error(`Handler inconnu: ${job.kind}`);
     await handler(payload, job);
     await pool.execute('DELETE FROM job_queue WHERE id = ?', [job.id]);

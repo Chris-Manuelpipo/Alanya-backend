@@ -1,8 +1,17 @@
-name: Déploiement VPS
+name: Déploiement VPS (historique — désactivé)
 
+# Déploiement automatique retiré le 2026-08-24 : ce VPS ne sert plus aucun
+# trafic applicatif (l'app Flutter ne parle qu'à alanya237.com), mais il
+# recevait quand même chaque push et redémarrait son backend. Deux instances
+# sur la même base MySQL se disputent `job_queue` : un délai d'appel ou une
+# échéance de trajet armé par le serveur qui sert les utilisateurs pouvait
+# être consommé par celui-ci, qui n'a pas les sockets correspondantes — la
+# cascade partait alors dans le vide.
+#
+# `workflow_dispatch` conservé pour pouvoir redéployer à la main si ce
+# serveur est un jour remis en service.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:

@@ -1,7 +1,10 @@
-name: Deploiement VPS2
+name: Deploiement VPS2 (désactivé)
+
+# En échec à chaque push depuis l'origine : `~/backend` n'existe pas sur cet
+# hôte. Déclencheur automatique retiré le 2026-08-24 pour cesser de signaler
+# un échec rouge à chaque déploiement légitime.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 jobs:
   deploy:
     runs-on: ubuntu-latest
