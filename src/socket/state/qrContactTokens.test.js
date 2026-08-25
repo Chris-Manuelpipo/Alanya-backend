@@ -1,45 +1,73 @@
+// Jetons d'ajout de contact par QR — usage unique et réservation.
+//
+// Le store est async depuis la migration Redis : ces tests exercent le repli
+// mémoire (aucun REDIS_URL ici). La vraie concurrence se vérifie contre un
+// Redis réel dans qrContactTokens.race.test.js.
 const assert = require('assert');
 const qrContactTokens = require('./qrContactTokens');
 
-// Création : jeton non vide, TTL de 10 minutes, propriétaire porté.
-const a = qrContactTokens.create(42);
-assert.ok(a && a.token, 'jeton non vide');
-assert.strictEqual(a.alanyaID, 42);
-assert.strictEqual(a.expiresAt - a.createdAt, qrContactTokens.TTL_MS);
-assert.strictEqual(qrContactTokens.TTL_MS, 10 * 60 * 1000, 'TTL de 10 minutes');
+(async () => {
+  const a = await qrContactTokens.create(42);
+  assert.ok(a.token, 'jeton non vide');
+  assert.strictEqual(a.alanyaID, 42);
+  assert.strictEqual(a.expiresAt - a.createdAt, qrContactTokens.TTL_MS);
+  assert.strictEqual(qrContactTokens.TTL_MS, 10 * 60 * 1000, 'dix minutes annoncées');
 
-// Lecture sans consommation : get() laisse le jeton en place.
-assert.strictEqual(qrContactTokens.get(a.token).token, a.token);
-assert.strictEqual(qrContactTokens.get(a.token).token, a.token, 'get non destructif');
+  // Lecture non destructive : afficher la page publique d'un code ne le consomme pas.
+  assert.strictEqual((await qrContactTokens.get(a.token)).token, a.token);
+  assert.strictEqual((await qrContactTokens.get(a.token)).token, a.token, 'get non destructif');
 
-// Un seul jeton actif par utilisateur : en créer un nouveau tue le précédent.
-const b = qrContactTokens.create(42);
-assert.notStrictEqual(b.token, a.token, 'jeton renouvelé');
-assert.strictEqual(qrContactTokens.get(a.token), null, 'ancien jeton invalidé');
-assert.strictEqual(qrContactTokens.get(b.token).token, b.token);
+  // Un seul code vivant par utilisateur : en générer un invalide le précédent.
+  const b = await qrContactTokens.create(42);
+  assert.notStrictEqual(b.token, a.token);
+  assert.strictEqual(await qrContactTokens.get(a.token), null, 'ancien jeton invalidé');
+  assert.strictEqual((await qrContactTokens.get(b.token)).token, b.token);
 
-// Deux utilisateurs ne se marchent pas dessus.
-const autre = qrContactTokens.create(7);
-assert.strictEqual(qrContactTokens.get(b.token).token, b.token, 'jeton de 42 intact');
-assert.strictEqual(qrContactTokens.get(autre.token).alanyaID, 7);
+  // Les utilisateurs ne se marchent pas dessus.
+  const autre = await qrContactTokens.create(7);
+  assert.strictEqual((await qrContactTokens.get(b.token)).token, b.token, 'jeton de 42 intact');
+  assert.strictEqual((await qrContactTokens.get(autre.token)).alanyaID, 7);
 
-// Consommation : usage unique — la première lecture consommante supprime.
-const consomme = qrContactTokens.consume(b.token);
-assert.strictEqual(consomme.alanyaID, 42);
-assert.strictEqual(qrContactTokens.get(b.token), null, 'jeton consommé disparu');
-assert.strictEqual(qrContactTokens.consume(b.token), null, 'double consommation refusée');
+  // claim réserve le jeton : un second scan ne peut plus l'emporter, y compris
+  // pendant que l'ajout du contact est en cours côté base.
+  const reserve = await qrContactTokens.claim(b.token);
+  assert.ok(reserve, 'première réservation acceptée');
+  assert.strictEqual(reserve.alanyaID, 42);
+  assert.strictEqual(
+    await qrContactTokens.claim(b.token), null,
+    'seconde réservation refusée — le contrat dit « une seule personne »',
+  );
+  assert.strictEqual(
+    await qrContactTokens.get(b.token), null,
+    'un jeton réservé n\'est plus présenté comme disponible',
+  );
 
-// Expiration paresseuse : on vieillit l'entrée à la main plutôt que d'attendre.
-const perime = qrContactTokens.create(42);
-qrContactTokens.get(perime.token).expiresAt = Date.now() - 1;
-assert.strictEqual(qrContactTokens.get(perime.token), null, 'jeton expiré');
-assert.strictEqual(qrContactTokens.consume(perime.token), null, 'consommation d\'un expiré refusée');
+  // release : l'ajout a échoué, le code redevient utilisable. Un scan raté ne
+  // doit pas tuer le code de son détenteur.
+  await qrContactTokens.release(b.token);
+  assert.ok(await qrContactTokens.get(b.token), 'code rendu après échec');
+  assert.ok(await qrContactTokens.claim(b.token), 'réservable à nouveau');
 
-// Après expiration, l'utilisateur peut regénérer normalement.
-const neuf = qrContactTokens.create(42);
-assert.ok(qrContactTokens.get(neuf.token), 'régénération après expiration');
-qrContactTokens.clear(neuf.token);
-assert.strictEqual(qrContactTokens.get(neuf.token), null, 'clear supprime');
-qrContactTokens.clear(autre.token);
+  // commit : l'ajout a réussi, le jeton disparaît définitivement.
+  await qrContactTokens.commit(b.token);
+  assert.strictEqual(await qrContactTokens.get(b.token), null, 'jeton consommé disparu');
+  assert.strictEqual(await qrContactTokens.claim(b.token), null, 'double consommation refusée');
 
-console.log('qrContactTokens.test.js OK');
+  // Expiration paresseuse.
+  const perime = await qrContactTokens.create(42);
+  (await qrContactTokens.get(perime.token)).expiresAt = Date.now() - 1;
+  assert.strictEqual(await qrContactTokens.get(perime.token), null, 'jeton expiré');
+  assert.strictEqual(await qrContactTokens.claim(perime.token), null, 'réservation d\'un expiré refusée');
+
+  // Régénération après expiration.
+  const neuf = await qrContactTokens.create(42);
+  assert.ok(await qrContactTokens.get(neuf.token), 'régénération après expiration');
+  await qrContactTokens.clear(neuf.token);
+  assert.strictEqual(await qrContactTokens.get(neuf.token), null, 'clear supprime');
+  await qrContactTokens.clear(autre.token);
+
+  console.log('qrContactTokens.test.js OK');
+})().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

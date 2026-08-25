@@ -35,7 +35,7 @@ const createQrSession = async (req, res) => {
     // ici (et non au moment de recordLogin, trop tard car après approbation) ;
     // le libellé libre, lui, est borné court et présenté côté client comme
     // « déclaré par l'appareil », jamais comme un fait vérifié.
-    const entry = qrLoginSessions.create({
+    const entry = await qrLoginSessions.create({
       deviceId,
       deviceName: _trimmed(req.body.deviceName || req.body.device_model, 60),
       platform: normalizePlatform(req.body.platform || req.body.os_system),
@@ -45,11 +45,13 @@ const createQrSession = async (req, res) => {
     // Géolocalisation lancée ici, sans être attendue : elle n'a que le temps du
     // scan pour aboutir (quelques secondes), et surtout elle ne doit jamais
     // retarder ni faire échouer l'ouverture de la session.
+    //
+    // `setLocation` et non une mutation de l'objet rendu par `get()` : celle-ci
+    // ne fonctionnait que parce qu'une Map rend une référence vivante. Le
+    // store rendant désormais une copie, elle n'aurait plus rien persisté —
+    // sans la moindre erreur, le lieu aurait simplement cessé de s'afficher.
     lookupLocation(entry.ipAddress)
-      .then((lieu) => {
-        const vivante = qrLoginSessions.get(entry.sessionId);
-        if (vivante && lieu) vivante.location = lieu;
-      })
+      .then((lieu) => qrLoginSessions.setLocation(entry.sessionId, lieu))
       .catch(() => {});
 
     console.log(`[QrAuth] session créée sessionId=${entry.sessionId} platform=${entry.platform ?? 'INDEFINI'}`);
@@ -88,7 +90,7 @@ const getQrSessionStatus = async (req, res) => {
       return res.status(400).json({ error: 'pollToken requis' });
     }
 
-    const entry = qrLoginSessions.get(sessionId);
+    const entry = await qrLoginSessions.get(sessionId);
 
     // Session absente OU pollToken faux : même réponse. Distinguer les deux
     // laisserait, avec le seul sessionId (public), sonder l'existence d'une
@@ -98,9 +100,19 @@ const getQrSessionStatus = async (req, res) => {
     }
 
     if (entry.status === 'approved') {
-      const result = entry.result || {};
-      // Livraison à usage unique : les tokens ne repassent jamais par ce canal.
-      qrLoginSessions.clear(sessionId);
+      // Livraison à usage unique : les tokens ne repassent jamais par ce
+      // canal. `takeApproved` lit ET efface en une seule opération — deux
+      // interrogations concurrentes (retransmission réseau, double appel du
+      // client) liraient sinon toutes deux « approuvée » avant que l'une
+      // n'efface, et la paire de tokens partirait deux fois.
+      //
+      // La comparaison du pollToken reste ici, en amont : elle doit se faire
+      // à temps constant (`secretMatches`), ce qu'un script Lua ne garantit pas.
+      const livree = await qrLoginSessions.takeApproved(sessionId);
+      if (!livree) {
+        return res.json({ status: 'expired' });
+      }
+      const result = livree.result || {};
       console.log(`[QrAuth] tokens livrés sessionId=${sessionId}`);
       return res.json({
         status: 'approved',
@@ -119,7 +131,7 @@ const getQrSessionStatus = async (req, res) => {
 
 // Charge la session et vérifie le scanSecret pour les actions de l'appareil qui
 // a scanné (approve / deny). Répond lui-même en cas d'échec.
-const _loadScannedSession = (req, res) => {
+const _loadScannedSession = async (req, res) => {
   const sessionId = String(req.params.sessionId || '');
   const scanSecret = req.body?.scanSecret;
   if (!scanSecret) {
@@ -127,7 +139,7 @@ const _loadScannedSession = (req, res) => {
     return null;
   }
 
-  const entry = qrLoginSessions.get(sessionId);
+  const entry = await qrLoginSessions.get(sessionId);
   if (!entry || !secretMatches(scanSecret, entry.scanSecret)) {
     res.status(404).json({ error: 'Session inconnue ou expirée' });
     return null;
@@ -146,14 +158,14 @@ const _loadScannedSession = (req, res) => {
 const approveQrSession = async (req, res) => {
   let reserved = null;
   try {
-    const entry = _loadScannedSession(req, res);
+    const entry = await _loadScannedSession(req, res);
     if (!entry) return;
 
     // Réservation AVANT tout await : deux confirmations quasi simultanées
     // franchiraient sinon toutes deux la garde de statut, et la seconde
     // écraserait le résultat de la première — l'appareil demandeur ouvrirait
     // le compte du second.
-    reserved = qrLoginSessions.beginApproval(entry.sessionId);
+    reserved = await qrLoginSessions.beginApproval(entry.sessionId);
     if (!reserved) {
       return res.status(409).json({ error: 'Session déjà traitée' });
     }
@@ -169,7 +181,7 @@ const approveQrSession = async (req, res) => {
       [alanyaID]
     );
     if (rows.length === 0) {
-      qrLoginSessions.abortApproval(entry.sessionId);
+      await qrLoginSessions.abortApproval(entry.sessionId);
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
     const user = rows[0];
@@ -186,7 +198,7 @@ const approveQrSession = async (req, res) => {
     });
 
     if (!appareilId) {
-      qrLoginSessions.abortApproval(entry.sessionId);
+      await qrLoginSessions.abortApproval(entry.sessionId);
       console.error('[QrAuth] recordLogin a échoué — approbation refusée (session serait irrévocable)');
       return res.status(503).json({ error: 'Service temporairement indisponible' });
     }
@@ -198,7 +210,7 @@ const approveQrSession = async (req, res) => {
     // La session a pu expirer pendant les await ci-dessus. Sans ce test, on
     // annoncerait « approuvé » et on émettrait une paire de tokens que
     // personne ne viendra chercher, en laissant une ligne `appareils` orpheline.
-    const approved = qrLoginSessions.approve(entry.sessionId, {
+    const approved = await qrLoginSessions.approve(entry.sessionId, {
       scannedByAlanyaID: alanyaID,
       result: { user, accessToken, refreshToken },
     });
@@ -233,7 +245,7 @@ const approveQrSession = async (req, res) => {
     console.log(`[QrAuth] session approuvée sessionId=${entry.sessionId} user=${alanyaID} appareil=${appareilId ?? 'none'}`);
     res.json({ ok: true });
   } catch (error) {
-    if (reserved) qrLoginSessions.abortApproval(reserved.sessionId);
+    if (reserved) await qrLoginSessions.abortApproval(reserved.sessionId);
     console.error('[QrAuth] approveQrSession ERROR:', error);
     res.status(500).json({ error: error.message || 'Échec de l\'approbation' });
   }
@@ -241,10 +253,17 @@ const approveQrSession = async (req, res) => {
 
 const denyQrSession = async (req, res) => {
   try {
-    const entry = _loadScannedSession(req, res);
+    const entry = await _loadScannedSession(req, res);
     if (!entry) return;
 
-    qrLoginSessions.deny(entry.sessionId);
+    // La garde de statut vit désormais dans `deny` : un refus en vol ne peut
+    // plus écraser une approbation concurrente et effacer des tokens déjà
+    // générés. Un retour nul signifie que la session a été tranchée entre la
+    // lecture ci-dessus et ce refus.
+    const refusee = await qrLoginSessions.deny(entry.sessionId);
+    if (!refusee) {
+      return res.status(409).json({ error: 'Session déjà traitée' });
+    }
 
     const io = req.app.get('io');
     if (io) {

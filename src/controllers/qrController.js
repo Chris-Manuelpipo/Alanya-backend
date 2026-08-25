@@ -117,7 +117,7 @@ const _ensureQrPublicId = async (alanyaID) => {
 // serveur ne fournit que la donnée — le rendu du QR est entièrement client.
 const createContactToken = async (req, res) => {
   try {
-    const entry = qrContactTokens.create(req.user.alanyaID);
+    const entry = await qrContactTokens.create(req.user.alanyaID);
     res.json({
       token: entry.token,
       payload: contactPayload(entry.token),
@@ -288,29 +288,55 @@ const _prevenirProprietaire = async (req, ownerID, scannerID) => {
  * pouvoir tuer le code d'autrui.
  */
 const _resolveContactEphemere = async (req, res, alanyaID, token) => {
-  const entry = qrContactTokens.get(token);
-  if (!entry) {
+  // Lecture seule d'abord : un scan de son propre code ne doit rien consommer.
+  const apercu = await qrContactTokens.get(token);
+  if (!apercu) {
     return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
   }
-
-  if (entry.alanyaID === alanyaID) {
+  if (apercu.alanyaID === alanyaID) {
     return res.json({ type: 'contact', self: true });
   }
 
-  const result = await addContactByFriendId(alanyaID, entry.alanyaID, { addedVia: 'qr' });
+  // Réservation AVANT l'ajout, et non consommation après.
+  //
+  // L'ordre inverse laissait une vraie course, déjà présente en production
+  // avant toute question de multi-instance : `addContactByFriendId` demande
+  // plusieurs allers-retours en base, pendant lesquels un second scan du même
+  // code passait la vérification. Les deux ajouts aboutissaient et le
+  // propriétaire était prévenu deux fois, alors que l'écran promet « une seule
+  // personne ».
+  const entry = await qrContactTokens.claim(token);
+  if (!entry) {
+    // Un autre scan a emporté le code entre-temps.
+    return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
+  }
+
+  let result;
+  try {
+    result = await addContactByFriendId(alanyaID, entry.alanyaID, { addedVia: 'qr' });
+  } catch (e) {
+    // Rendre le code à son détenteur : un incident technique ne doit pas tuer
+    // un code encore valable.
+    await qrContactTokens.release(token);
+    throw e;
+  }
 
   switch (result.reason) {
     case 'self':
+      await qrContactTokens.release(token);
       return res.json({ type: 'contact', self: true });
     case 'not_found':
+      await qrContactTokens.release(token);
       return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
     case 'blocked':
+      // Un scan par un compte bloqué ne doit pas pouvoir tuer le code d'autrui.
+      await qrContactTokens.release(token);
       return res.status(403).json({ error: 'Impossible d\'ajouter cet utilisateur' });
     case 'already':
     case 'added':
     default: {
       const added = result.reason !== 'already';
-      qrContactTokens.consume(token);
+      await qrContactTokens.commit(token);
       _prevenirProprietaire(req, entry.alanyaID, alanyaID);
       return res.json({
         type: 'contact', added, alreadyContact: !added, contact: result.contact,
@@ -326,15 +352,15 @@ const _resolveContactEphemere = async (req, res, alanyaID, token) => {
  * un geste explicite de l'utilisateur, approuve — sans quoi un QR malveillant
  * affiché sous un prétexte quelconque suffirait à voler une session.
  */
-const _resolveLogin = (req, res, alanyaID, parsed) => {
-  const session = qrLoginSessions.get(parsed.sessionId);
+const _resolveLogin = async (req, res, alanyaID, parsed) => {
+  const session = await qrLoginSessions.get(parsed.sessionId);
   // Un secret invalide est indistinguable d'une session inconnue : pas de
   // signal exploitable pour énumérer les sessions en cours.
   if (!session || !secretMatches(session.scanSecret, parsed.scanSecret)) {
     return res.status(404).json({ error: 'Session de connexion inconnue ou expirée' });
   }
 
-  qrLoginSessions.markScanned(parsed.sessionId, alanyaID);
+  await qrLoginSessions.markScanned(parsed.sessionId, alanyaID);
 
   res.json({
     type: 'login',
@@ -368,7 +394,7 @@ const resolveQr = async (req, res) => {
     if (parsed.type === 'contact') {
       return await _resolveContact(req, res, alanyaID, parsed.qrPublicId);
     }
-    return _resolveLogin(req, res, alanyaID, parsed);
+    return await _resolveLogin(req, res, alanyaID, parsed);
   } catch (error) {
     console.error('[resolveQr] ERROR:', error);
     res.status(500).json({ error: error.message });

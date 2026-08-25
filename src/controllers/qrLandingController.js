@@ -170,7 +170,7 @@ const showIdentityLanding = async (req, res) => {
 const showContactLanding = async (req, res) => {
   try {
     const token = String(req.params.token || '').trim();
-    const entry = token ? qrContactTokens.get(token) : null;
+    const entry = token ? await qrContactTokens.get(token) : null;
     if (!entry) {
       return res.status(404).type('html').send(_pageIntrouvable());
     }

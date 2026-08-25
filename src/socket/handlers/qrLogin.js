@@ -21,12 +21,12 @@ const qrLoginSessions = require('../state/qrLoginSessions');
  *   - la session s'auto-détruit au bout de 90 s.
  */
 const qrSessionJoin = (io, socket) => {
-  socket.on('qr_session:join', (data) => {
+  socket.on('qr_session:join', async (data) => {
     try {
       const { sessionId, pollToken } = data || {};
       if (!sessionId || !pollToken) return;
 
-      const entry = qrLoginSessions.get(String(sessionId));
+      const entry = await qrLoginSessions.get(String(sessionId));
       if (!entry || !secretMatches(pollToken, entry.pollToken)) return;
 
       socket.join(`qr_session_${entry.sessionId}`);

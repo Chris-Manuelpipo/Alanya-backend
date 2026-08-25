@@ -19,7 +19,7 @@
         "test:trips": "node src/constants/tripPolicy.test.js && node src/utils/tripInput.test.js && node src/socket/state/tripState.test.js && node src/notifications/notificationTripPayload.test.js && node src/notifications/notificationTripRouting.test.js && node src/controllers/admin/trips.test.js && node src/services/tripRetention.test.js",
         "test:notifications:full": "npm run test:notifications && npm run test:calls && node scripts/bench/push-queue-bench.js",
         "test:redis-adapter": "node scripts/dev/redis-adapter-smoke.js",
-        "test:concurrency": "node src/socket/state/callDeviceOwnership.race.test.js && node src/socket/state/meetingDevicePresence.race.test.js",
+        "test:concurrency": "node src/socket/state/callDeviceOwnership.race.test.js && node src/socket/state/meetingDevicePresence.race.test.js && node src/socket/state/qrLoginSessions.race.test.js && node src/socket/state/qrContactTokens.race.test.js",
         "bench:push": "node scripts/bench/push-queue-bench.js"
     },
     "dependencies": {
