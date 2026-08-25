@@ -29,15 +29,15 @@ const BATCH_SIZE = 500;
  * uploade, reçoit une URL, puis envoie le message avec cette URL) — `sendAt`
  * est donc une référence sûre, au pire légèrement postérieure à l'upload réel.
  */
-const expiredMediaWhere = () => ({
+const expiredMediaWhere = ({ mediaDays } = {}) => ({
   sql: `m.mediaUrl IS NOT NULL AND m.mediaUrl <> ''
           AND m.sendAt < DATE_SUB(NOW(), INTERVAL ? DAY)`,
-  params: [policy.RETENTION.mediaDays],
+  params: [mediaDays ?? policy.RETENTION.mediaDays],
 });
 
 /** Purge un lot de médias expirés. Renvoie le nombre de lignes traitées. */
-const purgeExpiredMediaBatch = async (db = pool) => {
-  const cible = expiredMediaWhere();
+const purgeExpiredMediaBatch = async (db = pool, opts = {}) => {
+  const cible = expiredMediaWhere(opts);
   const [rows] = await db.execute(
     // Alias `m` obligatoire : `expiredMediaWhere()` qualifie ses colonnes
     // (`m.mediaUrl`, `m.sendAt`) pour rester utilisable dans une jointure.
@@ -59,11 +59,11 @@ const purgeExpiredMediaBatch = async (db = pool) => {
 };
 
 /** Purge nocturne complète : traite tous les lots expirés, pas seulement le premier. */
-const runNightlyMediaPurge = async (db = pool) => {
+const runNightlyMediaPurge = async (db = pool, opts = {}) => {
   let total = 0;
   let n;
   do {
-    n = await purgeExpiredMediaBatch(db);
+    n = await purgeExpiredMediaBatch(db, opts);
     total += n;
   } while (n === BATCH_SIZE);
   if (total) {

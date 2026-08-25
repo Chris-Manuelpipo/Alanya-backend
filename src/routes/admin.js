@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { adminAuth, superAdminAuth } = require('../middleware/adminAuth');
+const { getPurges, updatePurge, runPurgeNow } = require('../controllers/admin/purges');
 const {
   adminLogin,
   getStats,
@@ -205,6 +206,51 @@ router.get('/trips/retention',             adminAuth, getTripRetention);
  *         description: Compteurs après purge et journal mis à jour
  */
 router.post('/trips/retention/purge',      adminAuth, superAdminAuth, runTripPurge);
+
+/**
+ * @swagger
+ * /api/admin/purges:
+ *   get:
+ *     summary: État des purges de rétention (réglages, volumétrie purgeable, historique)
+ *     tags: [Admin]
+ *     description: >
+ *       `?stats=0` renvoie les réglages sans les comptages, qui balaient
+ *       plusieurs tables — utile pour un simple rafraîchissement d'état.
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Liste des purges }
+ */
+router.get('/purges',                      adminAuth, getPurges);
+
+/**
+ * @swagger
+ * /api/admin/purges/{name}:
+ *   put:
+ *     summary: Activer/desactiver une purge ou changer ses durees de retention
+ *     tags: [Admin]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Reglage mis a jour }
+ *       404: { description: Purge inconnue }
+ */
+router.put('/purges/:name',                adminAuth, superAdminAuth, updatePurge);
+
+/**
+ * @swagger
+ * /api/admin/purges/{name}/run:
+ *   post:
+ *     summary: Executer une purge immediatement
+ *     tags: [Admin]
+ *     description: >
+ *       Independant de l'interrupteur : garder la main pour purger
+ *       ponctuellement tout en laissant le balayage automatique coupe est
+ *       l'usage attendu.
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Purge executee }
+ *       404: { description: Purge inconnue }
+ */
+router.post('/purges/:name/run',           adminAuth, superAdminAuth, runPurgeNow);
 
 /**
  * @swagger

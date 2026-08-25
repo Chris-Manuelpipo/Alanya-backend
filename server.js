@@ -82,6 +82,7 @@ const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
 const { startVerificationScheduler, stopVerificationScheduler } = require('./src/services/verificationScheduler');
 const { withLease } = require('./src/services/schedulerLease');
 const { runDataRetentionPurge } = require('./src/services/dataRetentionService');
+const { runPurgeIfEnabled } = require('./src/services/purgeRegistry');
 const {
   registerTripJobHandlers, setIo: setTripIo,
 } = require('./src/services/tripWorkers');
@@ -301,37 +302,45 @@ async function start() {
     startVerificationScheduler();
     stopAccountLifecycleSchedulers = startAccountLifecycleSchedulers();
 
-    setInterval(() => {
-      withLease('broadcast_nightly_purge', () => runNightlyDeliveryMaintenance()).catch(
-        (e) => console.error('[Broadcast] nightly:', e.message),
-      );
-      // Sans cette purge, `statut` grossit d'une ligne par inscription et ne
-      // rétrécit jamais : l'app cesse d'afficher un statut expiré, mais rien ne
-      // le supprimait.
-      withLease('welcome_status_purge', () => purgeExpiredWelcomeStatuses()).catch(
-        (e) => console.error('[Welcome] purge statuts:', e.message),
-      );
-      // Trace GPS : 30 jours après clôture (TRIP_POINTS_RETENTION_H), autant si
-      // le trajet s'est clos sur une alerte. Sans cette purge, `trip_point`
-      // deviendrait un registre permanent des déplacements de tous les
-      // utilisateurs. L'admin peut la déclencher à la main, mais rien ne dépend
-      // de lui : ce balayage suffit.
-      withLease('trip_nightly_purge', () => runNightlyTripPurge()).catch(
-        (e) => console.error('[Trips] purge:', e.message),
-      );
-      // Statuts ordinaires expirés, historique d'appels, journal de connexions,
-      // jobs en échec terminal, appareils révoqués, OTP abandonnés — aucune de
-      // ces tables n'était purgée avant (audit scalabilité 06/08/2026 §2.5).
-      withLease('data_retention_purge', () => runDataRetentionPurge()).catch(
-        (e) => console.error('[DataRetention] purge:', e.message),
-      );
-      // Fichiers média (uploads/) : 30 jours après l'envoi (MEDIA_RETENTION_DAYS).
-      // Le message reste, seule mediaUrl est vidée — une copie déjà téléchargée
-      // sur un appareil n'est jamais concernée par cette purge.
-      withLease('media_nightly_purge', () => runNightlyMediaPurge()).catch(
-        (e) => console.error('[Media] purge:', e.message),
-      );
-    }, 24 * 60 * 60 * 1000);
+    // Balayage de rétention. Chaque purge passe par le registre
+    // (src/services/purgeRegistry.js) : il consulte l'interrupteur réglé
+    // depuis l'admin, applique les durées surchargées, et journalise chaque
+    // exécution — succès comme échec. Sans ce journal, rien ne distinguait
+    // « la purge tourne et n'a rien à faire » de « la purge ne tourne pas »,
+    // ce qui a laissé le bug d'alias SQL des médias passer inaperçu.
+    //
+    // Les baux restent indispensables : ils garantissent qu'une seule
+    // instance exécute une purge donnée, sans quoi deux serveurs
+    // supprimeraient les mêmes lignes en concurrence.
+    const balayageRetention = () => {
+      const purges = [
+        ['broadcast_nightly_purge', 'broadcast'],
+        ['welcome_status_purge',    'welcome_status'],
+        ['trip_nightly_purge',      'trip'],
+        ['data_retention_purge',    'data_retention'],
+        ['media_nightly_purge',     'media'],
+      ];
+      for (const [bail, purge] of purges) {
+        withLease(bail, () => runPurgeIfEnabled(purge)).catch(
+          (e) => console.error(`[Purge] ${purge}:`, e.message),
+        );
+      }
+    };
+
+    // Premier tour PEU APRÈS le démarrage, pas à l'instant même.
+    //
+    // Sans amorce du tout, la première exécution n'avait lieu qu'à T+24 h : un
+    // serveur déployé plus d'une fois par jour ne purgeait donc jamais rien.
+    // Mais amorcer immédiatement rend tout démarrage de serveur destructeur —
+    // y compris un `node server.js` lancé en local pour vérifier un boot, ce
+    // dépôt n'ayant pas de base de développement séparée (le .env local vise
+    // la production). Ce délai laisse le temps d'interrompre un lancement de
+    // test, tout en restant très inférieur à la durée de vie d'un vrai
+    // serveur, pour lequel le comportement est inchangé.
+    const AMORCE_MS = 10 * 60 * 1000;
+    const amorce = setTimeout(balayageRetention, AMORCE_MS);
+    amorce.unref?.();
+    setInterval(balayageRetention, 24 * 60 * 60 * 1000);
   });
 }
 
