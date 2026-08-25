@@ -36,7 +36,12 @@ const callSessions = require('./callSessions');
 // deux sections sont donc dimensionnées séparément — ce qu'on mesure est une
 // exclusion mutuelle, pas un débit.
 const ITERATIONS = 60;
-const ITERATIONS_TRANSFERT = 20;
+const ITERATIONS_TRANSFERT = 12;
+// 12 et non davantage : chaque itération arme puis désarme des délais via
+// job_queue, donc via MySQL distant. À 20, le test frôlait les 150 s et
+// échouait par dépassement de délai ou ETIMEDOUT sous charge — un échec
+// d'infrastructure qui ressemble à un échec de logique. Ce qu'on mesure est
+// une exclusion mutuelle : elle se voit tout aussi bien sur douze tentatives.
 
 (async () => {
   const client = createClient({ url: REDIS_URL });
@@ -45,6 +50,18 @@ const ITERATIONS_TRANSFERT = 20;
   setDataClient(client);
 
   try {
+    // Le test doit être rejouable après une interruption : une exécution tuée
+    // en cours laisse des clés `byUser` derrière elle, et `openWithPending`
+    // refuse alors d'ouvrir la moindre session — l'échec ressemble à un bug de
+    // production alors qu'il ne vient que du test précédent.
+    const plages = [];
+    for (let i = 0; i < Math.max(ITERATIONS, ITERATIONS_TRANSFERT); i += 1) {
+      for (const base of [10_000, 20_000, 30_000]) {
+        for (let d = 0; d < 4; d += 1) plages.push(`alanya:callSessions:byUser:${base + i * 10 + d}`);
+      }
+    }
+    await client.del(plages);
+
     // ── 1. Un seul ajout par appel ──────────────────────────────────────────
     let doubles = 0;
     for (let i = 0; i < ITERATIONS; i += 1) {

@@ -141,7 +141,7 @@ const handleDisconnect = async (io, socket, userSockets) => {
 
   // Appel de groupe : symétrique du bloc meetings ci-dessous. Sans lui, un
   // crash d'app en plein appel laissait un participant fantôme à vie.
-  cleanupGroupRoomOnDisconnect(io, socket);
+  await cleanupGroupRoomOnDisconnect(io, socket);
 
   const meetingID = socket.currentMeetingID;
   if (meetingID) {

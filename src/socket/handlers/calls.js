@@ -8,6 +8,7 @@ const { buildDirectConversationLookup } = require('../../utils/directConversatio
 const pendingCalls = require('../state/pendingCalls');
 const callState = require('../state/callState');
 const callSessions = require('../state/callSessions');
+const groupRooms = require('../state/groupRooms');
 const callDeviceOwnership = require('../state/callDeviceOwnership');
 const {
   emitToUser,
@@ -89,16 +90,10 @@ const {
   TRANSFER_AUTO_LEAVE_MS,
 } = callSessions;
 
-const groupRooms = new Map();
 
 function toInt(v) {
   const n = parseInt(v, 10);
   return isNaN(n) ? null : n;
-}
-
-function getRoomParticipants(room) {
-  if (!room) return null;
-  return room.participants ?? room;
 }
 
 // Récupère (ou crée) la conversation 1-à-1 entre deux utilisateurs.
@@ -245,16 +240,6 @@ async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
   if (callID != null) await callDeviceOwnership.release(String(callID));
 }
 
-function createRoomState(isVideo, callerID, callerInfo) {
-  const participants = new Map();
-  if (callerID != null) {
-    participants.set(callerID, callerInfo);
-  }
-  // ownerID : seul l'organisateur peut terminer l'appel pour tout le monde
-  // (end_group_call). null si la room a été créée par un join tardif.
-  return { isVideo: !!isVideo, participants, ownerID: callerID ?? null };
-}
-
 /**
  * Nettoyage à la déconnexion : retire l'utilisateur de sa room d'appel de
  * groupe. Sans lui, chaque crash/kill d'app en plein appel laissait une entrée
@@ -262,16 +247,11 @@ function createRoomState(isVideo, callerID, callerInfo) {
  * par rendre la room « complète » — et les autres membres n'apprenaient jamais
  * le départ.
  */
-function cleanupGroupRoomOnDisconnect(io, socket) {
+async function cleanupGroupRoomOnDisconnect(io, socket) {
   const rId = socket.currentGroupRoom;
   if (!rId) return;
   try {
-    const room = groupRooms.get(rId);
-    const participants = getRoomParticipants(room);
-    if (participants && socket.alanyaID != null) {
-      participants.delete(socket.alanyaID);
-      if (participants.size === 0) groupRooms.delete(rId);
-    }
+    if (socket.alanyaID != null) await groupRooms.leave(rId, socket.alanyaID);
     socket.to(`group_${rId}`).emit('group_user_left', {
       roomId: rId,
       userId: String(socket.alanyaID),
@@ -1691,13 +1671,11 @@ const createGroupCall = (io, socket, userSockets) => {
         });
       }
 
-      groupRooms.set(
-        roomId,
-        createRoomState(videoCall, callerID, {
-          userName: callerName || '',
-          userPhoto: callerPhoto || null,
-        }),
-      );
+      await groupRooms.create(roomId, {
+        isVideo: videoCall,
+        ownerID: callerID,
+        ownerInfo: { userName: callerName || '', userPhoto: callerPhoto || null },
+      });
 
       socket.join(`group_${roomId}`);
       socket.currentGroupRoom = roomId;
@@ -1762,22 +1740,19 @@ const joinGroupCall = (io, socket, userSockets) => {
         });
       }
 
-      let room = groupRooms.get(roomId);
-      if (!room || !(room.participants instanceof Map)) {
-        room = createRoomState(false, null, null);
-        groupRooms.set(roomId, room);
-      }
-
-      const participants = getRoomParticipants(room);
-      const limit = maxParticipants(room.isVideo);
-      if (!participants.has(userID) && participants.size >= limit) {
+      // Contrôle de capacité ET ajout en une seule opération : séparés, N
+      // arrivées simultanées liraient toutes « il reste une place » avant
+      // qu'aucune n'ait écrit, et le salon déborderait sa limite.
+      const entree = await groupRooms.join(roomId, userID, {
+        userName: userName || '', userPhoto: userPhoto || null,
+      });
+      if (!entree.ok) {
         return socket.emit('error', {
-          message: `Cet appel ${room.isVideo ? 'vidéo' : 'audio'} est complet (${limit} participants max)`,
+          message: `Cet appel ${entree.isVideo ? 'vidéo' : 'audio'} est complet (${entree.limite} participants max)`,
           code: 'GROUP_CALL_FULL',
         });
       }
-
-      participants.set(userID, { userName: userName || '', userPhoto: userPhoto || null });
+      const room = entree.room;
 
       socket.join(`group_${roomId}`);
       socket.currentGroupRoom = roomId;
@@ -1811,17 +1786,11 @@ const joinGroupCall = (io, socket, userSockets) => {
 };
 
 const leaveGroupCall = (io, socket, userSockets) => {
-  socket.on('leave_group_call', (data) => {
+  socket.on('leave_group_call', async (data) => {
     try {
       if (!socket.authenticated) return;
       const { roomId } = data || {};
-      const room = roomId ? groupRooms.get(roomId) : null;
-      const participants = getRoomParticipants(room);
-
-      if (participants && socket.alanyaID) {
-        participants.delete(socket.alanyaID);
-        if (participants.size === 0) groupRooms.delete(roomId);
-      }
+      if (roomId && socket.alanyaID) await groupRooms.leave(roomId, socket.alanyaID);
 
       const rId = roomId || socket.currentGroupRoom;
       if (rId) {
@@ -1840,7 +1809,7 @@ const leaveGroupCall = (io, socket, userSockets) => {
 };
 
 const endGroupCall = (io, socket, userSockets) => {
-  socket.on('end_group_call', (data) => {
+  socket.on('end_group_call', async (data) => {
     try {
       // Terminer l'appel pour TOUT le monde est réservé à l'organisateur
       // (ou, si la room n'a pas d'organisateur connu, à un participant).
@@ -1851,15 +1820,15 @@ const endGroupCall = (io, socket, userSockets) => {
       const rId = roomId || socket.currentGroupRoom;
       if (!rId) return;
 
-      const room = groupRooms.get(rId);
+      const room = await groupRooms.get(rId);
       if (room) {
         const isOwner =
           room.ownerID != null && Number(room.ownerID) === Number(socket.alanyaID);
-        const isParticipant = !!getRoomParticipants(room)?.has(socket.alanyaID);
+        const isParticipant = !!room.participants?.has(Number(socket.alanyaID));
         if (!isOwner && !(room.ownerID == null && isParticipant)) return;
       }
 
-      groupRooms.delete(rId);
+      await groupRooms.destroy(rId);
       io.to(`group_${rId}`).emit('group_call_ended', {});
 
       // io.sockets.adapter.rooms/sockets ne voient que CE process : capturer

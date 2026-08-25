@@ -113,7 +113,11 @@ function installFakeTimers() {
   };
 }
 
-async function waitUntil(pred, realSetTimeout, tries = 120) {
+// 400 × 25 ms = 10 s. Ce qu'on attend n'est pas rapide : la cascade traverse
+// de vrais allers-retours vers MySQL distant. L'ancien budget de 3 s suffisait
+// à froid mais rendait le test instable dès que la base était sollicitée —
+// il mesurait alors la latence du réseau, pas le comportement testé.
+async function waitUntil(pred, realSetTimeout, tries = 400) {
   for (let i = 0; i < tries; i++) {
     if (await pred()) return;
     await new Promise((r) => realSetTimeout(r, 25));
