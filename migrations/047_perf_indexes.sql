@@ -1,6 +1,11 @@
 -- 047 — Index de performance (audit scalabilité 2026-08-06, palier P0)
 -- Voir docs/AUDIT_SCALABILITE_2026-08-06.md §2.3
 
+-- ⚠️ Les deux index `message` ci-dessous sont remplacés par la migration 070
+-- (idx_message_conv_msgid_sent) : `status` en tête d'index était réécrit par
+-- les accusés de lecture eux-mêmes. Conservés ici tels qu'appliqués en prod le
+-- 06/08/2026 — 070 les retire.
+
 -- Accusés de lecture/livraison : l'UPDATE `WHERE conversationID = ? AND status < 3`
 -- (readReceiptUtils.js / deliveryReceiptUtils.js) scanne et verrouille tout
 -- l'historique de la conversation à chaque ouverture d'écran.

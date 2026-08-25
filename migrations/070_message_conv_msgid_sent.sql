@@ -1,0 +1,53 @@
+-- 070 — Index de la table message : (conversationID, msgID, sendAt) à la place
+-- de idx_message_conv_status (conversationID, status, senderID), posé en 047.
+--
+-- Pourquoi retirer idx_message_conv_status : ses colonnes ne sont pas stables.
+-- `status` est précisément ce que les accusés de lecture/livraison écrivent
+-- (readReceiptUtils.js:24, deliveryReceiptUtils.js), et c'est aussi la colonne
+-- de tête du balayage. Chaque passage à `status = 3` déplace donc l'entrée dans
+-- l'index pendant que celui-ci sert de plan d'accès : suppression + réinsertion
+-- d'entrée sur le chemin le plus chaud de l'application, sur une colonne à
+-- 4 valeurs distinctes (cardinalité mesurée en prod : 228 pour ~4 200 lignes).
+-- L'index coûte à l'écriture ce qu'il fait gagner à la lecture.
+--
+-- Le nouvel index ne porte que des colonnes immuables : une ligne message
+-- n'change jamais de conversation, ni de msgID, ni de sendAt. Il n'est donc
+-- jamais réécrit par les accusés de lecture, les éditions, les épinglages ou
+-- les suppressions logiques — que des insertions en fin d'index, dans l'ordre
+-- de la PK.
+--
+-- Ce qu'il sert :
+--   * sync delta getMessagesSince — curseurs `(conversationID = ? AND msgID > ?)`
+--     (messageController.js:1114), exactement ce que faisait idx_message_conv_msgid ;
+--   * pagination par curseur de la liste de messages — `AND m.msgID < ?` /
+--     `> ?` (messageController.js:73-79) ;
+--   * `sendAt` en 3e position rend l'index couvrant pour les plans qui n'ont
+--     besoin que de l'identité et de la date (bornage du filtre `blocked`,
+--     comptages par tranche) : plus de retour à la ligne clusterisée.
+--
+-- idx_message_conv_msgid (conversationID, msgID) est un préfixe strict du
+-- nouvel index : le conserver reviendrait à payer deux fois le même coût
+-- d'écriture. Il est fusionné dedans, pas simplement doublé.
+--
+-- idx_message_conv_date (conversationID, sendAt DESC) reste en place : il est
+-- le seul à donner `ORDER BY m.sendAt DESC` sans tri de fichier, et il couvre
+-- la FK fk_msg_conv (conversationID en tête) — la contrainte survit donc au
+-- DROP ci-dessous.
+--
+-- Conséquence assumée : l'UPDATE d'accusé de lecture
+-- (`WHERE conversationID = ? AND senderID != ? AND status < 3`) n'a plus
+-- d'index sur `status` et repasse par un balayage de la conversation via
+-- idx_message_conv_date. Les verrous d'intervalle restent contenus par le
+-- READ COMMITTED posé par connexion (db.js:37). Si ce chemin redevient le
+-- point chaud, le correctif est de borner l'UPDATE par `msgID <= ?` (le
+-- dernier message lu, que le client connaît déjà) — ce que le présent index
+-- sert directement, contrairement à idx_message_conv_status.
+--
+-- ADD/DROP INDEX sont INPLACE en MySQL 8.0 : pas de reconstruction de table,
+-- écritures concurrentes autorisées pendant l'opération. Une seule instruction
+-- pour n'ouvrir qu'un seul verrou de métadonnées.
+
+ALTER TABLE message
+  DROP INDEX idx_message_conv_status,
+  DROP INDEX idx_message_conv_msgid,
+  ADD INDEX idx_message_conv_msgid_sent (conversationID, msgID, sendAt);
