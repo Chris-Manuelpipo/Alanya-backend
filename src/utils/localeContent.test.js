@@ -4,6 +4,7 @@ const {
   normalizeLocale,
   resolveI18n,
   pickLocalized,
+  untranslatedRequiredLocales,
   defaultBroadcastPushBody,
 } = require('./localeContent');
 
@@ -105,6 +106,24 @@ assert.strictEqual(
 assert.strictEqual(
   pickLocalized({ content: 'Bonjour', content_en: '  ' }, 'en', 'content'),
   'Bonjour',
+);
+
+// ── untranslatedRequiredLocales : ce qui bloque une publication ──────
+// Rien de saisi : rien n'est dû — une légende absente est légitime sur un bloc
+// image, et l'exiger bloquerait la publication pour un champ facultatif.
+assert.deepStrictEqual(untranslatedRequiredLocales({}), []);
+assert.deepStrictEqual(untranslatedRequiredLocales(null), []);
+assert.deepStrictEqual(untranslatedRequiredLocales({ fr: '  ', en: '' }), []);
+// Dès qu'une langue est saisie, les langues requises le deviennent toutes —
+// dans les deux sens : un texte écrit d'abord en anglais réclame le français.
+assert.deepStrictEqual(untranslatedRequiredLocales({ fr: 'Bonjour' }), ['en']);
+assert.deepStrictEqual(untranslatedRequiredLocales({ en: 'Hello' }), ['fr']);
+// Une langue facultative suffit à déclencher l'exigence : sans cela, un bloc
+// saisi en chinois seul partait sans français ni anglais.
+assert.deepStrictEqual(untranslatedRequiredLocales({ zh: '欢迎' }), ['fr', 'en']);
+assert.deepStrictEqual(
+  untranslatedRequiredLocales({ fr: 'Bonjour', en: 'Hello', zh: '欢迎' }),
+  [],
 );
 
 // ── defaultBroadcastPushBody ─────────────────────────────────────────

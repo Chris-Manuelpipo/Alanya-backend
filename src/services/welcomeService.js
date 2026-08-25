@@ -10,6 +10,7 @@ const {
   normalizeLocale,
   resolveI18n,
   pickLocalized,
+  untranslatedRequiredLocales,
 } = require('../utils/localeContent');
 
 const WELCOME_CTA_MSG_TYPE = 8;
@@ -87,18 +88,44 @@ function buildBlockI18nRows(block) {
 
   const rows = [];
   const seen = new Set();
+
+  /**
+   * Traductions que l'éditeur a explicitement vidées : aucune provenance
+   * ultérieure ne peut les repeupler. Sans cette mémoire, effacer un texte dans
+   * l'administration restait sans effet — la valeur vide était ignorée et
+   * l'ancienne traduction, relue en base ou dans la colonne héritée, revenait à
+   * l'enregistrement suivant.
+   */
+  const cleared = new Set();
+
   const push = (locale, field, value) => {
     if (locale == null) return;
     const key = `${locale}|${field}`;
-    if (seen.has(key)) return;
+    if (seen.has(key) || cleared.has(key)) return;
     if (value == null || String(value).trim() === '') return;
     seen.add(key);
     rows.push([locale, field, String(value)]);
   };
 
-  const translations = block.translations || {};
+  /**
+   * Saisie de l'éditeur : une valeur vide vaut suppression, une valeur pleine
+   * vaut écriture. Seule cette provenance a ce pouvoir — une clé *absente*
+   * reste une absence d'information, qui laisse jouer les provenances
+   * suivantes.
+   */
+  const pushFromEditor = (source, locale, field) => {
+    if (!source || !Object.prototype.hasOwnProperty.call(source, locale)) return;
+    const value = source[locale];
+    if (value == null || String(value).trim() === '') {
+      cleared.add(`${locale}|${field}`);
+      return;
+    }
+    push(locale, field, value);
+  };
+
+  const translations = block.translations;
   for (const locale of SUPPORTED_CONTENT_LOCALES) {
-    push(locale, 'content', translations[locale]);
+    pushFromEditor(translations, locale, 'content');
   }
 
   for (const row of block.i18n || []) {
@@ -111,15 +138,106 @@ function buildBlockI18nRows(block) {
   const buttons = block.ctaJson?.buttons ?? [];
   const ctaTranslations = block.ctaTranslations || [];
   buttons.forEach((btn, index) => {
-    const perLocale = ctaTranslations[index] || {};
+    const perLocale = ctaTranslations[index];
     for (const locale of SUPPORTED_CONTENT_LOCALES) {
-      push(locale, `cta.${index}`, perLocale[locale]);
+      pushFromEditor(perLocale, locale, `cta.${index}`);
     }
     push('fr', `cta.${index}`, btn.labelFr);
     push('en', `cta.${index}`, btn.labelEn);
   });
 
-  return rows;
+  // Un `cta.<n>` au-delà du dernier bouton est le reliquat d'un bouton
+  // supprimé, arrivé ici par `block.i18n` : le recopier de configuration en
+  // configuration le ferait ressurgir le jour où un bouton reprend cet indice.
+  //
+  // Filtre suspendu quand le bloc ne porte aucun bouton : `mapBlockRow` met
+  // `ctaJson` à null si le JSON est illisible, et ce nettoyage effacerait alors
+  // définitivement des libellés parfaitement valides.
+  if (!buttons.length) return rows;
+  return rows.filter(([, field]) => {
+    const m = /^cta\.(\d+)$/.exec(field);
+    return !m || Number(m[1]) < buttons.length;
+  });
+}
+
+/**
+ * Reconstruit la forme éditeur des traductions d'un bloc : `translations` pour
+ * le corps, `ctaTranslations` pour les libellés de boutons (un objet par
+ * bouton, dans l'ordre du tableau).
+ *
+ * `welcome_block_i18n` fait foi ; les colonnes héritées `content_fr`/
+ * `content_en` et les `labelFr`/`labelEn` de `cta_json` ne servent que de repli,
+ * locale par locale, pour les blocs antérieurs à la migration 053.
+ *
+ * Sans cette reconstruction, l'API ne renvoyait que la forme héritée alors que
+ * l'éditeur d'administration lit `translations` : les champs s'ouvraient vides
+ * sur un contenu pourtant intact en base, pendant que l'aperçu — resté sur les
+ * colonnes héritées — affichait le texte. C'est ce désaccord qui rendait la
+ * panne illisible.
+ */
+function attachBlockTranslations(block) {
+  const translations = {};
+  const ctaTranslations = (block.ctaJson?.buttons ?? []).map(() => ({}));
+
+  for (const row of block.i18n || []) {
+    // `normalizeLocale` replierait une locale inconnue sur `fr` et écraserait
+    // le français : ici on l'écarte.
+    const locale = String(row.locale || '').toLowerCase().split(/[-_]/)[0];
+    if (!SUPPORTED_CONTENT_LOCALES.includes(locale)) continue;
+    if (row.value == null || String(row.value).trim() === '') continue;
+
+    const field = row.field || 'content';
+    if (field === 'content') {
+      translations[locale] = String(row.value);
+      continue;
+    }
+    const m = /^cta\.(\d+)$/.exec(field);
+    // Un `cta.<n>` sans bouton correspondant est le reliquat d'un bouton
+    // supprimé : il ne doit pas ressusciter dans l'éditeur.
+    if (m && ctaTranslations[Number(m[1])]) {
+      ctaTranslations[Number(m[1])][locale] = String(row.value);
+    }
+  }
+
+  if (translations.fr == null && String(block.contentFr || '').trim()) {
+    translations.fr = String(block.contentFr);
+  }
+  if (translations.en == null && String(block.contentEn || '').trim()) {
+    translations.en = String(block.contentEn);
+  }
+  (block.ctaJson?.buttons ?? []).forEach((btn, index) => {
+    const perLocale = ctaTranslations[index];
+    if (perLocale.fr == null && String(btn.labelFr || '').trim()) {
+      perLocale.fr = String(btn.labelFr);
+    }
+    if (perLocale.en == null && String(btn.labelEn || '').trim()) {
+      perLocale.en = String(btn.labelEn);
+    }
+  });
+
+  block.translations = translations;
+  block.ctaTranslations = ctaTranslations;
+  return block;
+}
+
+/**
+ * Valeurs des colonnes héritées `content_fr`/`content_en`, dérivées de ce qui
+ * vient d'être décidé pour `welcome_block_i18n`.
+ *
+ * Les deux écritures partent ainsi de la même source. Recopier le `contentFr`
+ * reçu de l'éditeur laissait la colonne sur l'ancien texte pendant que la table
+ * normalisée recevait le nouveau : l'aperçu d'administration et la livraison
+ * cessaient alors de montrer la même chose.
+ *
+ * À supprimer avec les colonnes (migration 054).
+ */
+function legacyContentColumns(block) {
+  const rows = buildBlockI18nRows(block);
+  const pick = (locale) => {
+    const hit = rows.find(([l, field]) => l === locale && field === 'content');
+    return hit ? hit[2] : '';
+  };
+  return [pick('fr'), pick('en')];
 }
 
 /**
@@ -188,6 +306,11 @@ async function loadBlocksForConfig(configId, conn = pool) {
     }
   }
 
+  // `i18n` reste la forme brute que consomment la livraison et la recopie des
+  // blocs ; `translations` en est la vue par locale, seule forme que lit
+  // l'éditeur d'administration. Les deux sont toujours renvoyées ensemble.
+  for (const b of blocks) attachBlockTranslations(b);
+
   return blocks;
 }
 
@@ -222,6 +345,7 @@ async function ensureDraftConfig(conn) {
 
   if (active?.blocks?.length) {
     for (const b of active.blocks) {
+      const [contentFr, contentEn] = legacyContentColumns(b);
       const [blockIns] = await conn.execute(
         `INSERT INTO welcome_block
           (config_id, sort_order, block_type, content_fr, content_en, media_url, cta_json)
@@ -230,8 +354,8 @@ async function ensureDraftConfig(conn) {
           draftId,
           b.sortOrder,
           b.blockType,
-          b.contentFr,
-          b.contentEn,
+          contentFr,
+          contentEn,
           b.mediaUrl || null,
           b.ctaJson ? JSON.stringify(b.ctaJson) : null,
         ],
@@ -734,6 +858,7 @@ async function saveDraft(blocks, adminId) {
     const sorted = [...(blocks || [])].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
     for (let i = 0; i < sorted.length; i += 1) {
       const b = sorted[i];
+      const [contentFr, contentEn] = legacyContentColumns(b);
       const [ins] = await conn.execute(
         `INSERT INTO welcome_block
           (config_id, sort_order, block_type, content_fr, content_en, media_url, cta_json)
@@ -742,8 +867,8 @@ async function saveDraft(blocks, adminId) {
           draft.id,
           b.sortOrder ?? i,
           b.blockType,
-          b.contentFr ?? '',
-          b.contentEn ?? '',
+          contentFr,
+          contentEn,
           b.mediaUrl || null,
           b.ctaJson ? JSON.stringify(b.ctaJson) : null,
         ],
@@ -777,33 +902,38 @@ async function publishDraft(adminId) {
       throw err;
     }
 
-    // Les deux langues sont exigées, mais seulement à la publication : un
+    // Les langues requises sont exigées, mais seulement à la publication : un
     // brouillon doit rester enregistrable en cours de rédaction. La traduction
-    // n'est due que là où il y a du texte — une légende vide des deux côtés est
-    // légitime sur un bloc image ou vidéo.
+    // n'est due que là où il y a du texte — une légende vide dans toutes les
+    // langues est légitime sur un bloc image ou vidéo.
+    //
+    // Le contrôle porte sur `translations`, forme de référence depuis la 053 :
+    // sur `contentFr`/`contentEn`, un bloc créé après la migration présentait
+    // des colonnes héritées vides et franchissait le garde sans traduction.
     const untranslated = blocks
       .filter((b) => b.blockType !== 'cta')
-      .filter((b) => String(b.contentFr || '').trim() && !String(b.contentEn || '').trim())
+      .filter((b) => untranslatedRequiredLocales(b.translations).length)
       .map((b) => b.sortOrder + 1);
     if (untranslated.length) {
       const err = new Error(
-        `Traduction anglaise manquante — bloc(s) ${untranslated.join(', ')}`,
+        `Traduction manquante — bloc(s) ${untranslated.join(', ')}`,
       );
       err.status = 400;
       throw err;
     }
 
-    // Un bouton sans libellé anglais est simplement retiré à la livraison
-    // (blockToMessagePayload) : l'anglophone verrait un bloc amputé.
+    // Un bouton dont le libellé manque dans une langue est simplement retiré à
+    // la livraison (blockToMessagePayload) : ce lecteur-là verrait un bloc
+    // amputé.
     const ctaUntranslated = blocks
       .filter((b) => b.blockType === 'cta')
-      .filter((b) => (b.ctaJson?.buttons ?? []).some(
-        (btn) => String(btn.labelFr || '').trim() && !String(btn.labelEn || '').trim(),
+      .filter((b) => (b.ctaTranslations ?? []).some(
+        (perLocale) => untranslatedRequiredLocales(perLocale).length,
       ))
       .map((b) => b.sortOrder + 1);
     if (ctaUntranslated.length) {
       const err = new Error(
-        `Libellé anglais manquant sur un bouton — bloc(s) ${ctaUntranslated.join(', ')}`,
+        `Libellé de bouton non traduit — bloc(s) ${ctaUntranslated.join(', ')}`,
       );
       err.status = 400;
       throw err;
@@ -824,6 +954,7 @@ async function publishDraft(adminId) {
     const newId = ins.insertId;
 
     for (const b of blocks) {
+      const [contentFr, contentEn] = legacyContentColumns(b);
       const [ins] = await conn.execute(
         `INSERT INTO welcome_block
           (config_id, sort_order, block_type, content_fr, content_en, media_url, cta_json)
@@ -832,8 +963,8 @@ async function publishDraft(adminId) {
           newId,
           b.sortOrder,
           b.blockType,
-          b.contentFr,
-          b.contentEn,
+          contentFr,
+          contentEn,
           b.mediaUrl || null,
           b.ctaJson ? JSON.stringify(b.ctaJson) : null,
         ],
@@ -847,6 +978,7 @@ async function publishDraft(adminId) {
     await conn.execute('DELETE FROM welcome_block WHERE config_id = ?', [draft.id]);
     const publishedBlocks = await loadBlocksForConfig(newId, conn);
     for (const b of publishedBlocks) {
+      const [contentFr, contentEn] = legacyContentColumns(b);
       const [ins] = await conn.execute(
         `INSERT INTO welcome_block
           (config_id, sort_order, block_type, content_fr, content_en, media_url, cta_json)
@@ -855,8 +987,8 @@ async function publishDraft(adminId) {
           draft.id,
           b.sortOrder,
           b.blockType,
-          b.contentFr,
-          b.contentEn,
+          contentFr,
+          contentEn,
           b.mediaUrl || null,
           b.ctaJson ? JSON.stringify(b.ctaJson) : null,
         ],
@@ -974,6 +1106,8 @@ async function continueBackfillChain(lastId, hasMore) {
 
 module.exports = {
   buildBlockI18nRows,
+  attachBlockTranslations,
+  legacyContentColumns,
   WELCOME_CTA_MSG_TYPE,
   getAdminWelcomeState,
   saveDraft,

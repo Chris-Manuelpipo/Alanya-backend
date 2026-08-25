@@ -1,5 +1,9 @@
 const assert = require('assert');
-const { buildBlockI18nRows } = require('./welcomeService');
+const {
+  buildBlockI18nRows,
+  attachBlockTranslations,
+  legacyContentColumns,
+} = require('./welcomeService');
 
 /** Cherche une valeur par (locale, field). */
 const find = (rows, locale, field) => {
@@ -83,15 +87,133 @@ const find = (rows, locale, field) => {
   assert.strictEqual(find(rows, 'zh', 'cta.1'), undefined);
 }
 
-// ── Valeurs vides : ne comptent pas comme des traductions ────────────
+// ── Vider un champ dans l'éditeur efface la traduction ───────────────
+// Une locale *présente* mais vide est une suppression demandée : aucune
+// provenance ultérieure ne doit la repeupler. Tant que la valeur vide était
+// simplement ignorée, effacer un texte dans l'administration était sans effet —
+// l'ancienne traduction revenait à l'enregistrement suivant.
 {
   const rows = buildBlockI18nRows({
     translations: { fr: 'Bonjour', en: '   ', zh: null },
+    i18n: [{ locale: 'en', field: 'content', value: 'From db' }],
     contentEn: 'Hello',
   });
-  // L'anglais vide de l'éditeur ne doit pas bloquer le repli sur la colonne.
-  assert.strictEqual(find(rows, 'en', 'content'), 'Hello');
+  assert.strictEqual(find(rows, 'fr', 'content'), 'Bonjour');
+  assert.strictEqual(find(rows, 'en', 'content'), undefined);
   assert.strictEqual(find(rows, 'zh', 'content'), undefined);
+}
+
+// ── Locale absente ≠ locale vidée ────────────────────────────────────
+// Sans la clé, l'éditeur n'a rien dit : les provenances suivantes jouent.
+{
+  const rows = buildBlockI18nRows({
+    translations: { fr: 'Bonjour' },
+    contentEn: 'Hello',
+  });
+  assert.strictEqual(find(rows, 'en', 'content'), 'Hello');
+}
+
+// ── Un libellé de bouton vidé disparaît aussi ────────────────────────
+{
+  const rows = buildBlockI18nRows({
+    ctaJson: { buttons: [{ labelFr: 'Ancien', labelEn: 'Old', action: 'route', target: 'profile' }] },
+    ctaTranslations: [{ fr: 'Nouveau', en: '' }],
+  });
+  assert.strictEqual(find(rows, 'fr', 'cta.0'), 'Nouveau');
+  assert.strictEqual(find(rows, 'en', 'cta.0'), undefined);
+}
+
+// ── Reliquat d'un bouton supprimé : ne se recopie pas ────────────────
+{
+  const rows = buildBlockI18nRows({
+    ctaJson: { buttons: [{ labelFr: 'Seul', labelEn: 'Alone', action: 'route', target: 'help' }] },
+    i18n: [
+      { locale: 'fr', field: 'cta.0', value: 'Seul' },
+      { locale: 'fr', field: 'cta.3', value: 'Bouton supprimé' },
+    ],
+  });
+  assert.strictEqual(find(rows, 'fr', 'cta.0'), 'Seul');
+  assert.strictEqual(find(rows, 'fr', 'cta.3'), undefined);
+}
+
+// ── Aucun bouton lisible : on ne nettoie rien ────────────────────────
+// `mapBlockRow` met `ctaJson` à null quand le JSON est illisible. Nettoyer sur
+// cette base effacerait définitivement des libellés valides.
+{
+  const rows = buildBlockI18nRows({
+    ctaJson: null,
+    i18n: [{ locale: 'fr', field: 'cta.0', value: 'Libellé rescapé' }],
+  });
+  assert.strictEqual(find(rows, 'fr', 'cta.0'), 'Libellé rescapé');
+}
+
+// ── Relecture : la forme éditeur est reconstruite depuis `welcome_block_i18n` ──
+// C'est ce que l'API ne renvoyait pas : l'éditeur lisait `translations` sur une
+// réponse qui n'en portait pas, et ouvrait des champs vides sur un contenu
+// pourtant intact en base.
+{
+  const block = attachBlockTranslations({
+    blockType: 'cta',
+    contentFr: 'Hérité fr',
+    contentEn: 'Hérité en',
+    ctaJson: {
+      buttons: [
+        { labelFr: 'Ancien libellé', labelEn: 'Old label', action: 'url', target: 'https://x' },
+        { labelFr: 'Sans i18n', labelEn: 'No i18n', action: 'route', target: 'help' },
+      ],
+    },
+    i18n: [
+      { locale: 'fr', field: 'content', value: 'Depuis la table' },
+      { locale: 'zh', field: 'content', value: '来自数据表' },
+      { locale: 'fr', field: 'cta.0', value: 'Visitez Alanya' },
+      { locale: 'en', field: 'cta.0', value: 'Visit Alanya' },
+      // Reliquat d'un bouton supprimé : ne doit ressusciter nulle part.
+      { locale: 'fr', field: 'cta.7', value: 'Bouton disparu' },
+      // Locale non supportée : `normalizeLocale` la replierait sur `fr` et
+      // écraserait le français.
+      { locale: 'pt', field: 'content', value: 'Português' },
+    ],
+  });
+
+  assert.strictEqual(block.translations.fr, 'Depuis la table');
+  assert.strictEqual(block.translations.zh, '来自数据表');
+  // L'anglais n'est pas dans la table : la colonne héritée prend le relais.
+  assert.strictEqual(block.translations.en, 'Hérité en');
+  assert.strictEqual(block.ctaTranslations.length, 2);
+  assert.deepStrictEqual(block.ctaTranslations[0], { fr: 'Visitez Alanya', en: 'Visit Alanya' });
+  assert.deepStrictEqual(block.ctaTranslations[1], { fr: 'Sans i18n', en: 'No i18n' });
+}
+
+// ── Bloc antérieur à la 053 : les colonnes héritées suffisent ────────
+{
+  const block = attachBlockTranslations({
+    blockType: 'text',
+    contentFr: 'Bonjour',
+    contentEn: 'Hello',
+    i18n: [],
+  });
+  assert.deepStrictEqual(block.translations, { fr: 'Bonjour', en: 'Hello' });
+  assert.deepStrictEqual(block.ctaTranslations, []);
+}
+
+// ── Colonnes héritées : dérivées de ce qui part dans la table ────────
+// Recopier le `contentFr` reçu de l'éditeur laissait la colonne sur l'ancien
+// texte pendant que la table normalisée recevait le nouveau.
+{
+  assert.deepStrictEqual(
+    legacyContentColumns({
+      translations: { fr: 'Nouveau texte', en: 'New text' },
+      contentFr: 'Ancien texte',
+      contentEn: 'Old text',
+    }),
+    ['Nouveau texte', 'New text'],
+  );
+  // Champ vidé : la colonne se vide avec la table.
+  assert.deepStrictEqual(
+    legacyContentColumns({ translations: { fr: 'Seul le fr', en: '' }, contentEn: 'Old text' }),
+    ['Seul le fr', ''],
+  );
+  assert.deepStrictEqual(legacyContentColumns({ blockType: 'image' }), ['', '']);
 }
 
 // ── Cas dégénérés ────────────────────────────────────────────────────

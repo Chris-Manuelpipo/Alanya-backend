@@ -107,6 +107,27 @@ function pickLocalized(row, locale, field) {
   return frVal != null ? String(frVal) : '';
 }
 
+/**
+ * Langues requises manquantes sur un contenu **qui porte du texte**.
+ *
+ * Un contenu vide dans toutes les langues ne réclame rien : une légende absente
+ * est légitime sur un bloc image ou vidéo, et une publication ne doit pas s'en
+ * trouver bloquée. Dès qu'une langue est saisie — fût-elle facultative — toutes
+ * les langues requises le deviennent.
+ *
+ * Miroir de `untranslatedRequiredLocales`
+ * (alanya-admin/lib/content-locales.ts) : l'éditeur refuse avant le serveur,
+ * mais avec la même règle, sinon l'administrateur découvre le refus à l'envoi.
+ *
+ * @param {Record<string, string|null|undefined>|null|undefined} translations
+ * @returns {string[]} les locales requises à compléter, vide si rien n'est dû.
+ */
+function untranslatedRequiredLocales(translations) {
+  const filled = (locale) => String(translations?.[locale] ?? '').trim() !== '';
+  if (!SUPPORTED_CONTENT_LOCALES.some(filled)) return [];
+  return REQUIRED_CONTENT_LOCALES.filter((locale) => !filled(locale));
+}
+
 /** Corps push par défaut si le contenu est vide. */
 function defaultBroadcastPushBody(kind, locale) {
   const isStatus = Number(kind) === 1;
@@ -126,5 +147,6 @@ module.exports = {
   normalizeLocale,
   resolveI18n,
   pickLocalized,
+  untranslatedRequiredLocales,
   defaultBroadcastPushBody,
 };
