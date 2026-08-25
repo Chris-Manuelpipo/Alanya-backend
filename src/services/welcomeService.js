@@ -465,19 +465,34 @@ async function getWelcomeStatusConfig() {
     };
   }
 
-  // Traductions normalisées. Vides tant que la migration 053 n'est pas passée :
-  // `text_fr`/`text_en` prennent alors le relais.
+  // Traductions normalisées, complétées par les colonnes héritées.
+  //
+  // `welcome_status_config_i18n` peut être absente ou incomplète — la 053 n'a
+  // pas forcément été appliquée jusqu'au bout — et l'éditeur d'administration
+  // ne lit que `translations` : sans ce repli il ouvrait un champ vide sur un
+  // texte pourtant enregistré, puis refusait l'activation pour « contenu
+  // incomplet ». Le repli se fait locale par locale, comme pour les blocs.
   const translations = {};
   try {
     const [rows] = await pool.execute(
       'SELECT locale, text FROM welcome_status_config_i18n WHERE config_id = 1',
     );
-    for (const r of rows) translations[normalizeLocale(r.locale)] = r.text;
+    for (const r of rows) {
+      // Une locale inconnue serait repliée sur `fr` par `normalizeLocale` et
+      // écraserait le français : on l'écarte.
+      const locale = String(r.locale || '').toLowerCase().split(/[-_]/)[0];
+      if (!SUPPORTED_CONTENT_LOCALES.includes(locale)) continue;
+      if (r.text != null && String(r.text).trim()) translations[locale] = String(r.text);
+    }
   } catch (e) {
     if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
   }
 
-  return { ...mapStatusConfigRow(row), translations };
+  const config = mapStatusConfigRow(row);
+  if (!translations.fr && config.textFr.trim()) translations.fr = config.textFr;
+  if (!translations.en && config.textEn.trim()) translations.en = config.textEn;
+
+  return { ...config, translations };
 }
 
 /** Couleur de fond acceptée par l'app : `#RRGGBB` (cf. `_parseColor`). */
@@ -512,6 +527,14 @@ async function saveWelcomeStatusConfig(patch, adminId) {
   const incoming = patch?.translations || {};
   const textFr = normalizeStatusText(incoming.fr ?? patch?.textFr);
   const textEn = normalizeStatusText(incoming.en ?? patch?.textEn);
+  // Une seule normalisation pour tout le monde : le garde d'activation et
+  // l'écriture des traductions doivent juger exactement le même texte.
+  const translations = {};
+  for (const locale of SUPPORTED_CONTENT_LOCALES) {
+    translations[locale] = normalizeStatusText(incoming[locale]);
+  }
+  translations.fr = textFr;
+  translations.en = textEn;
   const mediaUrl = patch?.mediaUrl ? String(patch.mediaUrl).slice(0, 512) : null;
   const backgroundColor = normalizeBackgroundColor(patch?.backgroundColor);
   const enabled = patch?.enabled ? 1 : 0;
@@ -524,10 +547,15 @@ async function saveWelcomeStatusConfig(patch, adminId) {
       err.status = 400;
       throw err;
     }
-    // Contrairement au message, le statut conserve les deux langues et l'app
-    // choisit à l'affichage : sans texte anglais, l'anglophone voit du français.
-    if (textFr && !textEn) {
-      const err = new Error('Un statut texte exige aussi sa traduction anglaise');
+    // Contrairement au message, le statut conserve toutes ses langues et l'app
+    // choisit à l'affichage : sans traduction, ce lecteur-là voit une autre
+    // langue. La règle est la même que pour les blocs du message — dès qu'une
+    // langue est saisie, les langues requises le sont toutes.
+    const missing = untranslatedRequiredLocales(translations);
+    if (missing.length) {
+      const err = new Error(
+        `Traduction manquante : ${missing.map((l) => l.toUpperCase()).join(', ')}`,
+      );
       err.status = 400;
       throw err;
     }
@@ -550,10 +578,9 @@ async function saveWelcomeStatusConfig(patch, adminId) {
     [enabled, type, textFr || null, textEn || null, mediaUrl, backgroundColor, adminId ?? null],
   );
 
-  const translations = { ...incoming, fr: textFr, en: textEn };
   try {
     for (const locale of SUPPORTED_CONTENT_LOCALES) {
-      const value = normalizeStatusText(translations[locale]);
+      const value = translations[locale];
       if (value) {
         await pool.execute(
           `INSERT INTO welcome_status_config_i18n (config_id, locale, text)
