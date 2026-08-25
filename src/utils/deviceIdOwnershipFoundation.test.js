@@ -85,12 +85,12 @@ const { makeFakeIo, fakeSocket } = require('../testUtils/fakeIo');
 
   // ── meeting presence ───────────────────────────────────────────────────────
   meetingDevicePresence._reset();
-  const j1 = meetingDevicePresence.tryJoin(55, 9, 'm1', 's1');
+  const j1 = await meetingDevicePresence.tryJoin(55, 9, 'm1', 's1');
   assert.strictEqual(j1.ok, true);
-  const j2 = meetingDevicePresence.tryJoin(55, 9, 'm2', 's2');
+  const j2 = await meetingDevicePresence.tryJoin(55, 9, 'm2', 's2');
   assert.strictEqual(j2.ok, false);
   assert.strictEqual(j2.code, 'ACCOUNT_ALREADY_IN_MEETING');
-  const j1r = meetingDevicePresence.tryJoin(55, 9, 'm1', 's1b');
+  const j1r = await meetingDevicePresence.tryJoin(55, 9, 'm1', 's1b');
   assert.strictEqual(j1r.ok, true);
   assert.strictEqual(j1r.resumed, true);
 

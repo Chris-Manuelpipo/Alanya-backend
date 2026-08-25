@@ -9,8 +9,8 @@ function toInt(v) {
   return isNaN(n) ? null : n;
 }
 
-function emitMeetingSignal(io, toUserID, event, payload) {
-  const did = meetingDevicePresence.getActiveDeviceId(payload.meetingID, toUserID);
+async function emitMeetingSignal(io, toUserID, event, payload) {
+  const did = await meetingDevicePresence.getActiveDeviceId(payload.meetingID, toUserID);
   if (!did) {
     console.warn(
       `[Socket ${event}] pas de device cible user=${toUserID} meeting=${payload.meetingID} — drop`,
@@ -20,12 +20,12 @@ function emitMeetingSignal(io, toUserID, event, payload) {
   return emitToDevice(io, toUserID, did, event, payload);
 }
 
-function assertMeetingOwnerSocket(socket, meetingID) {
+async function assertMeetingOwnerSocket(socket, meetingID) {
   const mID = toInt(meetingID);
   const deviceId = normalizeDeviceId(socket.deviceId);
   if (!mID || !deviceId) return null;
   if (Number(socket.currentMeetingID) !== mID) return null;
-  if (!meetingDevicePresence.isOwnerDevice(mID, socket.alanyaID, deviceId)) {
+  if (!(await meetingDevicePresence.isOwnerDevice(mID, socket.alanyaID, deviceId))) {
     return null;
   }
   return mID;
@@ -55,7 +55,7 @@ const meetingCreate = (io, socket, userSockets) => {
       const mID = toInt(meetingID);
       const deviceId = normalizeDeviceId(socket.deviceId);
       if (mID && deviceId) {
-        const claim = meetingDevicePresence.tryJoin(mID, socket.alanyaID, deviceId, socket.id);
+        const claim = await meetingDevicePresence.tryJoin(mID, socket.alanyaID, deviceId, socket.id);
         if (!claim.ok && claim.code === 'ACCOUNT_ALREADY_IN_MEETING') {
           return socket.emit('meeting:join_denied', {
             meetingID: mID,
@@ -104,7 +104,7 @@ const meetingJoinRoom = (io, socket, userSockets) => {
         });
       }
 
-      const claim = meetingDevicePresence.tryJoin(mID, uID, deviceId, socket.id);
+      const claim = await meetingDevicePresence.tryJoin(mID, uID, deviceId, socket.id);
       if (!claim.ok) {
         return socket.emit('meeting:join_denied', {
           meetingID: mID,
@@ -126,11 +126,11 @@ const meetingJoinRoom = (io, socket, userSockets) => {
       }
 
       if (typeof isMuted === 'boolean') {
-        meetingMuteStates.set(mID, uID, isMuted);
+        await meetingMuteStates.set(mID, uID, isMuted);
       }
 
       if (typeof isVideoOff === 'boolean') {
-        meetingVideoStates.set(mID, uID, isVideoOff);
+        await meetingVideoStates.set(mID, uID, isVideoOff);
       }
 
       let nom = null;
@@ -154,8 +154,8 @@ const meetingJoinRoom = (io, socket, userSockets) => {
         userName:  userName || nom || pseudo || null,
         nom,
         pseudo,
-        muteStates: meetingMuteStates.getSnapshot(mID, uID),
-        videoStates: meetingVideoStates.getSnapshot(mID, uID),
+        muteStates: await meetingMuteStates.getSnapshot(mID, uID),
+        videoStates: await meetingVideoStates.getSnapshot(mID, uID),
       };
 
       socket.emit('meeting:room_joined', payload);
@@ -262,9 +262,9 @@ const meetingEnd = (io, socket, userSockets) => {
     }
 
     io.to(`meeting_${meetingID}`).emit('meeting:ended', { meetingID });
-    meetingMuteStates.clearMeeting(meetingID);
-    meetingVideoStates.clearMeeting(meetingID);
-    meetingDevicePresence.clearMeeting(meetingID);
+    await meetingMuteStates.clearMeeting(meetingID);
+    await meetingVideoStates.clearMeeting(meetingID);
+    await meetingDevicePresence.clearMeeting(meetingID);
 
     // io.sockets.adapter.rooms/sockets ne voient que CE process : capturer les
     // membres locaux avant de faire partir tout le monde de la room, sinon
@@ -315,7 +315,7 @@ const meetingLeave = (io, socket, userSockets) => {
       const deviceId = normalizeDeviceId(socket.deviceId);
 
       // Non-owner : no-op (ne libère pas le slot du device actif).
-      if (!mID || !deviceId || !meetingDevicePresence.isOwnerDevice(mID, uID, deviceId)) {
+      if (!mID || !deviceId || !(await meetingDevicePresence.isOwnerDevice(mID, uID, deviceId))) {
         console.log(
           `[Socket meeting:leave] no-op non-owner user=${uID} meeting=${meetingID}`,
         );
@@ -327,9 +327,9 @@ const meetingLeave = (io, socket, userSockets) => {
         userID: String(uID),
       });
 
-      meetingMuteStates.removeUser(meetingID, uID);
-      meetingVideoStates.removeUser(meetingID, uID);
-      meetingDevicePresence.leave(mID, uID);
+      await meetingMuteStates.removeUser(meetingID, uID);
+      await meetingVideoStates.removeUser(meetingID, uID);
+      await meetingDevicePresence.leave(mID, uID);
       try {
         await pool.execute(
           `UPDATE participant
@@ -350,16 +350,16 @@ const meetingLeave = (io, socket, userSockets) => {
 };
 
 const meetingOffer = (io, socket, userSockets) => {
-  socket.on('meeting:offer', (data) => {
+  socket.on('meeting:offer', async (data) => {
     try {
       if (!socket.authenticated) return;
       const { meetingID, toUserID, offer } = data;
       const targetID = toInt(toUserID);
       if (!targetID || !offer) return;
-      const mID = assertMeetingOwnerSocket(socket, meetingID);
+      const mID = await assertMeetingOwnerSocket(socket, meetingID);
       if (!mID) return;
 
-      emitMeetingSignal(io, targetID, 'meeting:offer', {
+      await emitMeetingSignal(io, targetID, 'meeting:offer', {
         fromUserID: String(socket.alanyaID),
         offer,
         meetingID: mID,
@@ -371,16 +371,16 @@ const meetingOffer = (io, socket, userSockets) => {
 };
 
 const meetingAnswer = (io, socket, userSockets) => {
-  socket.on('meeting:answer', (data) => {
+  socket.on('meeting:answer', async (data) => {
     try {
       if (!socket.authenticated) return;
       const { meetingID, toUserID, answer } = data;
       const targetID = toInt(toUserID);
       if (!targetID || !answer) return;
-      const mID = assertMeetingOwnerSocket(socket, meetingID);
+      const mID = await assertMeetingOwnerSocket(socket, meetingID);
       if (!mID) return;
 
-      emitMeetingSignal(io, targetID, 'meeting:answer', {
+      await emitMeetingSignal(io, targetID, 'meeting:answer', {
         fromUserID: String(socket.alanyaID),
         answer,
         meetingID: mID,
@@ -392,16 +392,16 @@ const meetingAnswer = (io, socket, userSockets) => {
 };
 
 const meetingIceCandidate = (io, socket, userSockets) => {
-  socket.on('meeting:ice_candidate', (data) => {
+  socket.on('meeting:ice_candidate', async (data) => {
     try {
       if (!socket.authenticated) return;
       const { meetingID, toUserID, candidate } = data;
       const targetID = toInt(toUserID);
       if (!targetID || !candidate) return;
-      const mID = assertMeetingOwnerSocket(socket, meetingID);
+      const mID = await assertMeetingOwnerSocket(socket, meetingID);
       if (!mID) return;
 
-      emitMeetingSignal(io, targetID, 'meeting:ice_candidate', {
+      await emitMeetingSignal(io, targetID, 'meeting:ice_candidate', {
         fromUserID: String(socket.alanyaID),
         candidate,
         meetingID: mID,
@@ -416,7 +416,7 @@ const meetingIceCandidate = (io, socket, userSockets) => {
 // L'émetteur est exclu via `socket.to`. Le userId provient de socket.alanyaID
 // (fiable), le meetingID de socket.currentMeetingID en priorité.
 const meetingMuteState = (io, socket, userSockets) => {
-  socket.on('meeting:mute_state', (data) => {
+  socket.on('meeting:mute_state', async (data) => {
     try {
       if (!socket.authenticated) return;
       const mID = socket.currentMeetingID
@@ -424,7 +424,7 @@ const meetingMuteState = (io, socket, userSockets) => {
       if (!mID) return;
 
       const isMuted = !!(data && data.isMuted);
-      meetingMuteStates.set(mID, socket.alanyaID, isMuted);
+      await meetingMuteStates.set(mID, socket.alanyaID, isMuted);
 
       socket.to(`meeting_${mID}`).emit('meeting:mute_state', {
         meetingID: mID,
@@ -442,7 +442,7 @@ const meetingMuteState = (io, socket, userSockets) => {
 // Le userId provient de socket.alanyaID (fiable), le meetingID de
 // socket.currentMeetingID en priorité.
 const meetingVideoState = (io, socket, userSockets) => {
-  socket.on('meeting:video_state', (data) => {
+  socket.on('meeting:video_state', async (data) => {
     try {
       if (!socket.authenticated) return;
       const mID = socket.currentMeetingID
@@ -450,7 +450,7 @@ const meetingVideoState = (io, socket, userSockets) => {
       if (!mID) return;
 
       const isVideoOff = !!(data && data.isVideoOff);
-      meetingVideoStates.set(mID, socket.alanyaID, isVideoOff);
+      await meetingVideoStates.set(mID, socket.alanyaID, isVideoOff);
 
       console.log(
         `[Socket meeting:video_state] meeting=${mID} user=${socket.alanyaID} isVideoOff=${isVideoOff}`,

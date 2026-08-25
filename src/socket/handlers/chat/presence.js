@@ -1,7 +1,7 @@
 const pool = require('../../../config/db');
 const { emitPresenceUpdate } = require('../../../utils/blockUtils');
 const pendingCalls = require('../../state/pendingCalls');
-const meetingMuteStates = require('../../state/meetingMuteStates');
+const { runMeetingDisconnectCascade } = require('../../../services/meetingWorkers');
 const callState = require('../../state/callState');
 const { endActiveCallForUser, cleanupGroupRoomOnDisconnect } = require('../calls');
 const callDeviceOwnership = require('../../state/callDeviceOwnership');
@@ -146,28 +146,15 @@ const handleDisconnect = async (io, socket, userSockets) => {
   const meetingID = socket.currentMeetingID;
   if (meetingID) {
     const mID = Number(meetingID);
-    const isMeetingOwner = meetingDevicePresence.isOwnerDevice(mID, userID, deviceId)
-      || !meetingDevicePresence.getActiveDeviceId(mID, userID);
+    const isMeetingOwner = (await meetingDevicePresence.isOwnerDevice(mID, userID, deviceId))
+      || !(await meetingDevicePresence.getActiveDeviceId(mID, userID));
 
     if (isMeetingOwner) {
-      meetingDevicePresence.armDisconnectGrace(mID, userID, async () => {
-        try {
-          io.to(`meeting_${meetingID}`).emit('meeting:user_left', {
-            meetingID,
-            userID: String(userID),
-          });
-          meetingMuteStates.removeUser(meetingID, userID);
-          await pool.execute(
-            `UPDATE participant
-             SET connecte = 0,
-                 duree = TIMESTAMPDIFF(SECOND, start_time, NOW())
-             WHERE idMeeting = ? AND IDparticipant = ?`,
-            [meetingID, userID],
-          );
-        } catch (e) {
-          console.warn('[Socket disconnect] meeting grace cleanup failed:', e.message);
-        }
-      });
+      // La cascade d'expiration vit dans meetingWorkers.js : le repli mémoire
+      // la reçoit ici en callback, le chemin Redis l'exécute depuis son
+      // handler job_queue — une seule implémentation pour les deux.
+      await meetingDevicePresence.armDisconnectGrace(mID, userID, () =>
+        runMeetingDisconnectCascade(io, mID, userID));
     }
     socket.currentMeetingID = null;
   }
