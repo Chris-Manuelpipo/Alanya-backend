@@ -11,15 +11,55 @@
 // mode vit AU NIVEAU SESSION :
 //   mode=join     → transfer === null
 //   mode=transfer → objet transfer obligatoire
+//
+// ── Répartition (Redis si REDIS_URL, sinon repli mémoire) ──
+//
+// La machine à états ci-dessous est dense et son intérêt tient à sa lisibilité.
+// Elle reste donc écrite une seule fois, en JavaScript, et n'est PAS réécrite en
+// Lua. Trois mécanismes distincts assurent l'atomicité, chacun choisi pour ce
+// qu'il protège :
+//
+//   1. `openWithPending` — script Lua. C'est la seule opération multi-clés :
+//      elle vérifie que TROIS utilisateurs sont libres puis écrit quatre clés.
+//      Un contrôle en plusieurs allers-retours laisserait deux ajouts
+//      simultanés créer chacun leur session, et le droit d'ajout ne serait
+//      plus unique. Le contenu de la session n'est pas interprété par le
+//      script : il le reçoit tout fait, en chaîne opaque.
+//
+//   2. `registerTransferReady` — `HSETNX`. La garde est « armer une seule
+//      fois » : poser un champ seulement s'il est absent est exactement cette
+//      sémantique, nativement atomique, sans script.
+//
+//   3. Les autres mutations — verrou court par session. Deux participants qui
+//      raccrochent en même temps liraient sinon la même session et la
+//      réécriraient chacun, la seconde écriture effaçant la première. Le
+//      verrou expire tout seul (2 s) : un process qui meurt en le tenant ne
+//      bloque personne durablement.
+//
+// Les handles `setTimeout` ne se sérialisent pas : côté Redis, les trois
+// minuteurs deviennent des lignes `job_queue` (voir services/callSessionsWorkers.js)
+// et les champs `timer`/`readyTimer`/`leaveTimer` ne portent plus qu'un booléen.
+// `!!session.transfer.leaveTimer` reste donc vrai des deux côtés.
+
+const { getDataClient } = require('../../config/redisData');
+const { runScript } = require('../../utils/redisScript');
+const { enqueue, cancelByDedupeKey } = require('../../services/jobQueue');
 
 const MAX_SESSION_PARTICIPANTS = 3;
 
 const TRANSFER_READY_TIMEOUT_MS = 25 * 1000;
 const TRANSFER_AUTO_LEAVE_MS = 10 * 1000;
 
-const _sessions = new Map(); // sessionId -> session
-const _byUser = new Map();   // userId(Number) -> sessionId
+const KINDS = ['callsession_no_answer', 'callsession_ready_timeout', 'callsession_auto_leave'];
+const dedupeOf = (sessionId) => `call_session_${sessionId}`;
 
+const keyOf = (sessionId) => `alanya:callSessions:${sessionId}`;
+const byUserKeyOf = (userId) => `alanya:callSessions:byUser:${Number(userId)}`;
+const lockKeyOf = (sessionId) => `alanya:callSessions:lock:${sessionId}`;
+const SEQ_KEY = 'alanya:callSessions:seq';
+
+const _sessions = new Map(); // sessionId -> session   (repli mémoire)
+const _byUser = new Map();   // userId(Number) -> sessionId
 let _seq = 0;
 
 function _toInt(v) {
@@ -31,22 +71,129 @@ function normalizeMode(mode) {
   return mode === 'transfer' ? 'transfer' : 'join';
 }
 
-function _nextSessionId(originCallId) {
-  _seq += 1;
-  return originCallId != null ? `conf_${originCallId}_${_seq}` : `conf_x_${_seq}`;
+// ── Sérialisation ───────────────────────────────────────────────────────────
+// `participants` est une Map et `readyBy` un Set : ni l'un ni l'autre ne
+// survit à JSON.stringify. Ils voyagent en tableaux et sont reconstruits à la
+// lecture, pour que les appelants gardent `participants.has()`, `.size`,
+// `readyBy.add()` — leur code n'a pas à savoir où l'état est rangé.
+
+function _serialise(session) {
+  return JSON.stringify({
+    ...session,
+    participants: [...session.participants.entries()],
+    pending: session.pending ? { ...session.pending, timer: !!session.pending.timer } : null,
+    transfer: session.transfer ? {
+      ...session.transfer,
+      readyBy: [...session.transfer.readyBy],
+      readyTimer: !!session.transfer.readyTimer,
+      leaveTimer: !!session.transfer.leaveTimer,
+    } : null,
+  });
 }
 
+function _deserialise(json) {
+  if (!json) return null;
+  const brut = JSON.parse(json);
+  return {
+    ...brut,
+    participants: new Map(brut.participants),
+    pending: brut.pending ? { ...brut.pending } : null,
+    transfer: brut.transfer ? { ...brut.transfer, readyBy: new Set(brut.transfer.readyBy) } : null,
+  };
+}
+
+// ── Verrou par session ──────────────────────────────────────────────────────
+
+const UNLOCK = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+return 0
+`;
+
+/**
+ * Lit la session, la laisse modifier, la réécrit — le tout sous verrou.
+ *
+ * `fn` reçoit la session désérialisée et rend soit une valeur à retourner,
+ * soit `undefined`. La session est réécrite sauf si `fn` a appelé
+ * `ctx.supprimer()`.
+ */
+async function _mutate(client, sessionId, fn) {
+  const cle = lockKeyOf(sessionId);
+  const jeton = `${Date.now()}:${Math.random()}`;
+  let acquis = false;
+  // 50 × 10 ms : au-delà d'une demi-seconde, mieux vaut une opération perdue
+  // (et journalisée) qu'un handler socket bloqué indéfiniment.
+  for (let i = 0; i < 50 && !acquis; i += 1) {
+    acquis = !!(await client.set(cle, jeton, { NX: true, PX: 2000 }));
+    if (!acquis) await new Promise((r) => setTimeout(r, 10));
+  }
+  if (!acquis) {
+    console.warn(`[callSessions] verrou indisponible pour ${sessionId} — opération abandonnée`);
+    return null;
+  }
+  try {
+    const brut = await client.hGet(keyOf(sessionId), 'data');
+    const session = _deserialise(brut);
+    let supprimee = false;
+    const ctx = { supprimer: () => { supprimee = true; } };
+    const sortie = await fn(session, ctx);
+    if (supprimee) return sortie;
+    if (session) await client.hSet(keyOf(sessionId), 'data', _serialise(session));
+    return sortie;
+  } finally {
+    await runScript(client, UNLOCK, [cle], [jeton]);
+  }
+}
+
+// ── Minuteurs ───────────────────────────────────────────────────────────────
+
+/**
+ * Arme un délai. En mémoire c'est un vrai `setTimeout` ; côté Redis, une ligne
+ * `job_queue` — `onExpire` est alors ignoré, le worker appelant lui-même la
+ * cascade correspondante.
+ */
+async function _armer(sessionId, kind, ms, onExpire) {
+  const client = getDataClient();
+  if (!client) {
+    return typeof onExpire === 'function' ? setTimeout(onExpire, ms) : null;
+  }
+  await cancelByDedupeKey(dedupeOf(sessionId), [kind]);
+  await enqueue(kind, { sessionId }, {
+    dedupeKey: dedupeOf(sessionId),
+    runAfter: new Date(Date.now() + ms),
+  });
+  return true;
+}
+
+async function _desarmer(sessionId, kinds, ...handles) {
+  const client = getDataClient();
+  if (!client) {
+    for (const h of handles) if (h && typeof h !== 'boolean') clearTimeout(h);
+    return;
+  }
+  await cancelByDedupeKey(dedupeOf(sessionId), kinds);
+}
+
+// ── Lectures ────────────────────────────────────────────────────────────────
+
 /** Session d'un utilisateur, qu'il y soit participant ou invité en attente. */
-function getByUser(userId) {
+async function getByUser(userId) {
   const id = _toInt(userId);
   if (id == null) return null;
+  const client = getDataClient();
+  if (client) {
+    const sessionId = await client.get(byUserKeyOf(id));
+    if (!sessionId) return null;
+    return _deserialise(await client.hGet(keyOf(sessionId), 'data'));
+  }
   const sessionId = _byUser.get(id);
   if (!sessionId) return null;
   return _sessions.get(sessionId) ?? null;
 }
 
-function get(sessionId) {
+async function get(sessionId) {
   if (!sessionId) return null;
+  const client = getDataClient();
+  if (client) return _deserialise(await client.hGet(keyOf(sessionId), 'data'));
   return _sessions.get(sessionId) ?? null;
 }
 
@@ -72,35 +219,70 @@ function isPending(session, userId) {
  * true si [userId] peut encore déclencher un ajout.
  * Ne vérifie QUE le droit : l'appelant doit s'assurer qu'il est bien à deux.
  */
-function hasAddRight(userId) {
-  return getByUser(userId) === null;
+async function hasAddRight(userId) {
+  return (await getByUser(userId)) === null;
 }
 
-function clearTransferTimers(session) {
-  if (!session?.transfer) return;
-  if (session.transfer.readyTimer) {
-    clearTimeout(session.transfer.readyTimer);
-    session.transfer.readyTimer = null;
+/** Snapshot testable des timers transfert (leaveTimer uniquement après ready). */
+async function getTransferTimerFlags(sessionId) {
+  const session = await get(sessionId);
+  if (!session?.transfer) {
+    return { state: null, hasLeaveTimer: false, hasReadyTimer: false };
   }
-  if (session.transfer.leaveTimer) {
-    clearTimeout(session.transfer.leaveTimer);
-    session.transfer.leaveTimer = null;
-  }
+  return {
+    state: session.transfer.state,
+    hasLeaveTimer: !!session.transfer.leaveTimer,
+    hasReadyTimer: !!session.transfer.readyTimer,
+  };
 }
 
 /**
- * Ouvre une session et y place l'invité en attente, en une seule opération.
- * SYNCHRONE (avant tout await) pour arbitrer les courses.
+ * true ssi A+B+C présents : initiator, target, et au moins un tiers.
+ * Pur : opère sur une session déjà lue.
+ */
+function canCompleteTransfer(session) {
+  if (!session || session.mode !== 'transfer' || !session.transfer) return false;
+  const t = session.transfer;
+  if (t.state !== 'armed') return false;
+  const ids = participantIds(session);
+  if (ids.length < 3) return false;
+  if (!ids.includes(t.initiatorId)) return false;
+  if (!ids.includes(t.targetId)) return false;
+  return ids.some((id) => id !== t.initiatorId && id !== t.targetId);
+}
+
+// ── Ouverture ───────────────────────────────────────────────────────────────
+
+/**
+ * Vérifie que les trois utilisateurs sont libres et écrit la session — en une
+ * seule opération. C'est ce qui garantit l'unicité du droit d'ajout : deux
+ * `call_add_participant` simultanés sur la même paire créeraient sinon chacun
+ * leur session, et l'un des deux invités resterait à sonner dans le vide.
  *
+ * KEYS = clés byUser des membres puis de l'invité ; ARGV[1] = clé de session,
+ * ARGV[2] = sessionId, ARGV[3] = contenu (opaque, jamais interprété ici).
+ */
+const OPEN_WITH_PENDING = `
+for i = 1, #KEYS do
+  if redis.call('EXISTS', KEYS[i]) == 1 then return 0 end
+end
+redis.call('HSET', ARGV[1], 'data', ARGV[3])
+for i = 1, #KEYS do
+  redis.call('SET', KEYS[i], ARGV[2])
+end
+return 1
+`;
+
+/**
+ * Ouvre une session et y place l'invité en attente, en une seule opération.
  * @returns {object|null}
  */
-function openWithPending({
+async function openWithPending({
   originCallId = null,
   isVideo = false,
   participants = [],
   inviteeId,
   byUserId,
-  timer = null,
   mode = 'join',
 } = {}) {
   const invitee = _toInt(inviteeId);
@@ -112,12 +294,14 @@ function openWithPending({
   if (members.includes(invitee)) return null;
   if (!members.includes(by)) return null;
 
-  for (const uid of [...members, invitee]) {
-    if (_byUser.has(uid)) return null;
-  }
-
-  const sessionId = _nextSessionId(originCallId);
+  const client = getDataClient();
   const now = Date.now();
+
+  // Le compteur doit être commun à toutes les instances, sinon deux sessions
+  // ouvertes en même temps porteraient le même identifiant.
+  const seq = client ? await client.incr(SEQ_KEY) : (_seq += 1);
+  const sessionId = originCallId != null ? `conf_${originCallId}_${seq}` : `conf_x_${seq}`;
+
   const session = {
     sessionId,
     originCallId: originCallId != null ? String(originCallId) : null,
@@ -130,7 +314,7 @@ function openWithPending({
       userId: invitee,
       byUserId: by,
       invitedAt: now,
-      timer,
+      timer: null,
       acceptedByDeviceId: null,
       acceptedSocketId: null,
     },
@@ -148,40 +332,59 @@ function openWithPending({
     };
   }
 
+  if (client) {
+    const cles = [...members, invitee].map(byUserKeyOf);
+    const ok = await runScript(
+      client, OPEN_WITH_PENDING, cles,
+      [keyOf(sessionId), sessionId, _serialise(session)],
+    );
+    return Number(ok) === 1 ? session : null;
+  }
+
+  for (const uid of [...members, invitee]) {
+    if (_byUser.has(uid)) return null;
+  }
   _sessions.set(sessionId, session);
   for (const uid of members) _byUser.set(uid, sessionId);
   _byUser.set(invitee, sessionId);
-
   return session;
 }
 
-/** Remplace le timer d'expiration de l'invitation en cours. */
-function setPendingTimer(sessionId, timer) {
+// ── Invitation ──────────────────────────────────────────────────────────────
+
+/** Arme le délai « personne ne répond » de l'invitation en cours. */
+async function armPendingTimer(sessionId, ms, onExpire) {
+  const client = getDataClient();
+  if (client) {
+    const armed = await _armer(sessionId, 'callsession_no_answer', ms, onExpire);
+    await _mutate(client, sessionId, (session) => {
+      if (session?.pending) session.pending.timer = armed;
+    });
+    return;
+  }
   const session = _sessions.get(sessionId);
   if (!session?.pending) return;
-  if (session.pending.timer && session.pending.timer !== timer) {
-    clearTimeout(session.pending.timer);
-  }
-  session.pending.timer = timer;
-}
-
-function _clearPendingTimer(session) {
-  if (session?.pending?.timer) {
-    clearTimeout(session.pending.timer);
-    session.pending.timer = null;
-  }
+  if (session.pending.timer) clearTimeout(session.pending.timer);
+  session.pending.timer = setTimeout(onExpire, ms);
 }
 
 /**
  * L'invitation a échoué. Détruit la session (droit d'ajout rendu).
  * @returns {number|null} invité retiré
  */
-function abortPending(sessionId) {
+async function abortPending(sessionId) {
+  const client = getDataClient();
+  if (client) {
+    const session = await get(sessionId);
+    if (!session?.pending) return null;
+    const inviteeId = session.pending.userId;
+    await destroy(sessionId);
+    return inviteeId;
+  }
   const session = _sessions.get(sessionId);
   if (!session?.pending) return null;
   const inviteeId = session.pending.userId;
-  _clearPendingTimer(session);
-  destroy(sessionId);
+  await destroy(sessionId);
   return inviteeId;
 }
 
@@ -190,81 +393,98 @@ function abortPending(sessionId) {
  * En mode transfer → state joined (readyTimer armé par le handler).
  * @returns {object|null}
  */
-function promotePending(sessionId) {
-  const session = _sessions.get(sessionId);
-  if (!session?.pending) return null;
-  if (session.participants.size >= MAX_SESSION_PARTICIPANTS) return null;
+async function promotePending(sessionId) {
+  const appliquer = (session) => {
+    if (!session?.pending) return null;
+    if (session.participants.size >= MAX_SESSION_PARTICIPANTS) return null;
+    const inviteeId = session.pending.userId;
+    session.participants.set(inviteeId, { joinedAt: Date.now() });
+    session.pending = null;
+    session.addRight = 'consumed';
+    if (session.mode === 'transfer' && session.transfer) {
+      session.transfer.state = 'joined';
+      session.transfer.targetId = inviteeId;
+    }
+    return { session, inviteeId };
+  };
 
-  const inviteeId = session.pending.userId;
-  _clearPendingTimer(session);
-  session.participants.set(inviteeId, { joinedAt: Date.now() });
-  session.pending = null;
-  session.addRight = 'consumed';
-  _byUser.set(inviteeId, sessionId);
-
-  if (session.mode === 'transfer' && session.transfer) {
-    session.transfer.state = 'joined';
-    session.transfer.targetId = inviteeId;
+  const client = getDataClient();
+  if (client) {
+    const r = await _mutate(client, sessionId, (session) => appliquer(session));
+    if (!r) return null;
+    await _desarmer(sessionId, ['callsession_no_answer']);
+    await client.set(byUserKeyOf(r.inviteeId), sessionId);
+    return r.session;
   }
-
-  return session;
+  const session = _sessions.get(sessionId);
+  if (session?.pending?.timer) { clearTimeout(session.pending.timer); session.pending.timer = null; }
+  const r = appliquer(session);
+  if (!r) return null;
+  _byUser.set(r.inviteeId, sessionId);
+  return r.session;
 }
 
+// ── Transfert ───────────────────────────────────────────────────────────────
+
 /**
- * Après promotePending en transfer : marque joined et pose readyTimer.
+ * Après promotePending en transfer : marque joined et pose le délai média.
  * Idempotent si déjà joined/armed.
  */
-function markTransferJoined(sessionId, readyTimer) {
+async function markTransferJoined(sessionId, ms, onExpire) {
+  const client = getDataClient();
+  if (client) {
+    const doitArmer = await _mutate(client, sessionId, (session) => {
+      if (!session || session.mode !== 'transfer' || !session.transfer) return false;
+      if (session.transfer.state === 'armed' || session.transfer.state === 'completed') return false;
+      session.transfer.state = 'joined';
+      session.transfer.readyTimer = ms != null;
+      return ms != null;
+    });
+    if (doitArmer) await _armer(sessionId, 'callsession_ready_timeout', ms, onExpire);
+    return get(sessionId);
+  }
   const session = _sessions.get(sessionId);
   if (!session || session.mode !== 'transfer' || !session.transfer) return null;
-  if (session.transfer.state === 'armed' || session.transfer.state === 'completed') {
-    return session;
-  }
+  if (session.transfer.state === 'armed' || session.transfer.state === 'completed') return session;
   session.transfer.state = 'joined';
-  if (session.transfer.readyTimer && session.transfer.readyTimer !== readyTimer) {
-    clearTimeout(session.transfer.readyTimer);
-  }
-  session.transfer.readyTimer = readyTimer ?? null;
+  if (session.transfer.readyTimer) clearTimeout(session.transfer.readyTimer);
+  session.transfer.readyTimer = ms != null && typeof onExpire === 'function'
+    ? setTimeout(onExpire, ms) : null;
   return session;
 }
 
 /**
- * Enregistre un call_conf_ready. N'arme le leaveTimer qu'une seule fois.
+ * Enregistre un call_conf_ready. N'arme le délai de sortie qu'une seule fois.
  *
  * Contrat strict :
  * - state doit être `joined` (après call_conf_join / promotePending)
  * - JAMAIS de leaveTimer en `pending` (invitation) ni en `joined` sans ready
  * - seul un reporter restant (ni initiateur, ni cible) avec peerId === targetId
- * - leaveTimerFactory appelé au plus une fois par session
+ * - le délai est armé au plus une fois par session
+ *
+ * L'unicité repose sur `HSETNX` côté Redis : poser un champ seulement s'il est
+ * absent EST la sémantique « armer une seule fois », nativement atomique. Deux
+ * `call_conf_ready` simultanés ne peuvent donc pas armer deux sorties
+ * automatiques — l'initiateur serait retiré deux fois de l'appel.
  *
  * @returns {{ ok: boolean, armed: boolean, reason?: string, session?: object }}
  */
-function registerTransferReady({ sessionId, reporterId, peerId, leaveTimerFactory }) {
-  const session = _sessions.get(sessionId);
+async function registerTransferReady({ sessionId, reporterId, peerId, leaveTimerMs, onLeave }) {
+  const session = await get(sessionId);
   if (!session || session.mode !== 'transfer' || !session.transfer) {
     return { ok: false, armed: false, reason: 'NO_TRANSFER' };
   }
-
   const t = session.transfer;
   if (t.state === 'armed' || t.state === 'completed' || t.state === 'cancelled') {
     return { ok: true, armed: false, reason: 'ALREADY_SETTLED', session };
   }
-  if (t.state !== 'joined') {
-    return { ok: false, armed: false, reason: 'NOT_JOINED' };
-  }
-  // Garde explicite : un leaveTimer ne peut pas déjà exister avant le 1er ready.
-  if (t.leaveTimer) {
-    return { ok: true, armed: false, reason: 'ALREADY_ARMED', session };
-  }
+  if (t.state !== 'joined') return { ok: false, armed: false, reason: 'NOT_JOINED' };
+  if (t.leaveTimer) return { ok: true, armed: false, reason: 'ALREADY_ARMED', session };
 
   const reporter = _toInt(reporterId);
   const peer = _toInt(peerId);
-  if (reporter == null || peer == null) {
-    return { ok: false, armed: false, reason: 'INVALID' };
-  }
-  if (peer !== t.targetId) {
-    return { ok: false, armed: false, reason: 'WRONG_PEER' };
-  }
+  if (reporter == null || peer == null) return { ok: false, armed: false, reason: 'INVALID' };
+  if (peer !== t.targetId) return { ok: false, armed: false, reason: 'WRONG_PEER' };
   if (reporter === t.initiatorId || reporter === t.targetId) {
     return { ok: false, armed: false, reason: 'INVALID_REPORTER' };
   }
@@ -272,154 +492,188 @@ function registerTransferReady({ sessionId, reporterId, peerId, leaveTimerFactor
     return { ok: false, armed: false, reason: 'NOT_MEMBER' };
   }
 
-  t.readyBy.add(reporter);
-
-  // Premier ready valide : armer une seule fois.
-  if (t.readyTimer) {
-    clearTimeout(t.readyTimer);
-    t.readyTimer = null;
+  const client = getDataClient();
+  if (client) {
+    // Le gagnant du HSETNX est le seul à armer.
+    const gagnant = await client.hSetNX(keyOf(sessionId), 'leaveArmed', '1');
+    if (!gagnant) {
+      return { ok: true, armed: false, reason: 'ALREADY_ARMED', session: await get(sessionId) };
+    }
+    await _desarmer(sessionId, ['callsession_ready_timeout']);
+    await _armer(sessionId, 'callsession_auto_leave', leaveTimerMs, onLeave);
+    const maj = await _mutate(client, sessionId, (s) => {
+      if (!s?.transfer) return null;
+      s.transfer.readyBy = new Set([...s.transfer.readyBy, reporter]);
+      s.transfer.readyTimer = false;
+      s.transfer.state = 'armed';
+      s.transfer.armedAt = Date.now();
+      s.transfer.leaveTimer = true;
+      return s;
+    });
+    return { ok: true, armed: true, session: maj || await get(sessionId) };
   }
+
+  t.readyBy.add(reporter);
+  if (t.readyTimer) { clearTimeout(t.readyTimer); t.readyTimer = null; }
   t.state = 'armed';
   t.armedAt = Date.now();
-  const leaveTimer = typeof leaveTimerFactory === 'function'
-    ? leaveTimerFactory()
-    : null;
-  t.leaveTimer = leaveTimer;
+  t.leaveTimer = typeof onLeave === 'function' ? setTimeout(onLeave, leaveTimerMs) : null;
   return { ok: true, armed: true, session };
 }
 
-/** Snapshot testable des timers transfert (leaveTimer uniquement après ready). */
-function getTransferTimerFlags(sessionId) {
-  const session = _sessions.get(sessionId);
-  if (!session?.transfer) {
-    return { state: null, hasLeaveTimer: false, hasReadyTimer: false };
+async function clearTransferTimers(sessionId) {
+  const client = getDataClient();
+  if (client) {
+    await _desarmer(sessionId, ['callsession_ready_timeout', 'callsession_auto_leave']);
+    await _mutate(client, sessionId, (s) => {
+      if (!s?.transfer) return;
+      s.transfer.readyTimer = false;
+      s.transfer.leaveTimer = false;
+    });
+    return;
   }
-  return {
-    state: session.transfer.state,
-    hasLeaveTimer: !!session.transfer.leaveTimer,
-    hasReadyTimer: !!session.transfer.readyTimer,
-  };
+  const session = _sessions.get(sessionId);
+  if (!session?.transfer) return;
+  if (session.transfer.readyTimer) { clearTimeout(session.transfer.readyTimer); session.transfer.readyTimer = null; }
+  if (session.transfer.leaveTimer) { clearTimeout(session.transfer.leaveTimer); session.transfer.leaveTimer = null; }
 }
 
-function armTransferLeaveTimer(sessionId, leaveTimer) {
+async function cancelTransfer(sessionId, reason = 'cancelled') {
+  await clearTransferTimers(sessionId);
+  const client = getDataClient();
+  if (client) {
+    return _mutate(client, sessionId, (s) => {
+      if (!s?.transfer) return null;
+      s.transfer.state = 'cancelled';
+      s.transfer.cancelReason = reason;
+      return s;
+    });
+  }
   const session = _sessions.get(sessionId);
   if (!session?.transfer) return null;
-  if (session.transfer.leaveTimer && session.transfer.leaveTimer !== leaveTimer) {
-    clearTimeout(session.transfer.leaveTimer);
-  }
-  session.transfer.leaveTimer = leaveTimer;
-  session.transfer.state = 'armed';
-  session.transfer.armedAt = Date.now();
-  return session;
-}
-
-/**
- * true ssi A+B+C présents : initiator, target, et au moins un tiers.
- */
-function canCompleteTransfer(session) {
-  if (!session || session.mode !== 'transfer' || !session.transfer) return false;
-  const t = session.transfer;
-  if (t.state !== 'armed') return false;
-  const ids = participantIds(session);
-  if (ids.length < 3) return false;
-  if (!ids.includes(t.initiatorId)) return false;
-  if (!ids.includes(t.targetId)) return false;
-  return ids.some((id) => id !== t.initiatorId && id !== t.targetId);
-}
-
-function cancelTransfer(sessionId, reason = 'cancelled') {
-  const session = _sessions.get(sessionId);
-  if (!session?.transfer) return null;
-  clearTransferTimers(session);
   session.transfer.state = 'cancelled';
   session.transfer.cancelReason = reason;
   return session;
 }
 
-function completeTransfer(sessionId) {
+async function completeTransfer(sessionId) {
+  await clearTransferTimers(sessionId);
+  const client = getDataClient();
+  if (client) {
+    return _mutate(client, sessionId, (s) => {
+      if (!s?.transfer) return null;
+      s.transfer.state = 'completed';
+      return s;
+    });
+  }
   const session = _sessions.get(sessionId);
   if (!session?.transfer) return null;
-  clearTransferTimers(session);
   session.transfer.state = 'completed';
   return session;
 }
+
+// ── Départs ─────────────────────────────────────────────────────────────────
 
 /**
  * Retire un participant. Annule les timers de transfert.
  * @returns {{remaining: number[], destroyed: boolean, wasPending: boolean, hadPendingInvitee: number|null}}
  */
-function removeParticipant(sessionId, userId) {
-  const session = _sessions.get(sessionId);
+async function removeParticipant(sessionId, userId) {
+  const vide = { remaining: [], destroyed: false, wasPending: false, hadPendingInvitee: null };
   const id = _toInt(userId);
-  if (!session || id == null) {
-    return {
-      remaining: [],
-      destroyed: false,
-      wasPending: false,
-      hadPendingInvitee: null,
-    };
-  }
+  if (id == null) return vide;
+
+  const session = await get(sessionId);
+  if (!session) return vide;
 
   const hadPendingInvitee = session.pending ? session.pending.userId : null;
 
   if (isPending(session, id)) {
     const remaining = participantIds(session);
-    abortPending(sessionId);
-    return {
-      remaining,
-      destroyed: true,
-      wasPending: true,
-      hadPendingInvitee: id,
-    };
+    await abortPending(sessionId);
+    return { remaining, destroyed: true, wasPending: true, hadPendingInvitee: id };
   }
 
   // Annuler le transfert si l'un des acteurs part (ou si B part pendant armed).
   if (session.transfer && session.transfer.state !== 'completed') {
-    clearTransferTimers(session);
-    if (session.transfer.state === 'armed' || session.transfer.state === 'joined') {
-      session.transfer.state = 'cancelled';
-    }
+    await clearTransferTimers(sessionId);
   }
 
-  session.participants.delete(id);
-  _byUser.delete(id);
+  const client = getDataClient();
+  if (client) {
+    const r = await _mutate(client, sessionId, (s) => {
+      if (!s) return null;
+      if (s.transfer && s.transfer.state !== 'completed'
+        && (s.transfer.state === 'armed' || s.transfer.state === 'joined')) {
+        s.transfer.state = 'cancelled';
+      }
+      s.participants.delete(id);
+      const restants = participantIds(s);
+      const pendingLeft = s.pending?.userId ?? null;
+      return { restants, aDetruire: s.participants.size < 2, pendingLeft };
+    });
+    if (!r) return vide;
+    await client.del(byUserKeyOf(id));
+    if (r.aDetruire) {
+      await destroy(sessionId);
+      return {
+        remaining: r.restants,
+        destroyed: true,
+        wasPending: false,
+        hadPendingInvitee: hadPendingInvitee ?? r.pendingLeft,
+      };
+    }
+    return { remaining: r.restants, destroyed: false, wasPending: false, hadPendingInvitee: null };
+  }
 
-  if (session.participants.size < 2) {
-    // S'il reste un pending, destroy le nettoie aussi (interdit A + pending C).
-    const remaining = participantIds(session);
-    const pendingLeft = session.pending?.userId ?? null;
-    destroy(sessionId);
+  const s = _sessions.get(sessionId);
+  if (s.transfer && s.transfer.state !== 'completed'
+    && (s.transfer.state === 'armed' || s.transfer.state === 'joined')) {
+    s.transfer.state = 'cancelled';
+  }
+  s.participants.delete(id);
+  _byUser.delete(id);
+  if (s.participants.size < 2) {
+    const remaining = participantIds(s);
+    const pendingLeft = s.pending?.userId ?? null;
+    await destroy(sessionId);
     return {
-      remaining,
-      destroyed: true,
-      wasPending: false,
+      remaining, destroyed: true, wasPending: false,
       hadPendingInvitee: hadPendingInvitee ?? pendingLeft,
     };
   }
-
-  return {
-    remaining: participantIds(session),
-    destroyed: false,
-    wasPending: false,
-    hadPendingInvitee: null,
-  };
+  return { remaining: participantIds(s), destroyed: false, wasPending: false, hadPendingInvitee: null };
 }
 
-function destroy(sessionId) {
+async function destroy(sessionId) {
+  const client = getDataClient();
+  if (client) {
+    const session = await get(sessionId);
+    await cancelByDedupeKey(dedupeOf(sessionId), KINDS);
+    if (session) {
+      const cles = [...session.participants.keys()].map(byUserKeyOf);
+      if (session.pending) cles.push(byUserKeyOf(session.pending.userId));
+      if (cles.length) await client.del(cles);
+    }
+    await client.del(keyOf(sessionId));
+    return;
+  }
   const session = _sessions.get(sessionId);
   if (!session) return;
-  _clearPendingTimer(session);
-  clearTransferTimers(session);
+  if (session.pending?.timer) clearTimeout(session.pending.timer);
+  if (session.transfer?.readyTimer) clearTimeout(session.transfer.readyTimer);
+  if (session.transfer?.leaveTimer) clearTimeout(session.transfer.leaveTimer);
   for (const uid of session.participants.keys()) _byUser.delete(uid);
   if (session.pending) _byUser.delete(session.pending.userId);
   _sessions.delete(sessionId);
 }
 
-/** Remise à zéro — tests uniquement. */
+/** Remise à zéro — tests du repli mémoire uniquement. */
 function _reset() {
   for (const session of _sessions.values()) {
-    _clearPendingTimer(session);
-    clearTransferTimers(session);
+    if (session.pending?.timer) clearTimeout(session.pending.timer);
+    if (session.transfer?.readyTimer) clearTimeout(session.transfer.readyTimer);
+    if (session.transfer?.leaveTimer) clearTimeout(session.transfer.leaveTimer);
   }
   _sessions.clear();
   _byUser.clear();
@@ -430,6 +684,7 @@ module.exports = {
   MAX_SESSION_PARTICIPANTS,
   TRANSFER_READY_TIMEOUT_MS,
   TRANSFER_AUTO_LEAVE_MS,
+  KINDS,
   getByUser,
   get,
   participantIds,
@@ -438,12 +693,11 @@ module.exports = {
   hasAddRight,
   normalizeMode,
   openWithPending,
-  setPendingTimer,
+  armPendingTimer,
   abortPending,
   promotePending,
   markTransferJoined,
   registerTransferReady,
-  armTransferLeaveTimer,
   getTransferTimerFlags,
   canCompleteTransfer,
   cancelTransfer,

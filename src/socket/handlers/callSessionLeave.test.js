@@ -70,12 +70,12 @@ async function twoWayCall() {
 /** Session à trois complète (Nadia entrée). */
 async function threeWaySession() {
   await twoWayCall();
-  const s = callSessions.openWithPending({
+  const s = await callSessions.openWithPending({
     participants: [CHRIS, AWA],
     inviteeId: NADIA,
     byUserId: CHRIS,
   });
-  callSessions.promotePending(s.sessionId);
+  await callSessions.promotePending(s.sessionId);
   await callState.setInCall(NADIA, { peerId: CHRIS });
   return s;
 }
@@ -94,7 +94,7 @@ async function threeWaySession() {
   // ── L'invité raccroche pendant qu'il sonne = refus ──────────────────────────
   await reset();
   await twoWayCall();
-  const ringing = callSessions.openWithPending({
+  const ringing = await callSessions.openWithPending({
     participants: [CHRIS, AWA],
     inviteeId: NADIA,
     byUserId: CHRIS,
@@ -110,13 +110,13 @@ async function threeWaySession() {
   assert.strictEqual(await callState.get(CHRIS), 'in_call', 'Chris toujours en appel');
   assert.strictEqual(await callState.get(AWA), 'in_call', 'Awa toujours en appel');
   assert.strictEqual(await callState.get(NADIA), 'idle', 'invité libéré');
-  assert.strictEqual(callSessions.hasAddRight(CHRIS), true, 'droit rendu');
-  assert.strictEqual(callSessions.hasAddRight(AWA), true, 'droit rendu à l\'autre aussi');
+  assert.strictEqual(await callSessions.hasAddRight(CHRIS), true, 'droit rendu');
+  assert.strictEqual(await callSessions.hasAddRight(AWA), true, 'droit rendu à l\'autre aussi');
 
   // Une déconnexion, elle, est signalée comme telle.
   await reset();
   await twoWayCall();
-  callSessions.openWithPending({
+  await callSessions.openWithPending({
     participants: [CHRIS, AWA], inviteeId: NADIA, byUserId: CHRIS,
   });
   await callState.setRinging(NADIA, { peerId: CHRIS });
@@ -148,9 +148,9 @@ async function threeWaySession() {
   assert.strictEqual(Number((await callState.getEntry(AWA)).peerId), NADIA, 'Awa pointe Nadia');
   assert.strictEqual(Number((await callState.getEntry(NADIA)).peerId), AWA, 'Nadia pointe Awa');
   // Le droit d'ajout reste consommé bien qu'ils ne soient plus que deux.
-  assert.strictEqual(callSessions.hasAddRight(AWA), false, 'droit toujours consommé');
-  assert.strictEqual(callSessions.hasAddRight(NADIA), false, 'droit toujours consommé');
-  assert.strictEqual(callSessions.get(live.sessionId).addRight, 'consumed');
+  assert.strictEqual(await callSessions.hasAddRight(AWA), false, 'droit toujours consommé');
+  assert.strictEqual(await callSessions.hasAddRight(NADIA), false, 'droit toujours consommé');
+  assert.strictEqual((await callSessions.get(live.sessionId)).addRight, 'consumed');
 
   // ── 2ᵉ leave après hangup : no-op (filet anti double end_call CallKit) ──────
   // Le client peut renvoyer end_call ; leaveCallSession doit renvoyer false et
@@ -168,13 +168,13 @@ async function threeWaySession() {
   assert.strictEqual(await leaveCallSession(io, null, AWA, 'hangup'), true);
   assert.deepStrictEqual(io.eventsFor(NADIA), ['call_ended'], 'le dernier voit l\'appel finir');
   assert.strictEqual(await callState.get(NADIA), 'idle');
-  assert.strictEqual(callSessions.get(live.sessionId), null, 'session détruite');
-  assert.strictEqual(callSessions.hasAddRight(NADIA), true);
+  assert.strictEqual(await callSessions.get(live.sessionId), null, 'session détruite');
+  assert.strictEqual(await callSessions.hasAddRight(NADIA), true);
 
   // ── failInvite : solde l'invitation et rend le droit ────────────────────────
   await reset();
   await twoWayCall();
-  const pending = callSessions.openWithPending({
+  const pending = await callSessions.openWithPending({
     participants: [CHRIS, AWA], inviteeId: NADIA, byUserId: CHRIS,
   });
   await callState.setRinging(NADIA, { peerId: CHRIS });
@@ -187,12 +187,12 @@ async function threeWaySession() {
   assert.deepStrictEqual(io.eventsFor(NADIA), ['call_ended'], 'sonnerie de l\'invité coupée');
   assert.strictEqual(await callState.get(NADIA), 'idle');
   assert.strictEqual(await callState.get(CHRIS), 'in_call', 'appel des présents intact');
-  assert.strictEqual(callSessions.hasAddRight(CHRIS), true, 'droit rendu après échec');
+  assert.strictEqual(await callSessions.hasAddRight(CHRIS), true, 'droit rendu après échec');
 
   // Refus explicite multi-device : C1 refuse → C2 reçoit call_ended, C1 exclu.
   await reset();
   await twoWayCall();
-  const declined = callSessions.openWithPending({
+  const declined = await callSessions.openWithPending({
     participants: [CHRIS, AWA], inviteeId: NADIA, byUserId: CHRIS,
   });
   await callState.setRinging(NADIA, { peerId: CHRIS });
@@ -207,7 +207,7 @@ async function threeWaySession() {
   assert.strictEqual(c2.events[0].payload.reason, 'rejected_elsewhere');
   assert.strictEqual(c2.events[0].payload.claimedByAnotherDevice, true);
   assert.strictEqual(await callState.get(NADIA), 'idle');
-  assert.strictEqual(callSessions.hasAddRight(CHRIS), true, 'droit rendu après refus');
+  assert.strictEqual(await callSessions.hasAddRight(CHRIS), true, 'droit rendu après refus');
 
   await reset();
   console.log('✅ callSessionLeave.test.js — tous les cas passent');

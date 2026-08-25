@@ -92,6 +92,10 @@ const {
 const {
   registerMeetingJobHandlers, setIo: setMeetingIo,
 } = require('./src/services/meetingWorkers');
+const {
+  registerCallSessionsJobHandlers, setIo: setCallSessionsIo,
+  setUserSockets: setCallSessionsUserSockets,
+} = require('./src/services/callSessionsWorkers');
 const { runNightlyTripPurge } = require('./src/services/tripRetention');
 const { runNightlyMediaPurge } = require('./src/services/mediaRetention');
 
@@ -296,6 +300,9 @@ async function start() {
     registerCallStateJobHandlers();
     setMeetingIo(io);
     registerMeetingJobHandlers();
+    setCallSessionsIo(io);
+    setCallSessionsUserSockets(userSockets);
+    registerCallSessionsJobHandlers();
     initBroadcastCache().catch((e) => console.error('[Broadcast] init cache:', e.message));
     startJobWorker();
     startMeetingScheduler();

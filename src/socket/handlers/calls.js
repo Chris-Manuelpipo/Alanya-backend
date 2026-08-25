@@ -321,7 +321,7 @@ async function closeCallHistory(io, userSockets, callID) {
  *          l'appelant ne doit alors PAS dérouler la fin d'appel 1-à-1.
  */
 async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
-  const session = callSessions.getByUser(userID);
+  const session = await callSessions.getByUser(userID);
   if (!session) return false;
 
   const { sessionId, originCallId, mode } = session;
@@ -367,10 +367,10 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
 
   // Auto-transfert : marquer completed AVANT remove pour ne pas confondre avec cancel.
   if (reason === 'transfer' && session.transfer) {
-    callSessions.completeTransfer(sessionId);
+    await callSessions.completeTransfer(sessionId);
   }
 
-  const { remaining, hadPendingInvitee } = callSessions.removeParticipant(sessionId, userID);
+  const { remaining, hadPendingInvitee } = await callSessions.removeParticipant(sessionId, userID);
 
   console.log(
     `[Socket] leaveCallSession user=${userID} session=${sessionId} ` +
@@ -381,7 +381,7 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
   await pendingCalls.clear(userID);
 
   // Si destroy a emporté un pending (ex. départ → <2 présents), couper CallKit C.
-  if (!wasPending && hadPendingInvitee != null && !callSessions.get(sessionId)) {
+  if (!wasPending && hadPendingInvitee != null && !(await callSessions.get(sessionId))) {
     await callState.clear(hadPendingInvitee);
     await pendingCalls.clear(hadPendingInvitee);
     emitToUser(io, hadPendingInvitee, 'call_ended', { callId: sessionId });
@@ -546,7 +546,7 @@ async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnec
 // Sans ce nettoyage, la session le maintiendrait « occupé » et confisquerait le
 // droit d'ajout de l'appel indéfiniment.
 async function reclaimStaleSession(io, userID) {
-  const session = callSessions.getByUser(userID);
+  const session = await callSessions.getByUser(userID);
   if (!session) return false;
   if (await isUserOnline(io, userID)) return false;
   if (await callState.hasDisconnectGrace(userID)) return false;
@@ -554,7 +554,7 @@ async function reclaimStaleSession(io, userID) {
   console.log(
     `[callSessions] reclaimStaleSession user=${userID} session=${session.sessionId} (hors-ligne, sans grâce)`,
   );
-  callSessions.removeParticipant(session.sessionId, userID);
+  await callSessions.removeParticipant(session.sessionId, userID);
   return true;
 }
 
@@ -1228,7 +1228,7 @@ async function closeSessionHistoryFor(sessionId, userID) {
 }
 
 async function failInvite(io, sessionId, reason, { decliningDeviceId = null } = {}) {
-  const session = callSessions.get(sessionId);
+  const session = await callSessions.get(sessionId);
   if (!session?.pending) return;
 
   const inviteeID = session.pending.userId;
@@ -1237,7 +1237,7 @@ async function failInvite(io, sessionId, reason, { decliningDeviceId = null } = 
 
   console.log(`[Socket call_add] ✖ invitation soldée session=${sessionId} invité=${inviteeID} raison=${reason}`);
 
-  callSessions.abortPending(sessionId);
+  await callSessions.abortPending(sessionId);
   await callState.clear(inviteeID);
   await pendingCalls.clear(inviteeID);
   await callDeviceOwnership.release(sessionId);
@@ -1276,13 +1276,13 @@ async function failInvite(io, sessionId, reason, { decliningDeviceId = null } = 
  * Timeout média : C n'a jamais eu de lien WebRTC ready → retirer C, garder A/B.
  */
 async function onTransferMediaNotReady(io, userSockets, sessionId) {
-  const session = callSessions.get(sessionId);
+  const session = await callSessions.get(sessionId);
   if (!session || session.mode !== 'transfer' || !session.transfer) return;
   if (session.transfer.state !== 'joined') return;
 
   const targetId = session.transfer.targetId;
   console.log(`[Socket transfer] ⏱ media_not_ready session=${sessionId} target=${targetId}`);
-  callSessions.cancelTransfer(sessionId, 'media_not_ready');
+  await callSessions.cancelTransfer(sessionId, 'media_not_ready');
   await leaveCallSession(io, userSockets, targetId, 'media_not_ready');
 }
 
@@ -1290,13 +1290,13 @@ async function onTransferMediaNotReady(io, userSockets, sessionId) {
  * Auto-leave de l'initiateur après 10 s si canCompleteTransfer.
  */
 async function onTransferAutoLeave(io, userSockets, sessionId) {
-  const session = callSessions.get(sessionId);
+  const session = await callSessions.get(sessionId);
   if (!session || session.mode !== 'transfer' || !session.transfer) return;
   if (session.transfer.state !== 'armed') return;
 
   if (!callSessions.canCompleteTransfer(session)) {
     console.log(`[Socket transfer] ⛔ auto-leave annulé (canCompleteTransfer=false) session=${sessionId}`);
-    callSessions.cancelTransfer(sessionId, 'incomplete');
+    await callSessions.cancelTransfer(sessionId, 'incomplete');
     return;
   }
 
@@ -1344,7 +1344,7 @@ const addParticipant = (io, socket, userSockets) => {
         return reject('TARGET_BUSY');
       }
 
-      const session = callSessions.openWithPending({
+      const session = await callSessions.openWithPending({
         originCallId: entry.callId ?? null,
         isVideo: !!entry.isVideo,
         participants: [requesterID, peerID],
@@ -1378,7 +1378,7 @@ const addParticipant = (io, socket, userSockets) => {
       ]);
       if (blockedByRequester || blockedByPeer) {
         console.log(`[Socket call_add] ⛔ blocage: invité=${inviteeID}`);
-        callSessions.abortPending(sessionId);
+        await callSessions.abortPending(sessionId);
         return reject('TARGET_BLOCKED');
       }
 
@@ -1388,14 +1388,11 @@ const addParticipant = (io, socket, userSockets) => {
         isVideo: !!entry.isVideo,
       });
 
-      callSessions.setPendingTimer(
-        sessionId,
-        setTimeout(() => {
-          failInvite(io, sessionId, 'no_answer').catch((err) =>
-            console.warn('[Socket call_add] failInvite no_answer:', err.message),
-          );
-        }, NO_ANSWER_MS),
-      );
+      await callSessions.armPendingTimer(sessionId, NO_ANSWER_MS, () => {
+        failInvite(io, sessionId, 'no_answer').catch((err) =>
+          console.warn('[Socket call_add] failInvite no_answer:', err.message),
+        );
+      });
 
       const cards = await fetchUserCards([requesterID, peerID, inviteeID]);
       const fallback = (uid) => ({ id: String(uid), name: '', photo: null });
@@ -1457,7 +1454,7 @@ const cancelAddParticipant = (io, socket, userSockets) => {
   socket.on('call_add_cancel', async () => {
     try {
       if (!socket.authenticated) return;
-      const session = callSessions.getByUser(socket.alanyaID);
+      const session = await callSessions.getByUser(socket.alanyaID);
       if (!session?.pending) return;
       // L'invitation appartient à celui qui l'a lancée : lui seul l'annule.
       if (session.pending.byUserId !== socket.alanyaID) return;
@@ -1472,7 +1469,7 @@ const confReject = (io, socket, userSockets) => {
   socket.on('call_conf_reject', async () => {
     try {
       if (!socket.authenticated) return;
-      const session = callSessions.getByUser(socket.alanyaID);
+      const session = await callSessions.getByUser(socket.alanyaID);
       if (!session || !callSessions.isPending(session, socket.alanyaID)) return;
       await failInvite(io, session.sessionId, 'declined', {
         decliningDeviceId: normalizeDeviceId(socket.deviceId),
@@ -1494,7 +1491,7 @@ const confJoin = (io, socket, userSockets) => {
         return;
       }
 
-      const session = callSessions.getByUser(inviteeID);
+      const session = await callSessions.getByUser(inviteeID);
       if (!session || !callSessions.isPending(session, inviteeID)) return;
 
       const { sessionId } = session;
@@ -1530,7 +1527,7 @@ const confJoin = (io, socket, userSockets) => {
 
       const mode = session.mode || 'join';
       const present = callSessions.participantIds(session);
-      const promoted = callSessions.promotePending(sessionId);
+      const promoted = await callSessions.promotePending(sessionId);
       if (!promoted) return;
 
       // Ownership A/B : reprise depuis originCallId si pas encore migrés à l'invite.
@@ -1570,16 +1567,10 @@ const confJoin = (io, socket, userSockets) => {
       }).catch((err) => console.warn('[Socket call_conf_join] FCM siblings:', err.message));
 
       if (mode === 'transfer') {
-        callSessions.markTransferJoined(
-          sessionId,
-          setTimeout(
-            () => {
-              onTransferMediaNotReady(io, userSockets, sessionId)
-                .catch((err) => console.warn('[Socket transfer] media_not_ready error:', err.message));
-            },
-            TRANSFER_READY_TIMEOUT_MS,
-          ),
-        );
+        await callSessions.markTransferJoined(sessionId, TRANSFER_READY_TIMEOUT_MS, () => {
+          onTransferMediaNotReady(io, userSockets, sessionId)
+            .catch((err) => console.warn('[Socket transfer] media_not_ready error:', err.message));
+        });
       }
 
       openSessionHistory(promoted, inviteeID)
@@ -1628,17 +1619,15 @@ const confReady = (io, socket, userSockets) => {
         return;
       }
 
-      const result = callSessions.registerTransferReady({
+      const result = await callSessions.registerTransferReady({
         sessionId,
         reporterId: reporterID,
         peerId,
-        leaveTimerFactory: () => setTimeout(
-          () => {
-            onTransferAutoLeave(io, userSockets, sessionId)
-              .catch((err) => console.warn('[Socket transfer] auto-leave error:', err.message));
-          },
-          TRANSFER_AUTO_LEAVE_MS,
-        ),
+        leaveTimerMs: TRANSFER_AUTO_LEAVE_MS,
+        onLeave: () => {
+          onTransferAutoLeave(io, userSockets, sessionId)
+            .catch((err) => console.warn('[Socket transfer] auto-leave error:', err.message));
+        },
       });
 
       if (!result.ok) {
@@ -2029,7 +2018,7 @@ const groupMuteState = (io, socket, userSockets) => {
         isMuted: !!(data && data.isMuted),
       };
 
-      const session = callSessions.getByUser(socket.alanyaID);
+      const session = await callSessions.getByUser(socket.alanyaID);
       if (session && String(session.sessionId) === String(rId)) {
         for (const participantId of callSessions.participantIds(session)) {
           if (Number(participantId) === Number(socket.alanyaID)) continue;
@@ -2354,6 +2343,11 @@ module.exports = {
   endActiveCallForUser,
   leaveCallSession,
   failInvite,
+  // Exportées pour les exécuteurs de délais (services/callSessionsWorkers.js) :
+  // côté Redis, ces cascades sont déclenchées par la file de tâches, plus par
+  // un setTimeout du process qui les a armées.
+  onTransferMediaNotReady,
+  onTransferAutoLeave,
   addParticipant,
   cancelAddParticipant,
   confJoin,
