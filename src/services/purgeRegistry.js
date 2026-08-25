@@ -181,13 +181,17 @@ const DESCRIPTORS = {
         ['appareils', "SELECT COUNT(*) n FROM appareils WHERE revoked_at IS NOT NULL AND revoked_at < DATE_SUB(NOW(), INTERVAL 90 DAY)", '90 jours'],
         ['user_push_devices', "SELECT COUNT(*) n FROM user_push_devices WHERE lastHeartbeatAt IS NOT NULL AND lastHeartbeatAt < DATE_SUB(NOW(), INTERVAL 180 DAY)", '180 jours'],
       ];
-      const parCible = {};
-      for (const [nom, sql, retention] of cibles) {
+      // Un tableau, pas un objet indexé par nom de table : le client admin
+      // normalise les CLÉS des réponses en camelCase (lib/api.ts), ce qui
+      // transformerait `user_push_devices` en `userPushDevices` à l'écran.
+      // En valeur, le nom de la table arrive intact.
+      const parCible = [];
+      for (const [table, sql, retention] of cibles) {
         try {
           const [rows] = await pool.execute(sql);
-          parCible[nom] = { lignes: Number(rows[0].n) || 0, retention };
+          parCible.push({ table, lignes: Number(rows[0].n) || 0, retention });
         } catch (e) {
-          parCible[nom] = { erreur: e.message };
+          parCible.push({ table, erreur: e.message });
         }
       }
       return { parCible };
