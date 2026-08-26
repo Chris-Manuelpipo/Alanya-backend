@@ -1,6 +1,7 @@
 const pool = require('../../config/db');
 const bcrypt = require('bcryptjs');
 const { sendDataOnlyNotification } = require('../../services/notificationService');
+const { permissionsFor } = require('../../constants/adminRoles');
 
 const SALT_ROUNDS = 10;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -35,6 +36,10 @@ async function getMe(req, res) {
       alanyaPhone: u.alanyaPhone,
       avatarUrl: u.avatar_url,
       typeCompte: u.type_compte ?? 0,
+      // Permissions effectives, servies par le serveur plutôt que recalculées
+      // par le panneau : dupliquer la table divergerait au premier oubli, et
+      // un rôle qui change ne demande alors aucun redéploiement du panneau.
+      permissions: permissionsFor(u.type_compte),
       paysLibelle: u.pays_libelle,
       createdAt: u.created_at,
       lastSeen: u.last_seen,
@@ -136,6 +141,10 @@ async function updateMe(req, res) {
       alanyaPhone: u.alanyaPhone,
       avatarUrl: u.avatar_url,
       typeCompte: u.type_compte ?? 0,
+      // Permissions effectives, servies par le serveur plutôt que recalculées
+      // par le panneau : dupliquer la table divergerait au premier oubli, et
+      // un rôle qui change ne demande alors aucun redéploiement du panneau.
+      permissions: permissionsFor(u.type_compte),
       paysLibelle: u.pays_libelle,
       createdAt: u.created_at,
       lastSeen: u.last_seen,

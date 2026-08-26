@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const { adminAuth, superAdminAuth } = require('../middleware/adminAuth');
+// `superAdminAuth` n'est plus utilisé ici : chaque route déclare désormais la
+// permission qu'elle exige plutôt que le niveau qu'elle suppose. Le middleware
+// reste exporté — il redevient utile le jour où une route hors de ce routeur
+// aurait besoin d'un garde par niveau.
+const { adminAuth, requirePermission } = require('../middleware/adminAuth');
 const { adminAudit } = require('../middleware/adminAudit');
 
 // Journal des actions : monté une fois pour tout le routeur, avant les routes.
@@ -88,9 +92,9 @@ const { broadcastSendLimiter, broadcastEstimateLimiter } = require('../middlewar
 router.post('/auth/login', adminLogin);
 
 // ── Profil admin ──
-router.get('/me',                            adminAuth, getMe);
-router.put('/me',                            adminAuth, updateMe);
-router.put('/me/password',                   adminAuth, updatePassword);
+router.get('/me',                            adminAuth, requirePermission('profile.read'), getMe);
+router.put('/me',                            adminAuth, requirePermission('profile.update'), updateMe);
+router.put('/me/password',                   adminAuth, requirePermission('profile.password'), updatePassword);
 
 /**
  * @swagger
@@ -117,7 +121,7 @@ router.put('/me/password',                   adminAuth, updatePassword);
  *       200:
  *         description: Statistiques
  */
-router.get('/stats',                       adminAuth, getStats);
+router.get('/stats',                       adminAuth, requirePermission('stats.read'), getStats);
 
 /**
  * @swagger
@@ -144,7 +148,7 @@ router.get('/stats',                       adminAuth, getStats);
  *       200:
  *         description: Agrégations analytiques groupées par domaine
  */
-router.get('/analytics',                   adminAuth, getAnalytics);
+router.get('/analytics',                   adminAuth, requirePermission('stats.read'), getAnalytics);
 
 /**
  * @swagger
@@ -171,7 +175,7 @@ router.get('/analytics',                   adminAuth, getAnalytics);
  *       200:
  *         description: KPIs anonymes (démarrés, issues, durées, SOS)
  */
-router.get('/trips',                       adminAuth, getTripStats);
+router.get('/trips',                       adminAuth, requirePermission('trips.read'), getTripStats);
 
 /**
  * @swagger
@@ -185,7 +189,7 @@ router.get('/trips',                       adminAuth, getTripStats);
  *       200:
  *         description: Durées de rétention, volumes stockés et purgeables, journal des purges
  */
-router.get('/trips/retention',             adminAuth, getTripRetention);
+router.get('/trips/retention',             adminAuth, requirePermission('trips.read'), getTripRetention);
 
 /**
  * @swagger
@@ -212,7 +216,7 @@ router.get('/trips/retention',             adminAuth, getTripRetention);
  *       200:
  *         description: Compteurs après purge et journal mis à jour
  */
-router.post('/trips/retention/purge',      adminAuth, superAdminAuth, runTripPurge);
+router.post('/trips/retention/purge',      adminAuth, requirePermission('trips.purge'), runTripPurge);
 
 /**
  * @swagger
@@ -227,7 +231,7 @@ router.post('/trips/retention/purge',      adminAuth, superAdminAuth, runTripPur
  *     responses:
  *       200: { description: Liste des purges }
  */
-router.get('/purges',                      adminAuth, getPurges);
+router.get('/purges',                      adminAuth, requirePermission('purges.read'), getPurges);
 
 /**
  * @swagger
@@ -240,7 +244,7 @@ router.get('/purges',                      adminAuth, getPurges);
  *       200: { description: Reglage mis a jour }
  *       404: { description: Purge inconnue }
  */
-router.put('/purges/:name',                adminAuth, superAdminAuth, updatePurge);
+router.put('/purges/:name',                adminAuth, requirePermission('purges.settings'), updatePurge);
 
 /**
  * @swagger
@@ -257,7 +261,7 @@ router.put('/purges/:name',                adminAuth, superAdminAuth, updatePurg
  *       200: { description: Purge executee }
  *       404: { description: Purge inconnue }
  */
-router.post('/purges/:name/run',           adminAuth, superAdminAuth, runPurgeNow);
+router.post('/purges/:name/run',           adminAuth, requirePermission('purges.run'), runPurgeNow);
 
 /**
  * @swagger
@@ -277,7 +281,7 @@ router.post('/purges/:name/run',           adminAuth, superAdminAuth, runPurgeNo
  *       200:
  *         description: Liste des derniers événements
  */
-router.get('/activity',                    adminAuth, getActivityFeed);
+router.get('/activity',                    adminAuth, requirePermission('stats.read'), getActivityFeed);
 
 /**
  * @swagger
@@ -312,7 +316,7 @@ router.get('/activity',                    adminAuth, getActivityFeed);
  *       200:
  *         description: Liste des médias
  */
-router.get('/media',                       adminAuth, getAllMedia);
+router.get('/media',                       adminAuth, requirePermission('media.read'), getAllMedia);
 
 /**
  * @swagger
@@ -334,7 +338,7 @@ router.get('/media',                       adminAuth, getAllMedia);
  *       404:
  *         description: Média introuvable
  */
-router.delete('/media/:id',                adminAuth, deleteMedia);
+router.delete('/media/:id',                adminAuth, requirePermission('media.delete'), deleteMedia);
 
 /**
  * @swagger
@@ -354,7 +358,7 @@ router.delete('/media/:id',                adminAuth, deleteMedia);
  *       200:
  *         description: Liste des réunions
  */
-router.get('/meetings',                    adminAuth, getAllMeetings);
+router.get('/meetings',                    adminAuth, requirePermission('meetings.read'), getAllMeetings);
 
 /**
  * @swagger
@@ -376,7 +380,7 @@ router.get('/meetings',                    adminAuth, getAllMeetings);
  *       404:
  *         description: Réunion introuvable
  */
-router.post('/meetings/:id/end',           adminAuth, endMeeting);
+router.post('/meetings/:id/end',           adminAuth, requirePermission('meetings.end'), endMeeting);
 
 /**
  * @swagger
@@ -398,7 +402,7 @@ router.post('/meetings/:id/end',           adminAuth, endMeeting);
  *       404:
  *         description: Réunion introuvable
  */
-router.delete('/meetings/:id',             adminAuth, deleteMeeting);
+router.delete('/meetings/:id',             adminAuth, requirePermission('meetings.delete'), deleteMeeting);
 
 /**
  * @swagger
@@ -432,8 +436,8 @@ router.delete('/meetings/:id',             adminAuth, deleteMeeting);
  *       200:
  *         description: Paramètres mis à jour
  */
-router.get('/settings',                    adminAuth, getSettings);
-router.put('/settings',                    adminAuth, superAdminAuth, updateSettings);
+router.get('/settings',                    adminAuth, requirePermission('settings.read'), getSettings);
+router.put('/settings',                    adminAuth, requirePermission('settings.write'), updateSettings);
 
 /**
  * @swagger
@@ -457,7 +461,7 @@ router.put('/settings',                    adminAuth, superAdminAuth, updateSett
  *       200:
  *         description: Liste des groupes
  */
-router.get('/groups',                      adminAuth, getAllGroups);
+router.get('/groups',                      adminAuth, requirePermission('groups.read'), getAllGroups);
 
 /**
  * @swagger
@@ -493,8 +497,8 @@ router.get('/groups',                      adminAuth, getAllGroups);
  *       200:
  *         description: Groupe supprimé
  */
-router.get('/groups/:id',                  adminAuth, getGroupById);
-router.delete('/groups/:id',               adminAuth, deleteGroup);
+router.get('/groups/:id',                  adminAuth, requirePermission('groups.read'), getGroupById);
+router.delete('/groups/:id',               adminAuth, requirePermission('groups.delete'), deleteGroup);
 
 /**
  * @swagger
@@ -551,10 +555,10 @@ router.delete('/groups/:id',               adminAuth, deleteGroup);
  *       200:
  *         description: Liste des utilisateurs
  */
-router.get('/users/export',                   adminAuth, exportUsers);
-router.get('/analytics/export',               adminAuth, exportAnalytics);
-router.get('/users',                       adminAuth, getUsers);
-router.post('/users',                      adminAuth, createUser);
+router.get('/users/export',                   adminAuth, requirePermission('users.export'), exportUsers);
+router.get('/analytics/export',               adminAuth, requirePermission('analytics.export'), exportAnalytics);
+router.get('/users',                       adminAuth, requirePermission('users.read'), getUsers);
+router.post('/users',                      adminAuth, requirePermission('users.create'), createUser);
 
 /**
  * @swagger
@@ -588,7 +592,7 @@ router.post('/users',                      adminAuth, createUser);
  *       200:
  *         description: Utilisateur supprimé
  */
-router.get('/users/:id',                   adminAuth, getUserById);
+router.get('/users/:id',                   adminAuth, requirePermission('users.read'), getUserById);
 
 /**
  * @swagger
@@ -608,7 +612,7 @@ router.get('/users/:id',                   adminAuth, getUserById);
  *       200:
  *         description: Compteurs d'activité
  */
-router.get('/users/:id/activity',          adminAuth, getUserActivity);
+router.get('/users/:id/activity',          adminAuth, requirePermission('users.read'), getUserActivity);
 
 /**
  * @swagger
@@ -633,12 +637,12 @@ router.get('/users/:id/activity',          adminAuth, getUserActivity);
  *       200:
  *         description: Historique des connexions
  */
-router.get('/users/:id/logins',            adminAuth, getUserLogins);
+router.get('/users/:id/logins',            adminAuth, requirePermission('users.read'), getUserLogins);
 
 // Journal des actions administrateur. Filtrable : sans filtre pour la page
 // « Activité admin », avec `targetType`/`targetId` pour l'encart d'une fiche.
-router.get('/audit',                       adminAuth, getAudit);
-router.get('/audit/actions',               adminAuth, getAuditActions);
+router.get('/audit',                       adminAuth, requirePermission('audit.read'), getAudit);
+router.get('/audit/actions',               adminAuth, requirePermission('audit.read'), getAuditActions);
 
 /**
  * @swagger
@@ -680,8 +684,8 @@ router.get('/audit/actions',               adminAuth, getAuditActions);
  *       200:
  *         description: Utilisateur débanni
  */
-router.post('/users/:id/ban',              adminAuth, banUser);
-router.delete('/users/:id/ban',            adminAuth, unbanUser);
+router.post('/users/:id/ban',              adminAuth, requirePermission('users.ban'), banUser);
+router.delete('/users/:id/ban',            adminAuth, requirePermission('users.unban'), unbanUser);
 
 /**
  * @swagger
@@ -714,15 +718,15 @@ router.delete('/users/:id/ban',            adminAuth, unbanUser);
  *       200:
  *         description: Rôle mis à jour
  */
-router.put('/users/:id/role',              adminAuth, superAdminAuth, setAccountType);
-router.put('/users/:id/socle',             adminAuth, superAdminAuth, setUserSocle);
-router.put('/users/:id/phone',             adminAuth, updateUserPhone);
-router.delete('/users/:id',                adminAuth, superAdminAuth, deleteUser);
+router.put('/users/:id/role',              adminAuth, requirePermission('users.role'), setAccountType);
+router.put('/users/:id/socle',             adminAuth, requirePermission('users.socle'), setUserSocle);
+router.put('/users/:id/phone',             adminAuth, requirePermission('users.phone'), updateUserPhone);
+router.delete('/users/:id',                adminAuth, requirePermission('users.delete'), deleteUser);
 
-router.get('/alanya-phones/check-assignable', adminAuth, checkAssignablePhone);
-router.get('/reserved-alanya-phones',      adminAuth, listReservedPhones);
-router.post('/reserved-alanya-phones',     adminAuth, superAdminAuth, addReservedPhone);
-router.delete('/reserved-alanya-phones/:phone', adminAuth, superAdminAuth, removeReservedPhone);
+router.get('/alanya-phones/check-assignable', adminAuth, requirePermission('phones.read'), checkAssignablePhone);
+router.get('/reserved-alanya-phones',      adminAuth, requirePermission('phones.read'), listReservedPhones);
+router.post('/reserved-alanya-phones',     adminAuth, requirePermission('phones.reserve'), addReservedPhone);
+router.delete('/reserved-alanya-phones/:phone', adminAuth, requirePermission('phones.release'), removeReservedPhone);
 
 const {
   listBroadcasts,
@@ -747,22 +751,22 @@ const {
 
 // Le compte officiel est unique et se crée sans aucune saisie. Sa création est
 // un acte irréversible : super-admin, comme setUserSocle et deleteUser.
-router.get('/official-account', adminAuth, getOfficialAccount);
-router.post('/official-account', adminAuth, superAdminAuth, createOfficialAccount);
+router.get('/official-account', adminAuth, requirePermission('official.read'), getOfficialAccount);
+router.post('/official-account', adminAuth, requirePermission('official.create'), createOfficialAccount);
 
-router.get('/broadcasts', adminAuth, listBroadcasts);
-router.get('/broadcasts/:id', adminAuth, getBroadcast);
-router.post('/broadcasts/estimate', adminAuth, broadcastEstimateLimiter, estimateBroadcast);
-router.post('/broadcasts', adminAuth, broadcastSendLimiter, createBroadcast);
-router.delete('/broadcasts/scheduled/:jobId', adminAuth, cancelScheduled);
-router.get('/villes', adminAuth, getVilles);
+router.get('/broadcasts', adminAuth, requirePermission('broadcasts.read'), listBroadcasts);
+router.get('/broadcasts/:id', adminAuth, requirePermission('broadcasts.read'), getBroadcast);
+router.post('/broadcasts/estimate', adminAuth, requirePermission('broadcasts.read'), broadcastEstimateLimiter, estimateBroadcast);
+router.post('/broadcasts', adminAuth, requirePermission('broadcasts.send'), broadcastSendLimiter, createBroadcast);
+router.delete('/broadcasts/scheduled/:jobId', adminAuth, requirePermission('broadcasts.cancel'), cancelScheduled);
+router.get('/villes', adminAuth, requirePermission('villes.read'), getVilles);
 
-router.get('/welcome', adminAuth, superAdminAuth, getWelcome);
-router.put('/welcome/draft', adminAuth, superAdminAuth, updateDraft);
-router.post('/welcome/publish', adminAuth, superAdminAuth, publish);
-router.post('/welcome/backfill', adminAuth, superAdminAuth, backfill);
+router.get('/welcome', adminAuth, requirePermission('welcome.read'), getWelcome);
+router.put('/welcome/draft', adminAuth, requirePermission('welcome.draft'), updateDraft);
+router.post('/welcome/publish', adminAuth, requirePermission('welcome.publish'), publish);
+router.post('/welcome/backfill', adminAuth, requirePermission('welcome.backfill'), backfill);
 // Statut de bienvenue : réglage global, appliqué sans publication.
-router.get('/welcome/status', adminAuth, superAdminAuth, getStatusConfig);
-router.put('/welcome/status', adminAuth, superAdminAuth, updateStatusConfig);
+router.get('/welcome/status', adminAuth, requirePermission('welcome.read'), getStatusConfig);
+router.put('/welcome/status', adminAuth, requirePermission('welcome.status'), updateStatusConfig);
 
 module.exports = router;

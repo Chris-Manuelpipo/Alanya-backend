@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
+const { ALL_PERMISSIONS, can } = require('../constants/adminRoles');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'talky-secret-key-change-in-production';
 
@@ -63,4 +64,37 @@ const superAdminAuth = (req, res, next) => {
   next();
 };
 
-module.exports = { adminAuth, superAdminAuth };
+/**
+ * Exige une permission nommée. À utiliser APRÈS `adminAuth`.
+ *
+ * Remplace la lecture d'un niveau par la déclaration d'une intention : une
+ * route dit `requirePermission('users.ban')` au lieu de `superAdminAuth`, et
+ * « qui a le droit de bannir ? » se répond en lisant `constants/adminRoles.js`
+ * plutôt que les 54 lignes du routeur.
+ *
+ * Aucune requête supplémentaire : `adminAuth` a déjà relu `type_compte` en
+ * base — jamais depuis le jeton, dont la copie peut être périmée.
+ *
+ * Une permission inconnue lève au chargement du module et non à l'appel : une
+ * faute de frappe ouvrirait sinon la route à tout le monde ou à personne, sans
+ * bruit, jusqu'à ce que quelqu'un s'en aperçoive en production.
+ */
+const requirePermission = (permission) => {
+  if (!ALL_PERMISSIONS.has(permission)) {
+    throw new Error(`[adminAuth] permission inconnue : ${permission}`);
+  }
+
+  const guard = (req, res, next) => {
+    if (!req.user || !can(req.user.typeCompte, permission)) {
+      return res.status(403).json({ error: 'Permission requise', permission });
+    }
+    next();
+  };
+
+  // Lisible depuis la pile du routeur : c'est ce qui permet au test de vérifier
+  // qu'aucune route n'a été oubliée.
+  guard.permission = permission;
+  return guard;
+};
+
+module.exports = { adminAuth, superAdminAuth, requirePermission };
