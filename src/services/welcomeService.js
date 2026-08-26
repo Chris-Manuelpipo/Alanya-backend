@@ -10,6 +10,7 @@ const {
   normalizeLocale,
   resolveI18n,
   pickLocalized,
+  supportedLocale,
   untranslatedRequiredLocales,
 } = require('../utils/localeContent');
 
@@ -180,10 +181,8 @@ function attachBlockTranslations(block) {
   const ctaTranslations = (block.ctaJson?.buttons ?? []).map(() => ({}));
 
   for (const row of block.i18n || []) {
-    // `normalizeLocale` replierait une locale inconnue sur `fr` et écraserait
-    // le français : ici on l'écarte.
-    const locale = String(row.locale || '').toLowerCase().split(/[-_]/)[0];
-    if (!SUPPORTED_CONTENT_LOCALES.includes(locale)) continue;
+    const locale = supportedLocale(row.locale);
+    if (!locale) continue;
     if (row.value == null || String(row.value).trim() === '') continue;
 
     const field = row.field || 'content';
@@ -441,17 +440,96 @@ function blockToMessagePayload(block, locale, configId, alanyaID, sortOrder) {
  * « Publier », contrairement au message. Voir migrations/044_welcome_status.sql.
  */
 
-function mapStatusConfigRow(row) {
+function mapStatusBlockRow(row) {
   return {
-    enabled: !!row.enabled,
+    id: row.id,
+    sortOrder: Number(row.sort_order) || 0,
     type: Number(row.type) || 0,
-    textFr: row.text_fr ?? '',
-    textEn: row.text_en ?? '',
+    translations: {},
     mediaUrl: row.media_url ?? '',
     backgroundColor: row.background_color ?? '',
-    updatedAt: row.updated_at,
-    updatedBy: row.updated_by,
   };
+}
+
+/**
+ * Éléments du statut de bienvenue, traductions comprises, dans l'ordre.
+ *
+ * @returns {Promise<Array|null>} `null` quand la migration 071 n'est pas encore
+ *   appliquée — l'appelant retombe alors sur le statut unique de
+ *   `welcome_status_config`. Un tableau vide veut dire « aucun élément », ce
+ *   qui n'est pas la même chose et ne doit pas ressusciter l'ancien contenu.
+ */
+async function loadStatusBlocks(conn = pool) {
+  let rows;
+  try {
+    [rows] = await conn.execute(
+      'SELECT * FROM welcome_status_block ORDER BY sort_order ASC, id ASC',
+    );
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+    return null;
+  }
+
+  const blocks = rows.map(mapStatusBlockRow);
+  if (!blocks.length) return blocks;
+
+  try {
+    const [i18nRows] = await conn.query(
+      'SELECT block_id, locale, text FROM welcome_status_block_i18n WHERE block_id IN (?)',
+      [blocks.map((b) => b.id)],
+    );
+    const byId = new Map(blocks.map((b) => [b.id, b]));
+    for (const r of i18nRows) {
+      const locale = supportedLocale(r.locale);
+      if (!locale || r.text == null || String(r.text).trim() === '') continue;
+      const block = byId.get(r.block_id);
+      if (block) block.translations[locale] = String(r.text);
+    }
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
+
+  return blocks;
+}
+
+/**
+ * Le statut unique de `welcome_status_config`, présenté comme un élément.
+ *
+ * Repli tant que la migration 071 n'est pas passée : le code parle déjà la
+ * nouvelle langue, la base pas encore. L'élément n'a alors pas d'`id`, et c'est
+ * ce qui signale le mode hérité à la livraison.
+ */
+async function legacyStatusBlocks(row) {
+  const translations = {};
+  try {
+    const [rows] = await pool.execute(
+      'SELECT locale, text FROM welcome_status_config_i18n WHERE config_id = 1',
+    );
+    for (const r of rows) {
+      const locale = supportedLocale(r.locale);
+      if (locale && r.text != null && String(r.text).trim()) {
+        translations[locale] = String(r.text);
+      }
+    }
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
+
+  // Colonnes héritées, locale par locale : `welcome_status_config_i18n` peut
+  // manquer ou n'avoir jamais repris ce contenu.
+  if (!translations.fr && String(row.text_fr || '').trim()) translations.fr = String(row.text_fr);
+  if (!translations.en && String(row.text_en || '').trim()) translations.en = String(row.text_en);
+
+  const hasContent = Object.keys(translations).length > 0 || !!row.media_url;
+  if (!hasContent) return [];
+
+  return [{
+    sortOrder: 0,
+    type: Number(row.type) || 0,
+    translations,
+    mediaUrl: row.media_url ?? '',
+    backgroundColor: row.background_color ?? '',
+  }];
 }
 
 async function getWelcomeStatusConfig() {
@@ -459,40 +537,16 @@ async function getWelcomeStatusConfig() {
     'SELECT * FROM welcome_status_config WHERE id = 1',
   );
   if (!row) {
-    return {
-      enabled: false, type: 0, textFr: '', textEn: '', translations: {},
-      mediaUrl: '', backgroundColor: '', updatedAt: null, updatedBy: null,
-    };
+    return { enabled: false, blocks: [], updatedAt: null, updatedBy: null };
   }
 
-  // Traductions normalisées, complétées par les colonnes héritées.
-  //
-  // `welcome_status_config_i18n` peut être absente ou incomplète — la 053 n'a
-  // pas forcément été appliquée jusqu'au bout — et l'éditeur d'administration
-  // ne lit que `translations` : sans ce repli il ouvrait un champ vide sur un
-  // texte pourtant enregistré, puis refusait l'activation pour « contenu
-  // incomplet ». Le repli se fait locale par locale, comme pour les blocs.
-  const translations = {};
-  try {
-    const [rows] = await pool.execute(
-      'SELECT locale, text FROM welcome_status_config_i18n WHERE config_id = 1',
-    );
-    for (const r of rows) {
-      // Une locale inconnue serait repliée sur `fr` par `normalizeLocale` et
-      // écraserait le français : on l'écarte.
-      const locale = String(r.locale || '').toLowerCase().split(/[-_]/)[0];
-      if (!SUPPORTED_CONTENT_LOCALES.includes(locale)) continue;
-      if (r.text != null && String(r.text).trim()) translations[locale] = String(r.text);
-    }
-  } catch (e) {
-    if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
-  }
-
-  const config = mapStatusConfigRow(row);
-  if (!translations.fr && config.textFr.trim()) translations.fr = config.textFr;
-  if (!translations.en && config.textEn.trim()) translations.en = config.textEn;
-
-  return { ...config, translations };
+  const blocks = await loadStatusBlocks();
+  return {
+    enabled: !!row.enabled,
+    blocks: blocks ?? (await legacyStatusBlocks(row)),
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by,
+  };
 }
 
 /** Couleur de fond acceptée par l'app : `#RRGGBB` (cf. `_parseColor`). */
@@ -519,53 +573,160 @@ function normalizeStatusText(raw) {
   return v;
 }
 
-async function saveWelcomeStatusConfig(patch, adminId) {
-  const type = [0, 1, 2].includes(Number(patch?.type)) ? Number(patch.type) : 0;
-  // Les colonnes héritées restent la source du français et de l'anglais tant
-  // qu'elles existent : on les dérive des traductions plutôt que d'exiger des
-  // appelants qu'ils envoient les deux formes.
-  const incoming = patch?.translations || {};
-  const textFr = normalizeStatusText(incoming.fr ?? patch?.textFr);
-  const textEn = normalizeStatusText(incoming.en ?? patch?.textEn);
-  // Une seule normalisation pour tout le monde : le garde d'activation et
-  // l'écriture des traductions doivent juger exactement le même texte.
+/** Normalise un élément reçu de l'éditeur. `id` null = élément à créer. */
+function normalizeStatusBlock(raw, index) {
   const translations = {};
   for (const locale of SUPPORTED_CONTENT_LOCALES) {
-    translations[locale] = normalizeStatusText(incoming[locale]);
+    const value = normalizeStatusText(raw?.translations?.[locale]);
+    if (value) translations[locale] = value;
   }
-  translations.fr = textFr;
-  translations.en = textEn;
-  const mediaUrl = patch?.mediaUrl ? String(patch.mediaUrl).slice(0, 512) : null;
-  const backgroundColor = normalizeBackgroundColor(patch?.backgroundColor);
+  const id = Number(raw?.id);
+  return {
+    id: Number.isInteger(id) && id > 0 ? id : null,
+    sortOrder: index,
+    type: [0, 1, 2].includes(Number(raw?.type)) ? Number(raw.type) : 0,
+    translations,
+    mediaUrl: raw?.mediaUrl ? String(raw.mediaUrl).slice(0, 512) : null,
+    backgroundColor: normalizeBackgroundColor(raw?.backgroundColor),
+  };
+}
+
+/**
+ * Ce qui empêche un élément d'être livré, ou `null` s'il est complet.
+ *
+ * Numéroté comme dans l'éditeur : « élément 2 » y désigne la deuxième carte.
+ */
+function statusBlockError(block, index) {
+  const n = index + 1;
+  if (block.type === 0 && !block.translations.fr) {
+    return `Élément ${n} : un statut texte exige un texte en français`;
+  }
+  // Le statut conserve toutes ses langues et l'app choisit à l'affichage :
+  // sans traduction, ce lecteur-là voit une autre langue. Même règle que pour
+  // les blocs du message — une langue saisie rend les langues requises dues.
+  const missing = untranslatedRequiredLocales(block.translations);
+  if (missing.length) {
+    return `Élément ${n} : traduction manquante (${missing.map((l) => l.toUpperCase()).join(', ')})`;
+  }
+  if (block.type !== 0 && !block.mediaUrl) {
+    return `Élément ${n} : un statut ${block.type === 1 ? 'image' : 'vidéo'} exige un média`;
+  }
+  return null;
+}
+
+/**
+ * Écrit les éléments, en préservant l'identité de ceux qui existent déjà.
+ *
+ * Mise à jour en place plutôt que « tout supprimer puis réinsérer » : les
+ * lignes de `welcome_status_delivery` pointent vers ces identifiants, et les
+ * recréer à chaque enregistrement effacerait la trace de ce qui a déjà été
+ * livré — un inscrit pourrait alors recevoir deux fois le même statut.
+ */
+async function writeStatusBlocks(blocks) {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [existing] = await conn.execute('SELECT id FROM welcome_status_block');
+    const known = new Set(existing.map((r) => r.id));
+    const keep = new Set();
+
+    for (const [index, block] of blocks.entries()) {
+      let id = block.id && known.has(block.id) ? block.id : null;
+      if (id) {
+        await conn.execute(
+          `UPDATE welcome_status_block
+             SET sort_order = ?, type = ?, media_url = ?, background_color = ?
+           WHERE id = ?`,
+          [index, block.type, block.mediaUrl, block.backgroundColor, id],
+        );
+      } else {
+        const [ins] = await conn.execute(
+          `INSERT INTO welcome_status_block (sort_order, type, media_url, background_color)
+           VALUES (?, ?, ?, ?)`,
+          [index, block.type, block.mediaUrl, block.backgroundColor],
+        );
+        id = ins.insertId;
+      }
+      keep.add(id);
+
+      for (const locale of SUPPORTED_CONTENT_LOCALES) {
+        const value = block.translations[locale];
+        if (value) {
+          await conn.execute(
+            `INSERT INTO welcome_status_block_i18n (block_id, locale, text)
+             VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE text = VALUES(text)`,
+            [id, locale, value],
+          );
+        } else {
+          // Une traduction effacée doit disparaître, sinon l'ancienne valeur
+          // resterait servie alors que l'administrateur l'a retirée.
+          await conn.execute(
+            'DELETE FROM welcome_status_block_i18n WHERE block_id = ? AND locale = ?',
+            [id, locale],
+          );
+        }
+      }
+    }
+
+    for (const r of existing) {
+      if (!keep.has(r.id)) {
+        await conn.execute('DELETE FROM welcome_status_block WHERE id = ?', [r.id]);
+      }
+    }
+
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
+}
+
+async function saveWelcomeStatusConfig(patch, adminId) {
   const enabled = patch?.enabled ? 1 : 0;
+
+  // `blocks` absent : l'appelant ne touche qu'à l'interrupteur — c'est ce que
+  // fait le bouton d'activation — et les éléments restent ceux de la base.
+  const incoming = Array.isArray(patch?.blocks)
+    ? patch.blocks.map(normalizeStatusBlock)
+    : null;
+  const blocks = incoming ?? (await getWelcomeStatusConfig()).blocks;
 
   // Activer sans contenu livrable produirait des statuts vides : on refuse ici
   // plutôt que de laisser passer et d'échouer silencieusement à la livraison.
   if (enabled) {
-    if (type === 0 && !textFr) {
-      const err = new Error('Un statut texte exige un texte en français');
+    if (!blocks.length) {
+      const err = new Error('Le statut de bienvenue ne contient aucun élément');
       err.status = 400;
       throw err;
     }
-    // Contrairement au message, le statut conserve toutes ses langues et l'app
-    // choisit à l'affichage : sans traduction, ce lecteur-là voit une autre
-    // langue. La règle est la même que pour les blocs du message — dès qu'une
-    // langue est saisie, les langues requises le sont toutes.
-    const missing = untranslatedRequiredLocales(translations);
-    if (missing.length) {
-      const err = new Error(
-        `Traduction manquante : ${missing.map((l) => l.toUpperCase()).join(', ')}`,
-      );
-      err.status = 400;
-      throw err;
-    }
-    if (type !== 0 && !mediaUrl) {
-      const err = new Error('Un statut image ou vidéo exige un média');
-      err.status = 400;
-      throw err;
+    for (const [index, block] of blocks.entries()) {
+      const message = statusBlockError(block, index);
+      if (message) {
+        const err = new Error(message);
+        err.status = 400;
+        throw err;
+      }
     }
   }
 
+  if (incoming) {
+    try {
+      await writeStatusBlocks(incoming);
+    } catch (e) {
+      // Migration 071 non appliquée : seul le premier élément survit, écrit
+      // plus bas dans les colonnes héritées.
+      if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+    }
+  }
+
+  // `welcome_status_config` garde l'interrupteur et reflète le premier élément
+  // dans ses colonnes héritées, de sorte qu'un retour à la version précédente
+  // du service retrouve un statut cohérent.
+  const first = blocks[0];
   await pool.execute(
     `INSERT INTO welcome_status_config
        (id, enabled, type, text_fr, text_en, media_url, background_color, updated_by)
@@ -575,12 +736,20 @@ async function saveWelcomeStatusConfig(patch, adminId) {
        text_fr = VALUES(text_fr), text_en = VALUES(text_en),
        media_url = VALUES(media_url), background_color = VALUES(background_color),
        updated_by = VALUES(updated_by)`,
-    [enabled, type, textFr || null, textEn || null, mediaUrl, backgroundColor, adminId ?? null],
+    [
+      enabled,
+      first?.type ?? 0,
+      first?.translations?.fr || null,
+      first?.translations?.en || null,
+      first?.mediaUrl || null,
+      first?.backgroundColor || null,
+      adminId ?? null,
+    ],
   );
 
   try {
     for (const locale of SUPPORTED_CONTENT_LOCALES) {
-      const value = translations[locale];
+      const value = first?.translations?.[locale];
       if (value) {
         await pool.execute(
           `INSERT INTO welcome_status_config_i18n (config_id, locale, text)
@@ -589,8 +758,6 @@ async function saveWelcomeStatusConfig(patch, adminId) {
           [locale, value],
         );
       } else {
-        // Une traduction effacée doit disparaître, sinon l'ancienne valeur
-        // resterait servie alors que l'administrateur l'a retirée.
         await pool.execute(
           'DELETE FROM welcome_status_config_i18n WHERE config_id = 1 AND locale = ?',
           [locale],
@@ -605,63 +772,90 @@ async function saveWelcomeStatusConfig(patch, adminId) {
 }
 
 /**
- * Publie le statut de bienvenue pour un utilisateur.
+ * Publie les statuts de bienvenue d'un utilisateur — un par élément.
  *
- * Volontairement indépendant du message : le statut part même si aucune version
- * du message n'est active, et une erreur ici ne doit jamais faire échouer la fin
- * d'onboarding. La ligne `welcome_status_delivery` sert à la fois de clé de
- * visibilité et de garde anti-doublon (`alanyaID` UNIQUE).
+ * Volontairement indépendant du message : les statuts partent même si aucune
+ * version du message n'est active, et une erreur ici ne doit jamais faire
+ * échouer la fin d'onboarding. Les lignes `welcome_status_delivery` servent à
+ * la fois de clé de visibilité et de garde anti-doublon, désormais par
+ * (utilisateur, élément) : un élément ajouté après coup ne repart pas chez qui
+ * a déjà été servi, puisque la livraison n'a lieu qu'à la première inscription.
  */
 async function deliverWelcomeStatus(alanyaID) {
   const config = await getWelcomeStatusConfig();
   if (!config.enabled) return { delivered: false, reason: 'DISABLED' };
 
-  const hasContent = config.type === 0 ? !!config.textFr : !!config.mediaUrl;
-  if (!hasContent) return { delivered: false, reason: 'EMPTY_STATUS' };
+  const blocks = config.blocks.filter(
+    (b) => (b.type === 0 ? !!b.translations.fr : !!b.mediaUrl),
+  );
+  if (!blocks.length) return { delivered: false, reason: 'EMPTY_STATUS' };
 
   const officialId = await getOfficialAccountId();
   if (!officialId) return { delivered: false, reason: 'NO_OFFICIAL_ACCOUNT' };
+
+  // Élément sans identifiant = repli sur le statut unique (migration 071 non
+  // appliquée) : la colonne `block_id` n'existe pas encore non plus.
+  const legacy = blocks.some((b) => b.id == null);
+  const key = (id) => (id == null ? 0 : id);
 
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
-    const [[dup]] = await conn.execute(
-      'SELECT statut_id FROM welcome_status_delivery WHERE alanyaID = ? FOR UPDATE',
+    const [done] = await conn.execute(
+      legacy
+        ? 'SELECT statut_id FROM welcome_status_delivery WHERE alanyaID = ? FOR UPDATE'
+        : 'SELECT block_id, statut_id FROM welcome_status_delivery WHERE alanyaID = ? FOR UPDATE',
       [alanyaID],
     );
-    if (dup) {
-      await conn.commit();
-      return { delivered: false, reason: 'ALREADY_DELIVERED', statutId: dup.statut_id };
+    const served = new Set(done.map((r) => key(r.block_id)));
+
+    const statutIds = [];
+    for (const block of blocks) {
+      if (served.has(key(block.id))) continue;
+
+      const [ins] = await conn.execute(
+        `INSERT INTO statut
+           (alanyaID, type, text, text_en, mediaUrl, backgroundColor,
+            createdAt, expiredAt, viewedBy, likedBy)
+         VALUES (?, ?, ?, ?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ? HOUR), 0, 0)`,
+        [
+          officialId,
+          block.type,
+          block.translations.fr || '',
+          block.translations.en || null,
+          block.mediaUrl || null,
+          block.backgroundColor || null,
+          STATUS_TTL_HOURS,
+        ],
+      );
+      // Le statut livré porte les mêmes traductions que sa configuration :
+      // sans cela, un lecteur chinois verrait l'anglais alors que la version
+      // chinoise existe.
+      await writeContentI18n(conn, 'statut', ins.insertId, block.translations);
+
+      await conn.execute(
+        legacy
+          ? 'INSERT INTO welcome_status_delivery (alanyaID, statut_id) VALUES (?, ?)'
+          : 'INSERT INTO welcome_status_delivery (alanyaID, block_id, statut_id) VALUES (?, ?, ?)',
+        legacy ? [alanyaID, ins.insertId] : [alanyaID, block.id, ins.insertId],
+      );
+      statutIds.push(ins.insertId);
     }
 
-    const [ins] = await conn.execute(
-      `INSERT INTO statut
-         (alanyaID, type, text, text_en, mediaUrl, backgroundColor,
-          createdAt, expiredAt, viewedBy, likedBy)
-       VALUES (?, ?, ?, ?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ? HOUR), 0, 0)`,
-      [
-        officialId,
-        config.type,
-        config.textFr || '',
-        config.textEn || null,
-        config.mediaUrl || null,
-        config.backgroundColor || null,
-        STATUS_TTL_HOURS,
-      ],
-    );
-    // Le statut livré porte les mêmes traductions que la configuration :
-    // sans cela, un lecteur chinois verrait l'anglais alors que la version
-    // chinoise existe.
-    await writeContentI18n(conn, 'statut', ins.insertId, config.translations);
-
-    await conn.execute(
-      'INSERT INTO welcome_status_delivery (alanyaID, statut_id) VALUES (?, ?)',
-      [alanyaID, ins.insertId],
-    );
-
     await conn.commit();
-    return { delivered: true, statutId: ins.insertId };
+
+    if (!statutIds.length) {
+      return {
+        delivered: false,
+        reason: 'ALREADY_DELIVERED',
+        statutIds: done.map((r) => r.statut_id),
+        statutId: done[0]?.statut_id,
+      };
+    }
+    // `statutId` au singulier : le premier statut publié, pour les appelants
+    // écrits quand il n'y en avait qu'un.
+    return { delivered: true, statutIds, statutId: statutIds[0] };
   } catch (e) {
     await conn.rollback();
     throw e;
@@ -1135,6 +1329,8 @@ module.exports = {
   buildBlockI18nRows,
   attachBlockTranslations,
   legacyContentColumns,
+  normalizeStatusBlock,
+  statusBlockError,
   WELCOME_CTA_MSG_TYPE,
   getAdminWelcomeState,
   saveDraft,

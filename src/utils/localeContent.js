@@ -108,6 +108,21 @@ function pickLocalized(row, locale, field) {
 }
 
 /**
+ * Locale d'une ligne `*_i18n`, ou `null` si la langue n'est pas supportée.
+ *
+ * À la lecture d'une table de traductions il faut **écarter** une locale
+ * inconnue, pas la replier : `normalizeLocale` la ramènerait sur `fr` et
+ * écraserait le français.
+ *
+ * @param {string|null|undefined} raw
+ * @returns {string|null}
+ */
+function supportedLocale(raw) {
+  const primary = String(raw || '').toLowerCase().split(/[-_]/)[0];
+  return SUPPORTED_CONTENT_LOCALES.includes(primary) ? primary : null;
+}
+
+/**
  * Langues requises manquantes sur un contenu **qui porte du texte**.
  *
  * Un contenu vide dans toutes les langues ne réclame rien : une légende absente
@@ -147,6 +162,7 @@ module.exports = {
   normalizeLocale,
   resolveI18n,
   pickLocalized,
+  supportedLocale,
   untranslatedRequiredLocales,
   defaultBroadcastPushBody,
 };
