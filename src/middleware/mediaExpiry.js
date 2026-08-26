@@ -17,9 +17,9 @@
  *    meurt dans trois jours ne doit pas être gardée un an par un cache
  *    intermédiaire, sinon le 410 n'atteint jamais le client.
  *
- * 3. **Le relais des chemins hérités.** Le nom du fichier porte l'horodatage de
- *    l'upload (`media_<alanyaID>_<epochMs>.<ext>`), donc la partition d'un
- *    fichier déplacé se recalcule à la lecture. C'est ce qui permet de migrer
+ * 3. **Le relais des chemins hérités**, toujours actif. Le nom du fichier porte
+ *    l'horodatage de l'upload (`media_<alanyaID>_<epochMs>.<ext>`), donc la
+ *    partition d'un fichier déplacé se recalcule à la lecture. C'est ce qui permet de migrer
  *    les fichiers existants SANS toucher aux `mediaUrl` déjà en base : pas
  *    d'`UPDATE` de masse sur la table la plus chaude, pas de fenêtre de
  *    migration, et un retour arrière qui ne coûte rien. Les anciennes URL
@@ -34,7 +34,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { RETENTION, PARTITIONS } = require('../constants/mediaRetentionPolicy');
+const { RETENTION } = require('../constants/mediaRetentionPolicy');
 const { UPLOADS_DIR } = require('../services/mediaPartitions');
 const {
   MEDIA_ROOT,
@@ -87,14 +87,29 @@ function repondreExpire(res, partition, retentionDays) {
 function mediaExpiryGuard({
   retentionDays = RETENTION.mediaDays,
   now = () => Date.now(),
-  // Le relais des anciennes adresses ne vaut qu'APRÈS le déplacement des
-  // fichiers : avant, aucun média n'a changé de place. Le laisser actif
-  // interrupteur éteint changerait le comportement pour rien — un fichier
-  // légitimement absent recevrait 410 (« expiré ») au lieu de 404
-  // (« introuvable »), alors qu'une opération de restauration peut être en
-  // cours. Déployé avec l'interrupteur à faux, ce module est donc strictement
-  // inerte : plus aucune réponse ne change.
-  relayLegacy = PARTITIONS.enabled,
+  // Le relais des anciennes adresses est TOUJOURS actif, indépendamment de
+  // `MEDIA_PARTITIONS_ENABLED`.
+  //
+  // Il avait d'abord été conditionné à cet interrupteur, pour qu'un
+  // déploiement sans activation ne change strictement aucune réponse. C'était
+  // une erreur, et elle a coupé les médias en production le 25/08/2026 : le
+  // script de migration avait déplacé les fichiers, la base pointait toujours
+  // vers l'ancien chemin, et plus personne ne faisait le pont — toutes les URL
+  // de médias renvoyaient 404.
+  //
+  // La leçon tient en une phrase : le relais ne répond pas à la question « les
+  // partitions sont-elles activées ? » mais à « ce fichier a-t-il bougé ? ».
+  // Or c'est le script de migration qui déplace les fichiers, pas
+  // l'interrupteur — les deux sont indépendants, et les lier créait une
+  // fenêtre où les médias étaient injoignables.
+  //
+  // Le relais est de toute façon inoffensif quand rien n'a bougé : il ne fait
+  // quoi que ce soit QUE si le fichier a disparu de son ancienne adresse.
+  // Tant que la migration n'a pas tourné, `express.static` sert normalement et
+  // ce code n'est jamais atteint.
+  //
+  // L'option reste injectable pour les tests.
+  relayLegacy = true,
 } = {}) {
   return function guard(req, res, next) {
     // `req.path` est relatif au point de montage (`/uploads`).

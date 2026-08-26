@@ -134,21 +134,33 @@ function passer(chemin, { now = MAINTENANT, relayLegacy = true } = {}) {
   assert.strictEqual(r3.entetes['Cache-Control'], 'public, max-age=0, immutable');
 }
 
-// ── Interrupteur éteint : le relais hérité ne s'active pas du tout ──
+// ── Le relais ne dépend PAS de l'interrupteur des partitions ──
 {
-  // Déployer ce module sans allumer les partitions ne doit changer AUCUNE
-  // réponse. Sans ce garde, un fichier légitimement absent recevrait 410
-  // (« expiré ») au lieu de 404 (« introuvable ») — trompeur en soi, et
-  // dangereux pendant qu'une opération de restauration tourne.
+  // Régression du 25/08/2026 : le relais avait été conditionné à
+  // `MEDIA_PARTITIONS_ENABLED`. Le script de migration a déplacé les fichiers,
+  // la base pointait toujours vers l'ancien chemin, l'interrupteur était
+  // éteint — plus personne ne faisait le pont et TOUS les médias renvoyaient
+  // 404 en production.
+  //
+  // Le relais répond à « ce fichier a-t-il bougé ? », pas à « les partitions
+  // sont-elles activées ? ». C'est la migration qui déplace les fichiers, pas
+  // l'interrupteur : lier les deux rouvrirait la même fenêtre.
   const vieux = Date.parse('2026-07-20T10:00:00Z');
-  const { res, suivant } = passer(`/media/images/media_1_${vieux}.jpg`, { relayLegacy: false });
-  assert.strictEqual(suivant, true);
-  assert.strictEqual(res.code, null);
+  const { mediaExpiryGuard: guardParDefaut } = require('./mediaExpiry');
+  const guard = guardParDefaut({ retentionDays: RETENTION, now: () => MAINTENANT });
+  const res = fausseReponse();
+  let suivant = false;
+  guard({ path: `/media/images/media_1_${vieux}.jpg` }, res, () => { suivant = true; });
+
+  // Sans option explicite, le relais est actif : il tranche au lieu de laisser
+  // filer vers un 404 muet.
+  assert.strictEqual(suivant, false, 'le relais doit être actif par défaut');
+  assert.strictEqual(res.code, 410);
 }
 
-// En revanche un chemin PARTITIONNÉ reste jugé sur son URL quel que soit
-// l'interrupteur : une extinction ne doit pas ressusciter en 404 muets des
-// médias déjà supprimés du disque.
+// Un chemin PARTITIONNÉ reste jugé sur son URL en toutes circonstances : une
+// extinction de l'interrupteur ne doit pas ressusciter en 404 muets des médias
+// déjà supprimés du disque.
 {
   const { res } = passer('/media/2026-07-20/images/x.jpg', { relayLegacy: false });
   assert.strictEqual(res.code, 410);
