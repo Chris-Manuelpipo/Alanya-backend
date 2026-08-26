@@ -46,3 +46,19 @@ kernel_blob.bin
 # Réglages applicatifs persistés au runtime (back-office admin)
 data/app-settings.json
 data/trip-purge-log.json
+
+# LaTeX — sous-produits de compilation. Les sources .tex et les .pdf produits
+# restent suivis : ce sont eux qu'on lit et qu'on partage.
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.idx
+*.ilg
+*.ind
+*.lof
+*.lot
+*.out
+*.synctex.gz
+*.toc
