@@ -54,6 +54,9 @@ const ACTIONS = {
   'DELETE /meetings/:id': { action: 'meetings.delete', targetType: 'meeting', param: 'id' },
   'POST /meetings/:id/end': { action: 'meetings.end', targetType: 'meeting', param: 'id' },
 
+  // Modération
+  'POST /reports/:id/actions': { action: 'reports.handle', targetType: 'report', param: 'id' },
+
   // Diffusions
   'POST /broadcasts': { action: 'broadcasts.send', targetType: 'broadcast' },
   'DELETE /broadcasts/scheduled/:jobId': { action: 'broadcasts.cancel', targetType: 'broadcast_job', param: 'jobId' },

@@ -13,6 +13,7 @@ const { adminAudit } = require('../middleware/adminAudit');
 router.use(adminAudit);
 const { getPurges, updatePurge, runPurgeNow } = require('../controllers/admin/purges');
 const { getAudit, getAuditActions } = require('../controllers/admin/audit');
+const { getReports, getReportActions, postReportAction } = require('../controllers/admin/reports');
 const {
   adminLogin,
   getStats,
@@ -643,6 +644,11 @@ router.get('/users/:id/logins',            adminAuth, requirePermission('users.r
 // « Activité admin », avec `targetType`/`targetId` pour l'encart d'une fiche.
 router.get('/audit',                       adminAuth, requirePermission('audit.read'), getAudit);
 router.get('/audit/actions',               adminAuth, requirePermission('audit.read'), getAuditActions);
+
+// ── File de modération ──
+router.get('/reports',                     adminAuth, requirePermission('reports.read'), getReports);
+router.get('/reports/:id/actions',         adminAuth, requirePermission('reports.read'), getReportActions);
+router.post('/reports/:id/actions',        adminAuth, requirePermission('reports.handle'), postReportAction);
 
 /**
  * @swagger

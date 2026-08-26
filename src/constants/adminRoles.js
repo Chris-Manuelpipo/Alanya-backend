@@ -44,6 +44,12 @@ const ADMIN_PERMISSIONS = [
   'villes.read',
   'audit.read',
 
+  // Modération : trier et trancher restent au niveau admin — c'est le travail
+  // quotidien. La sanction lourde, elle, passe par `users.ban`, réservé au
+  // super-admin, depuis la fiche du compte.
+  'reports.read',
+  'reports.handle',
+
   // Exports — contiennent des données personnelles. Restent au niveau admin
   // parce qu'ils y étaient ; à réexaminer, c'est la permission la plus proche
   // d'une exfiltration de tout l'annuaire.
