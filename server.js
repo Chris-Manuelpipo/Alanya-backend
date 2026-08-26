@@ -44,6 +44,7 @@ const qrLandingRoutes    = require('./src/routes/qrLanding');
 // ── Socket handlers ───────────────────────────────────────────────────
 const socketAuth = require('./src/socket/handlers/auth');
 const qrLoginSocket = require('./src/socket/handlers/qrLogin');
+const { adminOps } = require('./src/socket/handlers/adminOps');
 const {
   joinConversation, messageSend, typingStart, typingStop,
   messageDelivered, messageRead,
@@ -175,6 +176,7 @@ io.on('connection', (socket) => {
 
   socketAuth(io, socket, userSockets);
   qrLoginSocket(io, socket, userSockets);
+  adminOps(io, socket);
   presenceOnline(io, socket, userSockets);
   presenceOffline(io, socket, userSockets);
   joinConversation(io, socket, userSockets);

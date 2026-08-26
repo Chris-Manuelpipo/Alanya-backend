@@ -20,6 +20,7 @@
         "test:reports": "node src/services/reportService.test.js",
         "test:audit": "node src/middleware/adminAudit.test.js",
         "test:roles": "node src/constants/adminRoles.test.js",
+        "test:adminops": "node src/socket/handlers/adminOps.test.js",
         "test:trips": "node src/constants/tripPolicy.test.js && node src/utils/tripInput.test.js && node src/socket/state/tripState.test.js && node src/notifications/notificationTripPayload.test.js && node src/notifications/notificationTripRouting.test.js && node src/controllers/admin/trips.test.js && node src/services/tripRetention.test.js",
         "test:notifications:full": "npm run test:notifications && npm run test:calls && node scripts/bench/push-queue-bench.js",
         "test:redis-adapter": "node scripts/dev/redis-adapter-smoke.js",

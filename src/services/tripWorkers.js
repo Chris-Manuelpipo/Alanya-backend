@@ -36,6 +36,7 @@ const {
   notifyTripDue,
   notifyTripReminder,
 } = require('./notificationService');
+const { notifyAdmins } = require('../socket/handlers/adminOps');
 
 const KINDS = [
   'trip_eta_soon',
@@ -141,6 +142,15 @@ const transition = async (tripId, state, { reason = null, actorId = null } = {})
   // cette ligne-là, on ne l'efface pas.
   if (policy.ALERT_STATES.has(state) && avant?.state !== state) {
     await postIncidentLine(trip, { io: _io });
+
+    // Le back-office apprend qu'une alerte s'ouvre, sans savoir laquelle : ni
+    // identité, ni position, ni identifiant de trajet — la règle de
+    // `controllers/admin/trips.js` vaut aussi pour ce canal. `kind` seul
+    // survit, comme dans les compteurs agrégés de la page Trajets.
+    //
+    // La garde `avant?.state !== state` est celle de la ligne d'incident, et
+    // pour la même raison : un job rejoué ne doit pas sonner deux fois.
+    notifyAdmins(_io, 'admin:trip_alert', { state, kind: trip.kind });
   }
 
   if (_io) {
