@@ -332,6 +332,7 @@ async function start() {
     const balayageRetention = () => {
       const purges = [
         ['broadcast_nightly_purge', 'broadcast'],
+        ['story_purge',             'story'],
         ['welcome_status_purge',    'welcome_status'],
         ['trip_nightly_purge',      'trip'],
         ['data_retention_purge',    'data_retention'],

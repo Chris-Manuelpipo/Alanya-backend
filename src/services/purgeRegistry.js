@@ -1,29 +1,29 @@
 /**
  * Registre des purges de rétention, pilotables depuis l'espace super-admin.
  *
- * Les cinq purges nocturnes suppriment définitivement des fichiers et des
- * lignes. Elles n'avaient jusqu'ici ni interrupteur, ni compteur préalable,
- * ni trace d'exécution : les couper imposait de modifier le code, et rien ne
+ * Les purges nocturnes suppriment définitivement des fichiers et des lignes.
+ * Elles n'avaient jusqu'ici ni interrupteur, ni compteur préalable, ni trace
+ * d'exécution : les couper imposait de modifier le code, et rien ne
  * distinguait « elle tourne et n'a rien à faire » de « elle ne tourne pas ».
  * C'est ce dernier point qui a laissé le bug d'alias SQL de la purge des
  * médias passer inaperçu — elle échouait chaque nuit, en silence.
  *
  * Chaque purge se décrit ici : ce qu'elle supprime, quels réglages elle
- * expose, comment compter ce qui serait supprimé, comment l'exécuter. Les
- * cinq n'ont pas la même forme (les médias exposent une durée, les trajets
- * trois, les diffusions et la rétention générale aucune — leurs durées sont
- * figées dans leur SQL), d'où un descripteur par purge plutôt qu'un schéma
- * commun forcé.
+ * expose, comment compter ce qui serait supprimé, comment l'exécuter. Elles
+ * n'ont pas la même forme (les médias exposent une durée, les trajets trois,
+ * les diffusions et la rétention générale aucune — leurs durées sont figées
+ * dans leur SQL), d'où un descripteur par purge plutôt qu'un schéma commun
+ * forcé.
  *
  * Voir migration 068 : `purge_settings` (état + surcharges) et `purge_runs`
- * (journal).
+ * (journal). Migration 074 : `story`, détachée de la rétention générale.
  */
 
 const pool = require('../config/db');
 const mediaPolicy = require('../constants/mediaRetentionPolicy');
 const tripPolicy = require('../constants/tripPolicy');
 
-const NAMES = ['media', 'broadcast', 'welcome_status', 'trip', 'data_retention'];
+const NAMES = ['media', 'broadcast', 'story', 'welcome_status', 'trip', 'data_retention'];
 
 /** Borne une valeur de réglage. Une saisie hors bornes est ramenée, jamais rejetée en silence. */
 function clampInt(value, { min, max, fallback }) {
@@ -92,6 +92,43 @@ const DESCRIPTORS = {
     async run() {
       const { runNightlyDeliveryMaintenance } = require('./broadcastService');
       return runNightlyDeliveryMaintenance();
+    },
+  },
+
+  story: {
+    label: 'Stories expirées',
+    description:
+      'Supprime les stories ordinaires au-delà de la rétention comptée APRÈS '
+      + "leur expiration (une story expire 24 h après sa publication). C'est "
+      + "cette purge qui borne l'historique visible dans Analytics : au-delà de "
+      + 'cette fenêtre, la section Stories ne peut plus rien compter. Les stories '
+      + "d'accueil ne sont pas concernées, elles ont leur propre purge.",
+    knobs: [{
+      key: 'retentionDays',
+      label: 'Conservation après expiration',
+      unit: 'jours',
+      min: 1,
+      max: 365,
+      default: () => 7,
+    }],
+    async stats(opts) {
+      const [rows] = await pool.execute(
+        `SELECT COUNT(*) AS lignes, MIN(s.createdAt) AS plusAncienne
+           FROM statut s
+          WHERE s.expiredAt < DATE_SUB(NOW(), INTERVAL ? DAY)
+            AND NOT EXISTS (
+              SELECT 1 FROM welcome_status_delivery w WHERE w.statut_id = s.ID
+            )`,
+        [opts.retentionDays],
+      );
+      return {
+        lignes: Number(rows[0].lignes) || 0,
+        plusAncienne: rows[0].plusAncienne,
+      };
+    },
+    async run(opts) {
+      const { purgeExpiredStories } = require('./dataRetentionService');
+      return purgeExpiredStories({ retentionDays: opts.retentionDays });
     },
   },
 
@@ -169,12 +206,12 @@ const DESCRIPTORS = {
   data_retention: {
     label: 'Rétention générale',
     description:
-      'Statuts ordinaires expirés, historique d\'appels, journal de connexions, '
-      + 'jobs en échec, appareils révoqués, jetons push dormants, OTP périmés.',
+      'Historique d\'appels, journal de connexions, jobs en échec, appareils '
+      + 'révoqués, jetons push dormants, OTP périmés. Les stories ont leur '
+      + 'propre purge depuis la migration 074.',
     knobs: [], // durées figées, une par cible, dans dataRetentionService
     async stats() {
       const cibles = [
-        ['statut', "SELECT COUNT(*) n FROM statut WHERE expiredAt < DATE_SUB(NOW(), INTERVAL 7 DAY)", '7 jours'],
         ['callHistory', "SELECT COUNT(*) n FROM callHistory WHERE created_at < DATE_SUB(NOW(), INTERVAL 12 MONTH)", '12 mois'],
         ['userAccess', "SELECT COUNT(*) n FROM userAccess WHERE dateLogin < DATE_SUB(NOW(), INTERVAL 90 DAY)", '90 jours'],
         ['job_queue', "SELECT COUNT(*) n FROM job_queue WHERE failed_at IS NOT NULL AND failed_at < DATE_SUB(NOW(), INTERVAL 30 DAY)", '30 jours'],

@@ -11,7 +11,7 @@ const registry = require('../../services/purgeRegistry');
 
 const _auteur = (req) => req.user?.email || req.user?.phone || req.user?.alanyaID || null;
 
-/** Admin : état des cinq purges — réglages, volumétrie purgeable, historique. */
+/** Admin : état de chaque purge — réglages, volumétrie purgeable, historique. */
 const getPurges = async (req, res) => {
   try {
     // `withStats` permet de recharger la page sans repayer les comptages, qui
