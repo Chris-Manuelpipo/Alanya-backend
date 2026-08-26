@@ -38,6 +38,7 @@ const turnRoutes         = require('./src/routes/turn');
 const mapRoutes          = require('./src/routes/mapTiles');
 const adminRoutes        = require('./src/routes/admin');
 const welcomeRoutes      = require('./src/routes/welcome');
+const reportRoutes       = require('./src/routes/reports');
 const qrLandingRoutes    = require('./src/routes/qrLanding');
 
 // ── Socket handlers ───────────────────────────────────────────────────
@@ -154,6 +155,7 @@ app.use('/api/turn',          turnRoutes);
 app.use('/api/map',           mapRoutes);
 app.use('/api/admin',         adminRoutes);
 app.use('/api/welcome',       welcomeRoutes);
+app.use('/api/reports',       reportRoutes);
 app.use('/notify',            notifyRoutes);
 
 // Routes publiques du volet QR (page d'accueil d'un code, fichiers
