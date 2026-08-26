@@ -23,7 +23,7 @@ const pool = require('../config/db');
 const mediaPolicy = require('../constants/mediaRetentionPolicy');
 const tripPolicy = require('../constants/tripPolicy');
 
-const NAMES = ['media', 'broadcast', 'story', 'welcome_status', 'trip', 'data_retention'];
+const NAMES = ['media', 'media_partitions', 'broadcast', 'story', 'welcome_status', 'trip', 'data_retention'];
 
 /** Borne une valeur de réglage. Une saisie hors bornes est ramenée, jamais rejetée en silence. */
 function clampInt(value, { min, max, fallback }) {
@@ -72,6 +72,44 @@ const DESCRIPTORS = {
     async run(opts) {
       const { runNightlyMediaPurge } = require('./mediaRetention');
       return runNightlyMediaPurge(undefined, { mediaDays: opts.mediaDays });
+    },
+  },
+
+  // Purge TEMPORELLE des médias, par opposition à la purge référentielle
+  // ci-dessus. Elle ne demande pas à `message` quels fichiers sont expirés :
+  // elle supprime le répertoire du jour échu, dont le nom porte la date. La
+  // différence n'est pas de performance mais de garantie — un fichier que la
+  // base ne référence pas (upload interrompu, conversation supprimée, `unlink`
+  // en échec) tombe avec sa partition, alors que la purge référentielle ne peut
+  // pas même le voir. C'est exactement ce qui a laissé 707 fichiers orphelins
+  // sur le disque le 25/08/2026.
+  //
+  // Les deux coexistent le temps de la transition : `media` continue de traiter
+  // les fichiers restés à leur ancienne adresse, `media_partitions` prend en
+  // charge tout ce qui est déposé dans une tranche datée. Le vrai interrupteur
+  // reste la variable d'environnement `MEDIA_PARTITIONS_ENABLED` : tant qu'elle
+  // est éteinte, ce balayage ne supprime rien et `stats()` l'annonce.
+  media_partitions: {
+    label: 'Partitions de médias échues',
+    description:
+      "Supprime les tranches de 24 h dont tous les fichiers ont dépassé la "
+      + 'rétention. La suppression ne consulte pas la base : elle atteint donc '
+      + 'aussi les fichiers qu\'aucun message ne référence.',
+    knobs: [{
+      key: 'mediaDays',
+      label: 'Rétention des médias',
+      unit: 'jours',
+      min: 1,
+      max: 365,
+      default: () => mediaPolicy.RETENTION.mediaDays,
+    }],
+    async stats(opts) {
+      const { partitionStats } = require('./mediaPartitions');
+      return partitionStats({ retentionDays: opts.mediaDays });
+    },
+    async run(opts) {
+      const { sweepPartitions } = require('./mediaPartitions');
+      return sweepPartitions({ retentionDays: opts.mediaDays });
     },
   },
 

@@ -2,6 +2,8 @@ const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
 
+const { resolveUploadDirSync } = require('../services/mediaPartitions');
+
 // Créer les dossiers si nécessaire
 const ensureDir = (dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -21,17 +23,37 @@ const imageStorage = multer.diskStorage({
   },
 });
 
-// Sauvegarde : médias messages (images, fichiers, audio) 
+/**
+ * Sous-dossier d'un média d'après son type MIME.
+ * Exporté pour que le contrôleur n'en tienne pas une seconde copie.
+ */
+const mediaSubDir = (mimetype = '') => {
+  if (mimetype.startsWith('image/')) return 'images';
+  if (mimetype.startsWith('audio/')) return 'audio';
+  if (mimetype.startsWith('video/')) return 'video';
+  return 'files';
+};
+
+// Sauvegarde : médias messages (images, fichiers, audio)
+//
+// Le répertoire est décidé par `resolveUploadDirSync` : disposition
+// historique tant que l'interrupteur des partitions est éteint, tranche du
+// jour ensuite (`uploads/media/<AAAA-MM-JJ>/<sous-dossier>`).
+//
+// Le choix est fait ICI, à l'ouverture du flux, et le contrôleur relit ensuite
+// `req.file.destination` au lieu de recalculer. Ce n'est pas de l'élégance :
+// avec des partitions, recalculer la date au moment de composer l'URL ouvre
+// une fenêtre à minuit — un upload commencé à 23:59:59 atterrit dans la
+// partition du jour J, et une URL recomposée à 00:00:00 désignerait J+1, donc
+// un fichier qui n'y est pas. Une seule décision, relue, ferme la fenêtre.
 const mediaStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    let subDir = 'files';
-    if (file.mimetype.startsWith('image/'))  subDir = 'images';
-    if (file.mimetype.startsWith('audio/'))  subDir = 'audio';
-    if (file.mimetype.startsWith('video/'))  subDir = 'video';
-
-    const dir = path.join(__dirname, `../../uploads/media/${subDir}`);
-    ensureDir(dir);
-    cb(null, dir);
+    try {
+      const { absolu } = resolveUploadDirSync(mediaSubDir(file.mimetype));
+      cb(null, absolu);
+    } catch (e) {
+      cb(e);
+    }
   },
   filename: (req, file, cb) => {
     const ext  = path.extname(file.originalname).toLowerCase();
@@ -115,4 +137,4 @@ const handleMulterError = (err, req, res, next) => {
   next();
 };
 
-module.exports = { uploadAvatar, uploadMedia, handleMulterError };
+module.exports = { uploadAvatar, uploadMedia, handleMulterError, mediaSubDir };

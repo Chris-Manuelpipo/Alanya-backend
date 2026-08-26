@@ -14,8 +14,14 @@ assert.ok(echu.sql.includes("m.mediaUrl <> ''"));
 assert.ok(echu.sql.includes('INTERVAL ? DAY'));
 assert.deepStrictEqual(echu.params, [policy.RETENTION.mediaDays]);
 
-// La rétention par défaut est bien de 30 jours.
-assert.strictEqual(policy.RETENTION.mediaDays, 30);
+// La rétention par défaut est celle annoncée par la politique.
+//
+// ⚠ 365 et non 30 depuis le 25/08/2026 : valeur TEMPORAIRE, posée le temps de
+// vérifier la mise en service du stockage partitionné sans qu'aucune purge ne
+// supprime quoi que ce soit. Voir le commentaire de `mediaRetentionPolicy.js`.
+// Cette assertion est volontairement exacte plutôt que bornée : elle force à
+// repasser ici — donc à se poser la question — le jour où l'on rétablit 30.
+assert.strictEqual(policy.RETENTION.mediaDays, 365);
 
 // Une valeur d'environnement absurde ne doit pas pouvoir désactiver la purge
 // ni la rendre instantanée : `readInt` borne, il n'y a jamais de NaN.

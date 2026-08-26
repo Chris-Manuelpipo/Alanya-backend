@@ -33,6 +33,9 @@ const pool = require('../../src/config/db');
 
 const APPLY = process.argv.includes('--apply');
 const VERIFIER = process.argv.includes('--verifier');
+// N'apparier que lorsque le choix est forcé. À privilégier dès que le
+// mode --verifier montre des erreurs en stratégie chronologique.
+const PRUDENT = process.argv.includes('--prudent');
 const RACINE = path.join(__dirname, '../../uploads');
 const BASE_URL = process.env.MEDIA_BASE_URL || 'https://www.alanya237.com';
 
@@ -99,7 +102,7 @@ function inventorier(dir, acc = []) {
  *
  * @returns Map<msgID, fichier>
  */
-function apparier(messages, parExpediteur, journal = null) {
+function apparier(messages, parExpediteur, journal = null, { prudent = false } = {}) {
   const pris = new Set();
   const couples = new Map();
   // `msgID` départage les messages d'une même seconde : sans lui, l'ordre de
@@ -135,6 +138,22 @@ function apparier(messages, parExpediteur, journal = null) {
       journal.sansTaille += 1;
     }
 
+    // Mode prudent : on ne propose QUE lorsque le choix est forcé — un seul
+    // candidat possible. Dès qu'il faut départager, on s'abstient.
+    //
+    // C'est le seul mode honnête pour les rafales. Quand plusieurs médias
+    // partent en parallèle et que `mediaSize` manque (le cas de 96 % des
+    // messages concernés, trop anciens pour la migration 018), AUCUN signal
+    // disponible ne dit quel fichier va à quel message : ni l'horodatage, qui
+    // reflète l'ordre d'arrivée des requêtes et non l'ordre d'envoi, ni
+    // `sendAt`, qui n'a qu'une précision à la seconde. Trancher revient alors
+    // à tirer à pile ou face — et une erreur ici publie une photo dans la
+    // mauvaise conversation.
+    if (prudent && candidats.length > 1) {
+      if (journal) journal.abstentionAmbigu += 1;
+      continue;
+    }
+
     const choisi = candidats[0]; // listes déjà triées par ts croissant
     pris.add(choisi.chemin);
     couples.set(msg.msgID, choisi);
@@ -144,7 +163,7 @@ function apparier(messages, parExpediteur, journal = null) {
 }
 
 /** Compteurs de diagnostic, pour que le verdict explique COMMENT il a décidé. */
-const journalNeuf = () => ({ motifs: {}, abstentionTaille: 0, sansTaille: 0 });
+const journalNeuf = () => ({ motifs: {}, abstentionTaille: 0, sansTaille: 0, abstentionAmbigu: 0 });
 
 /**
  * Mesure la justesse de l'appariement sur les messages qui ont CONSERVÉ leur
@@ -155,65 +174,86 @@ const journalNeuf = () => ({ motifs: {}, abstentionTaille: 0, sansTaille: 0 });
  */
 async function verifier(pool, parExpediteur, tousMessages) {
   const [connus] = await pool.execute(`
-    SELECT msgID, senderID, UNIX_TIMESTAMP(sendAt) * 1000 AS envoiMs, mediaUrl, mediaSize
+    SELECT msgID, senderID, conversationID,
+           UNIX_TIMESTAMP(sendAt) * 1000 AS envoiMs, mediaUrl, mediaSize
       FROM message
      WHERE mediaUrl IS NOT NULL AND mediaUrl <> ''`);
   const attendu = new Map(
     connus.map((r) => [r.msgID, String(r.mediaUrl).split('/uploads/')[1]]),
   );
+  // Propriétaire réel de chaque fichier, pour savoir si une erreur reste dans
+  // la même conversation ou change carrément de fil.
+  const proprietaire = new Map();
+  for (const r of connus) {
+    proprietaire.set(String(r.mediaUrl).split('/uploads/')[1], r);
+  }
+  const convParMsg = new Map(connus.map((r) => [r.msgID, r.conversationID]));
 
-  const journal = journalNeuf();
-  const couples = apparier([...tousMessages, ...connus], parExpediteur, journal);
-
-  let juste = 0; let faux = 0; let absent = 0;
-  const exemplesFaux = [];
-  for (const [msgID, cheminAttendu] of attendu) {
-    const trouve = couples.get(msgID);
-    if (!trouve) { absent += 1; continue; }
-    if (trouve.chemin === cheminAttendu) juste += 1;
-    else {
+  const mesurer = (options) => {
+    const journal = journalNeuf();
+    const couples = apparier([...tousMessages, ...connus], parExpediteur, journal, options);
+    let juste = 0; let faux = 0; let absent = 0; let fauxMemeConv = 0;
+    const exemples = [];
+    for (const [msgID, cheminAttendu] of attendu) {
+      const trouve = couples.get(msgID);
+      if (!trouve) { absent += 1; continue; }
+      if (trouve.chemin === cheminAttendu) { juste += 1; continue; }
       faux += 1;
-      if (exemplesFaux.length < 5) {
-        exemplesFaux.push(`    msg ${msgID} : trouvé ${trouve.chemin} / attendu ${cheminAttendu}`);
+      const vrai = proprietaire.get(trouve.chemin);
+      if (vrai && convParMsg.get(msgID) === vrai.conversationID) fauxMemeConv += 1;
+      if (exemples.length < 5) {
+        exemples.push(`    msg ${msgID} : trouvé ${trouve.chemin} / attendu ${cheminAttendu}`);
       }
     }
-  }
-  const total = attendu.size;
-  const proposes = juste + faux;
+    return { journal, juste, faux, absent, fauxMemeConv, exemples };
+  };
+
+  const chrono = mesurer({ prudent: false });
+  const prudent = mesurer({ prudent: true });
+
+  const ligne = (nom, r) => {
+    const proposes = r.juste + r.faux;
+    const taux = proposes ? `${((r.juste / proposes) * 100).toFixed(1)} %` : '—';
+    console.log(
+      `  ${nom.padEnd(22)} ${String(r.juste).padStart(5)} justes  `
+      + `${String(r.faux).padStart(4)} erreurs  ${String(r.absent).padStart(4)} abstentions  ${taux}`,
+    );
+  };
+
   console.log('── Vérification sur les adresses encore intactes ──');
-  console.log(`  paires de contrôle          : ${total}`);
-  console.log(`  retrouvées à l'identique    : ${juste}`);
-  console.log(`  ERREURS D'ATTRIBUTION       : ${faux}`);
-  console.log(`  non proposées (abstention)  : ${absent}`);
-  if (proposes) {
-    console.log(`  justesse quand il propose   : ${((juste / proposes) * 100).toFixed(1)} %`);
+  console.log(`  paires de contrôle : ${attendu.size}\n`);
+  console.log('  Stratégie                justes   erreurs   abstentions   justesse');
+  console.log('  ' + '─'.repeat(68));
+  ligne('chronologique', chrono);
+  ligne('prudente', prudent);
+
+  if (chrono.faux) {
+    console.log(`\n  Erreurs du mode chronologique : ${chrono.faux}`);
+    console.log(`    dont dans la MÊME conversation : ${chrono.fauxMemeConv}`);
+    console.log(`    dont dans une AUTRE conversation : ${chrono.faux - chrono.fauxMemeConv}`);
+    console.log('  exemples :');
+    for (const e of chrono.exemples) console.log(e);
   }
-  if (exemplesFaux.length) {
-    console.log('  exemples d\'erreurs :');
-    for (const e of exemplesFaux) console.log(e);
-  }
-  // Comment l'algorithme a tranché : une justesse élevée obtenue surtout par
-  // « chronologie » resterait fragile, puisque c'est précisément l'hypothèse
-  // qui s'était révélée fausse dans les rafales.
-  console.log('  décisions :');
-  for (const [motif, n] of Object.entries(journal.motifs)) {
+
+  console.log('\n  Décisions du mode prudent :');
+  for (const [motif, n] of Object.entries(prudent.journal.motifs)) {
     console.log(`    ${motif.padEnd(24)} : ${n}`);
   }
-  console.log(`    abstention (taille absente de la fenêtre) : ${journal.abstentionTaille}`);
-  console.log(`    messages sans mediaSize en base           : ${journal.sansTaille}`);
-  // Zéro erreur sur zéro proposition ne prouve rien : ne jamais afficher un
-  // feu vert quand l'algorithme s'est tu (inventaire vide, mauvais dossier).
-  if (proposes === 0) {
+  console.log(`    abstention (choix ambigu)                : ${prudent.journal.abstentionAmbigu}`);
+  console.log(`    abstention (taille absente de la fenêtre) : ${prudent.journal.abstentionTaille}`);
+  console.log(`    messages sans mediaSize en base           : ${prudent.journal.sansTaille}`);
+
+  if (prudent.faux === 0 && prudent.juste > 0) {
     console.log(
-      '\n  ⚠ Test non concluant : aucune proposition. L\'inventaire est-il complet ?'
-      + ' Ce mode doit tourner SUR LE SERVEUR, où sont les fichiers.',
+      `\n  ✔ Mode PRUDENT : ${prudent.juste} paires retrouvées sans une seule erreur.`
+      + '\n    Relancer avec --prudent pour appliquer cette stratégie.',
     );
-  } else if (faux === 0) {
-    console.log(`\n  ✔ ${juste} paires retrouvées sans une seule erreur d'attribution.`);
+  } else if (prudent.juste === 0) {
+    console.log('\n  ⚠ Le mode prudent ne propose rien : inventaire incomplet ?');
   } else {
-    console.log('\n  ✖ Des erreurs d\'attribution existent : NE PAS appliquer en l\'état.');
+    console.log('\n  ✖ Même le mode prudent se trompe : NE PAS appliquer, signaler la sortie.');
   }
-  return { total, juste, faux, absent };
+  return { chrono, prudent };
 }
 
 (async () => {
@@ -269,7 +309,7 @@ async function verifier(pool, parExpediteur, tousMessages) {
   console.log(`Messages à restaurer : ${cibles.length}\n`);
 
   const journal = journalNeuf();
-  const couples = apparier(cibles, libres, journal);
+  const couples = apparier(cibles, libres, journal, { prudent: PRUDENT });
   const retenus = [];
   const introuvables = [];
   for (const msg of cibles) {
