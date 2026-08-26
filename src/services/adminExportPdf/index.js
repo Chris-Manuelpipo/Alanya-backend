@@ -42,6 +42,16 @@ function formatDuration(seconds) {
   return `${sec}s`;
 }
 
+/** `meeting.duree` (durée planifiée) est en minutes, pas en secondes. */
+function formatMinutes(minutes) {
+  const m = Number(minutes) || 0;
+  if (!m) return '0 min';
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  if (h) return min ? `${h} h ${min} min` : `${h} h`;
+  return `${min} min`;
+}
+
 function csvEscape(value) {
   const s = value == null ? '' : String(value);
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
@@ -257,11 +267,15 @@ async function buildAnalyticsPdf({ data, sections, meta }) {
       drawStatCards(doc, [
         { label: 'Total', value: data.meetings.total.toLocaleString('fr-FR') },
         { label: 'Taux de présence', value: `${data.meetings.attendanceRate}%` },
-        { label: 'Durée moyenne', value: formatDuration(data.meetings.avgDuration) },
+        { label: 'Durée réelle moy.', value: formatDuration(data.meetings.avgRealDuration) },
         { label: 'No-show', value: `${data.meetings.noShowRate}%` },
       ]);
       drawKeyValues(doc, [
+        ['Terminées', `${data.meetings.ended} / ${data.meetings.total}`],
+        ['Durée planifiée moyenne', formatMinutes(data.meetings.avgPlannedMinutes)],
+        ['Présents / participants', `${data.meetings.attendees} / ${data.meetings.participants}`],
         ['Acceptés / Refusés / Sans réponse', `${data.meetings.accepted} / ${data.meetings.declined} / ${data.meetings.invited}`],
+        ['Acceptés jamais venus', `${data.meetings.noShow}`],
       ]);
     }
 

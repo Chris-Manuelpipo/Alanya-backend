@@ -26,6 +26,7 @@ async function fetchAnalyticsData(fromInput, toInput) {
     [[storyAgg]],
     [storyByType],
     [[meetingAgg]],
+    [[meetingParts]],
     [usersByRole],
     [[userGrowth]],
     [devices],
@@ -79,15 +80,57 @@ async function fetchAnalyticsData(fromInput, toInput) {
        WHERE createdAt BETWEEN ? AND ? GROUP BY type ORDER BY type ASC`,
       [from, to],
     ),
+    // Réunions, niveau réunion. Surtout PAS de jointure avec `participant`
+    // ici : un AVG calculé après la jointure est pondéré par le nombre de
+    // participants — une réunion à quatre pèse quatre fois.
+    //
+    // Deux durées, parce que `meeting.duree` n'est pas celle qu'on croit :
+    // c'est la durée PLANIFIÉE, en MINUTES (cf. `Meeting.duree` côté app,
+    // `endDateTime = start + Duration(minutes: duree)`), écrite à la création
+    // et jamais corrigée à la fin — le handler de clôture ne pose que
+    // `isEnd = 1`. La durée réellement vécue se reconstitue depuis
+    // `participant.duree`, en SECONDES, écrite au départ de chaque
+    // participant : la réunion a duré aussi longtemps que son dernier présent.
     pool.execute(
       `SELECT
-         COUNT(DISTINCT m.idMeeting) AS total,
-         COALESCE(ROUND(AVG(m.duree)), 0) AS avgDuration,
-         COALESCE(SUM(p.status = 1), 0) AS accepted,
-         COALESCE(SUM(p.status = 2), 0) AS declined,
-         COALESCE(SUM(p.status = 0), 0) AS invited
+         COUNT(*) AS total,
+         COALESCE(SUM(m.isEnd = 1), 0) AS ended,
+         COALESCE(ROUND(AVG(m.duree)), 0) AS avgPlannedMinutes,
+         COALESCE((SELECT ROUND(AVG(x.reel)) FROM (
+           SELECT MAX(p.duree) AS reel
+             FROM participant p
+             JOIN meeting m2 ON m2.idMeeting = p.idMeeting
+            WHERE m2.start_time BETWEEN ? AND ?
+            GROUP BY p.idMeeting
+           HAVING MAX(p.duree) > 0
+         ) x), 0) AS avgRealDuration
        FROM meeting m
-       LEFT JOIN participant p ON p.idMeeting = m.idMeeting
+       WHERE m.start_time BETWEEN ? AND ?`,
+      [from, to, from, to],
+    ),
+    // Réunions, niveau participant. Deux familles de mesures qui ne se
+    // recouvrent pas :
+    //
+    //  — la réponse à l'invitation (`status`), hors organisateur : celui-ci est
+    //    auto-inséré `status = 1` à la création de la réunion, le compter
+    //    ferait remonter un « accepté » garanti par réunion ;
+    //  — la présence réelle (`duree > 0`), organisateur compris : lui aussi
+    //    assiste, et sa durée est écrite comme celle des autres.
+    //
+    // Un no-show, c'est avoir accepté puis n'être jamais venu — pas « ne pas
+    // avoir répondu », que l'ancien calcul confondait avec un refus.
+    pool.execute(
+      `SELECT
+         COUNT(*) AS participants,
+         COALESCE(SUM(p.duree > 0), 0) AS attendees,
+         COALESCE(SUM(p.IDparticipant <> m.idOrganiser), 0) AS invitations,
+         COALESCE(SUM(p.status = 1 AND p.IDparticipant <> m.idOrganiser), 0) AS accepted,
+         COALESCE(SUM(p.status = 2 AND p.IDparticipant <> m.idOrganiser), 0) AS declined,
+         COALESCE(SUM(p.status = 0 AND p.IDparticipant <> m.idOrganiser), 0) AS pending,
+         COALESCE(SUM(p.status = 1 AND p.duree = 0
+                      AND p.IDparticipant <> m.idOrganiser), 0) AS noShow
+       FROM participant p
+       JOIN meeting m ON m.idMeeting = p.idMeeting
        WHERE m.start_time BETWEEN ? AND ?`,
       [from, to],
     ),
@@ -153,10 +196,13 @@ async function fetchAnalyticsData(fromInput, toInput) {
   const storyTotal = _num(storyAgg.total);
   const storyViews = _num(storyAgg.totalViews);
   const storyLikes = _num(storyAgg.totalLikes);
-  const mAccepted = _num(meetingAgg.accepted);
-  const mDeclined = _num(meetingAgg.declined);
-  const mInvited = _num(meetingAgg.invited);
-  const mResponses = mAccepted + mDeclined + mInvited;
+  const mParticipants = _num(meetingParts.participants);
+  const mAttendees = _num(meetingParts.attendees);
+  const mInvitations = _num(meetingParts.invitations);
+  const mAccepted = _num(meetingParts.accepted);
+  const mDeclined = _num(meetingParts.declined);
+  const mPending = _num(meetingParts.pending);
+  const mNoShow = _num(meetingParts.noShow);
 
   return {
     messagesByType: msgByType.map((r) => ({
@@ -200,12 +246,19 @@ async function fetchAnalyticsData(fromInput, toInput) {
     },
     meetings: {
       total: _num(meetingAgg.total),
-      avgDuration: _num(meetingAgg.avgDuration),
+      ended: _num(meetingAgg.ended),
+      avgPlannedMinutes: _num(meetingAgg.avgPlannedMinutes),
+      avgRealDuration: _num(meetingAgg.avgRealDuration),
+      participants: mParticipants,
+      attendees: mAttendees,
+      invitations: mInvitations,
       accepted: mAccepted,
       declined: mDeclined,
-      invited: mInvited,
-      attendanceRate: mResponses ? Math.round((mAccepted / mResponses) * 100) : 0,
-      noShowRate: mResponses ? Math.round(((mDeclined + mInvited) / mResponses) * 100) : 0,
+      invited: mPending,
+      noShow: mNoShow,
+      attendanceRate: mParticipants ? Math.round((mAttendees / mParticipants) * 100) : 0,
+      acceptanceRate: mInvitations ? Math.round((mAccepted / mInvitations) * 100) : 0,
+      noShowRate: mAccepted ? Math.round((mNoShow / mAccepted) * 100) : 0,
     },
     users: {
       byRole: usersByRole.map((r) => ({
