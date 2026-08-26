@@ -72,6 +72,14 @@ const ACTIONS = {
   'DELETE /reserved-alanya-phones/:phone': { action: 'phones.release', targetType: 'phone', param: 'phone' },
   'POST /official-account': { action: 'official.create', targetType: 'user' },
 
+  // Assistance éditoriale. Ces deux routes n'écrivent rien — elles seraient
+  // donc candidates à SKIP, comme `POST /broadcasts/estimate`. Elles y échappent
+  // pour deux raisons : elles envoient du texte chez un tiers, et elles coûtent
+  // de l'argent. Quand une traduction publiée se révélera fautive, savoir
+  // qu'elle vient de la machine et non d'un traducteur change le diagnostic.
+  'POST /ai/translate': { action: 'ai.translate', targetType: 'ai' },
+  'POST /ai/review': { action: 'ai.review', targetType: 'ai' },
+
   // Accueil des nouveaux
   'PUT /welcome/draft': { action: 'welcome.draft', targetType: 'welcome' },
   'POST /welcome/publish': { action: 'welcome.publish', targetType: 'welcome' },

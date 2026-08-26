@@ -74,6 +74,12 @@ const ADMIN_PERMISSIONS = [
   // Diffusions
   'broadcasts.send',
   'broadcasts.cancel',
+
+  // Assistance éditoriale — traduire et relire le contenu officiel avant
+  // publication. Reste au niveau admin parce qu'elle n'écrit rien : elle
+  // remplit des champs que les permissions `welcome.*` et `broadcasts.send`
+  // gardent déjà. Un administrateur qui peut rédiger peut se faire aider.
+  'ai.editorial',
 ];
 
 /**

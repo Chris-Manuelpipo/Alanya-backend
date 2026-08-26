@@ -53,7 +53,12 @@ const {
   exportUsers,
   exportAnalytics,
 } = require('../controllers/adminController');
-const { broadcastSendLimiter, broadcastEstimateLimiter } = require('../middleware/rateLimiter');
+const { getAiStatus, postTranslate, postReview } = require('../controllers/admin/aiEditorial');
+const {
+  broadcastSendLimiter,
+  broadcastEstimateLimiter,
+  aiEditorialLimiter,
+} = require('../middleware/rateLimiter');
 
 /**
  * @swagger
@@ -774,5 +779,13 @@ router.post('/welcome/backfill', adminAuth, requirePermission('welcome.backfill'
 // Statut de bienvenue : réglage global, appliqué sans publication.
 router.get('/welcome/status', adminAuth, requirePermission('welcome.read'), getStatusConfig);
 router.put('/welcome/status', adminAuth, requirePermission('welcome.status'), updateStatusConfig);
+
+// ── Assistance éditoriale ──
+// Traduire et relire le contenu officiel. N'écrit rien en base : ces routes
+// remplissent le formulaire, la publication reste gardée par `welcome.*` et
+// `broadcasts.send`. POST malgré tout — le texte voyage dans le corps.
+router.get('/ai/status', adminAuth, requirePermission('ai.editorial'), getAiStatus);
+router.post('/ai/translate', adminAuth, requirePermission('ai.editorial'), aiEditorialLimiter, postTranslate);
+router.post('/ai/review', adminAuth, requirePermission('ai.editorial'), aiEditorialLimiter, postReview);
 
 module.exports = router;

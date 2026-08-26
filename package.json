@@ -21,10 +21,12 @@
         "test:audit": "node src/middleware/adminAudit.test.js && node src/middleware/adminAudit.record.test.js",
         "test:roles": "node src/constants/adminRoles.test.js",
         "test:adminops": "node src/socket/handlers/adminOps.test.js",
-        "test:admin": "npm run test:roles && npm run test:audit && npm run test:reports && npm run test:adminops",
+        "test:ai": "node src/services/ai/openrouter.test.js && node src/services/ai/editorialAssist.test.js",
+        "test:admin": "npm run test:roles && npm run test:audit && npm run test:reports && npm run test:adminops && npm run test:ai",
         "test:trips": "node src/constants/tripPolicy.test.js && node src/utils/tripInput.test.js && node src/socket/state/tripState.test.js && node src/notifications/notificationTripPayload.test.js && node src/notifications/notificationTripRouting.test.js && node src/controllers/admin/trips.test.js && node src/services/tripRetention.test.js",
         "test:notifications:full": "npm run test:notifications && npm run test:calls && node scripts/bench/push-queue-bench.js",
         "test:redis-adapter": "node scripts/dev/redis-adapter-smoke.js",
+        "smoke:openrouter": "node scripts/dev/openrouter-smoke.js",
         "test:concurrency": "node src/socket/state/callDeviceOwnership.race.test.js && node src/socket/state/meetingDevicePresence.race.test.js && node src/socket/state/qrLoginSessions.race.test.js && node src/socket/state/qrContactTokens.race.test.js && node src/socket/state/callSessions.race.test.js && node src/socket/state/groupRooms.race.test.js && node src/socket/state/tripState.race.test.js",
         "bench:push": "node scripts/bench/push-queue-bench.js"
     },

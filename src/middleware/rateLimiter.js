@@ -80,4 +80,16 @@ module.exports = { authLimiter, registerLimiter, messageLimiter, uploadLimiter, 
     legacyHeaders: false,
     message: { error: 'Trop d\'estimations, patientez' },
   }),
+  // Assistance éditoriale : chaque appel part chez un fournisseur facturé au
+  // jeton. Le plafond n'est pas une défense contre l'abus — les appelants sont
+  // authentifiés et peu nombreux — mais contre la boucle : un bouton qui
+  // relance à chaque frappe viderait le crédit avant qu'on s'en aperçoive.
+  // 20/min laisse traduire bloc par bloc sans jamais gêner.
+  aiEditorialLimiter: rateLimit({
+    windowMs: 60 * 1000,
+    max: Number(process.env.AI_EDITORIAL_MAX_PER_MIN) || 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Trop de demandes d\'assistance, patientez' },
+  }),
 };
