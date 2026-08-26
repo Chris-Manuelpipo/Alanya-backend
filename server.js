@@ -94,6 +94,7 @@ const {
 } = require('./src/services/meetingWorkers');
 const { runNightlyTripPurge } = require('./src/services/tripRetention');
 const { runNightlyMediaPurge } = require('./src/services/mediaRetention');
+const { mediaExpiryGuard, staticHeaders } = require('./src/middleware/mediaExpiry');
 
 let stopAccountLifecycleSchedulers = () => {};
 
@@ -122,10 +123,21 @@ app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // caches HTTP (et flutter_cache_manager côté app) à conserver la réponse sans
 // revalidation. Sans cela, chaque retour dans un écran (chat, Mes médias)
 // re-téléchargeait les médias déjà vus.
+//
+// Le garde d'expiration passe AVANT : sur un média partitionné, le chemin
+// porte le jour de l'upload, donc l'expiration se tranche sans ouvrir le
+// moindre fichier ni interroger la base. Il répond alors `410 Gone`, que le
+// client sait distinguer d'une panne réseau — un 404 laisserait croire à un
+// incident passager et l'app réessaierait indéfiniment. Le même garde relaie
+// les anciennes adresses vers la partition d'un fichier déplacé, ce qui évite
+// tout `UPDATE` de masse sur `message.mediaUrl`.
+//
+// `staticHeaders` plafonne en outre le `max-age` à la vie restante de la
+// partition : sans ça un cache intermédiaire garderait un an une URL qui meurt
+// dans trois jours, et le 410 n'atteindrait jamais le client.
+app.use('/uploads', mediaExpiryGuard());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-  setHeaders: (res) => {
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-  },
+  setHeaders: staticHeaders(),
 }));
 
 // ── Routes API ────────────────────────────────────────────────────────
@@ -319,6 +331,13 @@ async function start() {
         ['trip_nightly_purge',      'trip'],
         ['data_retention_purge',    'data_retention'],
         ['media_nightly_purge',     'media'],
+        // Balayage des partitions de médias. Il a son propre bail parce qu'il
+        // n'a rien à voir avec le précédent : celui-ci interroge `message`,
+        // celui-là ne touche qu'au système de fichiers. Sa correction ne
+        // dépend d'ailleurs pas du bail — deux instances qui réclament la même
+        // partition sont départagées par `rename`, atomique — mais le bail
+        // évite qu'elles fassent le même `readdir` au même instant.
+        ['media_partition_drop',    'media_partitions'],
       ];
       for (const [bail, purge] of purges) {
         withLease(bail, () => runPurgeIfEnabled(purge)).catch(

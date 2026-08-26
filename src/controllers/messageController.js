@@ -9,6 +9,12 @@ const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
 const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
+const { relinkForForward } = require('../services/mediaPartitions');
+
+// Même origine que celle composée à l'upload : une URL de transfert doit être
+// indiscernable d'une URL d'upload, sans quoi le client la traiterait comme
+// un hôte différent (cache, épinglage de certificat).
+const MEDIA_BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
 const MESSAGE_EDIT_WINDOW_MINUTES = 30;
 const MAX_BATCH_DELETE = 50;
@@ -1002,6 +1008,21 @@ const batchForwardMessages = async (req, res) => {
           content = source.content ?? null;
         }
 
+        // Le média transféré reçoit une adresse à LUI, par lien matériel vers
+        // le même inode (zéro octet copié). Sans ça, deux messages partagent un
+        // seul fichier : la purge le supprime au terme de la rétention du
+        // message d'origine, et le transfert — parfois vieux de quelques heures
+        // — pointe dans le vide avec sa `mediaUrl` intacte, ce qui affiche un
+        // média cassé chez le destinataire. Chaque message garantit désormais
+        // la rétention à son propre média.
+        //
+        // En cas d'échec (fichier source déjà disparu), on retombe sur l'URL
+        // d'origine : le comportement d'avant vaut mieux qu'un transfert refusé.
+        const cheminRelie = relinkForForward(source.mediaUrl, { alanyaID: senderID });
+        const mediaUrlTransfere = cheminRelie
+          ? `${MEDIA_BASE_URL}/uploads/${cheminRelie}`
+          : source.mediaUrl;
+
         const { msg, silentDrop, deliveryFields } = await _persistAndDeliverMessage(
           req,
           targetId,
@@ -1009,7 +1030,7 @@ const batchForwardMessages = async (req, res) => {
           {
             content,
             type: source.type,
-            mediaUrl: source.mediaUrl,
+            mediaUrl: mediaUrlTransfere,
             mediaName: source.mediaName,
             mediaDuration: source.mediaDuration,
             mediaSize: source.mediaSize,
