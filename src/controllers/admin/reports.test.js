@@ -45,17 +45,53 @@ const appel = async (handler, req) => {
 
     /* ── La file le remonte, avec ce qu'il faut pour décider ─────────── */
     let res = await appel(getReports, { query: { state: 'open' } });
-    const ligne = res.body.find((r) => r.id === id);
+    const ligne = res.body.items.find((r) => r.id === id);
     assert.ok(ligne, 'le signalement ouvert doit apparaître dans la file');
     assert.strictEqual(ligne.reason, 'harassment');
     assert.strictEqual(ligne.state, 'open');
     assert.ok('reporter_nom' in ligne, 'le nom de l’auteur est joint');
     assert.ok('target_nom' in ligne, 'le nom de la cible est joint');
     assert.strictEqual(Number(ligne.actions), 0);
+    assert.strictEqual(res.body.page, 1);
+    assert.strictEqual(res.body.limit, 20);
+    assert.ok(res.body.total >= 1, 'le total accompagne la page');
 
-    // Le filtre d'état est réel, pas décoratif.
+    /* ── Le filtre d'état est réel, pas décoratif ────────────────────── */
     res = await appel(getReports, { query: { state: 'dismissed' } });
-    assert.ok(!res.body.some((r) => r.id === id), 'un ouvert ne doit pas sortir en « classé »');
+    assert.ok(!res.body.items.some((r) => r.id === id), 'un ouvert ne doit pas sortir en « classé »');
+    // Le bandeau « n en attente » n'aurait aucun sens s'il ne comptait que
+    // l'onglet affiché : le décompte des ouverts ignore le filtre d'état.
+    assert.ok(res.body.open >= 1, 'le décompte des ouverts ignore le filtre d’état');
+
+    /* ── La recherche ────────────────────────────────────────────────── */
+    // La précision laissée par le plaignant fait partie de ce qu'on retape.
+    res = await appel(getReports, { query: { search: 'pour le test' } });
+    assert.ok(res.body.items.some((r) => r.id === id), 'la recherche doit retrouver la note');
+
+    // Une recherche sans résultat rend une file vide *et* des compteurs à
+    // zéro. Un total figé sur l'ensemble de la table ferait afficher une
+    // pagination pour des lignes que personne ne peut atteindre.
+    res = await appel(getReports, { query: { search: 'zzq-introuvable-zzq' } });
+    assert.strictEqual(res.body.items.length, 0);
+    assert.strictEqual(res.body.total, 0, 'le total suit la recherche');
+    assert.strictEqual(res.body.open, 0, 'le bandeau ne compte pas hors recherche');
+
+    /* ── La pagination ───────────────────────────────────────────────── */
+    // Une page d'une ligne rend une ligne, mais compte tout ce qui correspond.
+    res = await appel(getReports, { query: { limit: 1 } });
+    assert.strictEqual(res.body.items.length, 1);
+    assert.strictEqual(res.body.limit, 1);
+    assert.ok(res.body.total >= 1, 'le total dépasse la page, c’est tout son intérêt');
+
+    // La page 2 ne redonne pas la ligne de la page 1 — c'est ce que le
+    // départage par `r.id` garantit quand deux signalements partagent leur
+    // seconde de dépôt.
+    if (res.body.total >= 2) {
+      const premier = res.body.items[0].id;
+      res = await appel(getReports, { query: { limit: 1, page: 2 } });
+      assert.strictEqual(res.body.page, 2);
+      assert.notStrictEqual(res.body.items[0].id, premier, 'les pages ne se recouvrent pas');
+    }
 
     /* ── Les décisions s'empilent, elles ne s'écrasent pas ───────────── */
     // Sans cela, « ce compte a déjà été signalé trois fois » et « ces trois
