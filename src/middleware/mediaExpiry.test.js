@@ -37,6 +37,9 @@ function passer(chemin, { now = MAINTENANT, relayLegacy = true } = {}) {
   assert.strictEqual(res.code, 410);
   assert.strictEqual(res.corps.error, 'MEDIA_EXPIRED');
   assert.strictEqual(res.corps.partition, '2026-07-20');
+  // La rétention annoncée est celle RÉELLEMENT appliquée à la décision, pas
+  // celle de la politique globale : les deux divergent dès qu'un appelant en
+  // injecte une autre (surcharge admin, réglage de mise en service).
   assert.strictEqual(res.corps.retentionDays, RETENTION);
   // Un média expiré le reste : le 410 est cachable.
   assert.strictEqual(res.entetes['Cache-Control'], `public, max-age=${GONE_MAX_AGE}`);

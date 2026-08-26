@@ -64,13 +64,18 @@ const NOM_SUR = /^[A-Za-z0-9._-]+$/;
  * il déclenche l'affichage « Média expiré » et l'abandon définitif des
  * tentatives, là où un 404 ou un timeout laisse croire à une panne passagère.
  */
-function repondreExpire(res, partition) {
+function repondreExpire(res, partition, retentionDays) {
   res.status(410)
     .set('Cache-Control', `public, max-age=${GONE_MAX_AGE}`)
     .json({
       error: 'MEDIA_EXPIRED',
       partition,
-      retentionDays: RETENTION.mediaDays,
+      // La rétention RÉELLEMENT appliquée à cette décision, pas celle de la
+      // politique globale. Les deux divergent dès qu'un appelant en injecte
+      // une autre — surcharge depuis l'espace super-admin, ou réglage
+      // temporaire de mise en service. Annoncer au client une durée qui n'est
+      // pas celle qui vient de le priver du média serait un mensonge poli.
+      retentionDays,
     });
 }
 
@@ -101,7 +106,7 @@ function mediaExpiryGuard({
     const partition = partitionFromPath(chemin);
     if (partition) {
       if (isPartitionExpired(partition, { retentionDays, now: now() })) {
-        return repondreExpire(res, partition);
+        return repondreExpire(res, partition, retentionDays);
       }
       return next(); // partition vivante : `express.static` sert le fichier
     }
@@ -150,7 +155,7 @@ function relaisHerite(req, res, next, { kind, nom, retentionDays, maintenant }) 
   // Le fichier a bien été déplacé, mais sa partition est déjà tombée : c'est
   // une expiration, pas une absence. Le client doit lire 410, pas 404.
   if (isPartitionExpired(partition, { retentionDays, now: maintenant })) {
-    return repondreExpire(res, partition);
+    return repondreExpire(res, partition, retentionDays);
   }
 
   const cible = path.join(UPLOADS_DIR, MEDIA_ROOT, partition, kind, nom);

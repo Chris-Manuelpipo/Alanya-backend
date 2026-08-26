@@ -30,7 +30,27 @@ const RETENTION = {
   // Tous types de médias confondus (image, vidéo, audio, fichier) : l'objectif
   // est de borner l'espace disque serveur, pas seulement ce qu'affiche
   // « Mes médias » (qui, lui, ne montre que images/vidéos).
-  mediaDays: readInt('MEDIA_RETENTION_DAYS', 30, { min: 1, max: 365 }),
+  //
+  // ⚠ VALEUR TEMPORAIRE — 365 jours depuis le 25/08/2026, au lieu des 30 jours
+  // de la politique réelle.
+  //
+  // Pourquoi : la mise en service du stockage partitionné doit pouvoir être
+  // vérifiée de bout en bout — écriture dans la tranche du jour, relais de
+  // lecture des anciennes adresses, journal des balayages — SANS que la
+  // première exécution supprime quoi que ce soit. Les médias présents sur le
+  // serveur s'étalent de mai à juillet 2026 : à 30 jours, la quasi-totalité
+  // serait effacée au premier rattrapage. On ne fait pas d'une suppression de
+  // masse le test inaugural d'un système de suppression.
+  //
+  // À 365 jours, aucune partition n'est échue, donc rien ne tombe, et les deux
+  // purges (référentielle et par partitions) sont neutralisées de la même
+  // façon.
+  //
+  // Pour revenir à la politique réelle : remettre 30 ci-dessous, ou poser
+  // MEDIA_RETENTION_DAYS=30 dans le `.env` — ce qui a l'avantage de ne pas
+  // demander de redéploiement. La valeur est aussi surchargeable depuis
+  // l'espace super-admin des purges (réglage « Rétention des médias »).
+  mediaDays: readInt('MEDIA_RETENTION_DAYS', 365, { min: 1, max: 365 }),
 };
 
 /**

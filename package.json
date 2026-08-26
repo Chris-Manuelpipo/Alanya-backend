@@ -9,6 +9,7 @@
         "seed:reserved-phones": "node scripts/cleanup-bulk-reserved-alanya-phones.js",
         "cleanup:reserved-phones": "node scripts/cleanup-bulk-reserved-alanya-phones.js",
         "fix:trip-purged-flag": "node scripts/fix-trip-points-purged-flag.js",
+        "migrate:media-partitions": "node scripts/maintenance/migrate-media-to-partitions.js",
         "bench:messages": "node scripts/load/socket-message-bench.js",
         "test:notifications": "node src/notifications/notificationContract.test.js && node src/notifications/notificationLogger.test.js && node src/notifications/notificationPolicy.test.js && node src/notifications/pushDeviceRegistry.test.js && node src/notifications/notificationPrefs.test.js && node src/notifications/notificationAndroidNative.test.js && node src/notifications/notificationApns.test.js && node src/notifications/apnsVoipProvider.test.js && node src/notifications/notificationCallRouting.test.js && node src/notifications/notificationRouting.test.js && node src/notifications/notificationIdempotence.test.js && node src/notifications/notificationTokenStale.test.js && node src/utils/messageInsert.test.js",
         "test:calls": "node src/socket/state/callState.test.js",
