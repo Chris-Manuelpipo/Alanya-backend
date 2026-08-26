@@ -52,52 +52,99 @@ function inventorier(dir, acc = []) {
     if (e.isDirectory()) { inventorier(p, acc); continue; }
     const m = e.name.match(/^media_(\d+)_(\d+)\.(.+)$/);
     if (!m) continue;
+    // La taille est relevée ici parce qu'elle est le discriminant PRINCIPAL de
+    // l'appariement : `message.mediaSize` porte le nombre d'octets exact du
+    // fichier envoyé (migration 018). Deux médias d'une même rafale ont presque
+    // toujours des tailles distinctes, là où leurs horodatages peuvent être
+    // séparés de deux millisecondes et dans le désordre.
+    let taille = null;
+    try { taille = fs.statSync(p).size; } catch { /* fichier disparu entre-temps */ }
     acc.push({
       chemin: path.relative(RACINE, p).split(path.sep).join('/'),
       alanyaID: Number(m[1]),
       ts: Number(m[2]),
+      taille,
     });
   }
   return acc;
 }
 
 /**
- * Apparie messages et fichiers, par expéditeur, dans l'ordre chronologique.
+ * Apparie messages et fichiers, par expéditeur, sur la TAILLE d'abord.
  *
- * Un simple « un seul candidat dans la fenêtre » ne suffit pas : quand
- * quelqu'un envoie plusieurs photos d'affilée, tous les fichiers de la rafale
- * tombent dans la fenêtre de tous les messages, et la règle s'abstient
- * partout (409 cas sur 700 au premier essai).
+ * L'appariement purement chronologique s'est révélé faux à 14 % sur les paires
+ * de contrôle (28 erreurs sur 206), et ses erreurs étaient presque toutes des
+ * transpositions entre voisins immédiats — deux fichiers séparés de 2 à 33 ms,
+ * attribués à l'envers. Deux causes se combinent :
  *
- * Or les deux suites sont chronologiques et s'entrelacent : upload, message,
- * upload, message. Traiter les messages du plus ancien au plus récent en
- * prenant à chaque fois le PLUS ANCIEN fichier encore libre de la fenêtre
- * reconstitue donc l'ordre d'envoi. Prendre le plus récent échouerait : le
- * fichier de la photo suivante est déjà déposé quand le message précédent
- * s'enregistre.
+ *  1. `sendAt` n'a qu'une précision à la SECONDE. Tous les messages d'une même
+ *     seconde partagent le même `envoiMs`, donc leur ordre relatif est
+ *     arbitraire — le tri ne peut pas les départager.
+ *  2. Les uploads d'une rafale partent EN PARALLÈLE. Des horodatages distants
+ *     de deux millisecondes reflètent l'ordre d'ARRIVÉE des requêtes, pas
+ *     l'ordre d'envoi voulu par l'utilisateur. L'hypothèse chronologique est
+ *     donc fausse exactement là où on avait besoin d'elle.
+ *
+ * Le signal décisif était déjà en base : `message.mediaSize`, le nombre exact
+ * d'octets du fichier (migration 018). Deux médias d'une même rafale ont
+ * presque toujours des tailles différentes — c'est une signature, là où
+ * l'horodatage n'est qu'un indice.
+ *
+ * La fenêtre temporelle reste utile pour BORNER les candidats ; elle ne sert
+ * plus à les départager. Quand la taille est connue et qu'aucun candidat ne la
+ * porte, on s'ABSTIENT plutôt que de retomber sur la chronologie : l'absence
+ * du bon fichier est une information, pas une invitation à deviner. La règle
+ * de prudence d'origine tient toujours — mieux vaut un média manquant qu'un
+ * média publié dans la mauvaise conversation.
  *
  * @returns Map<msgID, fichier>
  */
-function apparier(messages, parExpediteur) {
+function apparier(messages, parExpediteur, journal = null) {
   const pris = new Set();
   const couples = new Map();
-  // L'ordre global compte : un fichier consommé par un message ancien ne doit
-  // plus être proposé à un message plus récent.
-  const tries = [...messages].sort((a, b) => a.envoiMs - b.envoiMs);
+  // `msgID` départage les messages d'une même seconde : sans lui, l'ordre de
+  // parcours dépend de l'implémentation du tri.
+  const tries = [...messages].sort(
+    (a, b) => (a.envoiMs - b.envoiMs) || (a.msgID - b.msgID),
+  );
 
   for (const msg of tries) {
-    const candidats = (parExpediteur.get(msg.senderID) || []).filter(
+    const fenetre = (parExpediteur.get(msg.senderID) || []).filter(
       (f) => !pris.has(f.chemin)
         && f.ts >= msg.envoiMs - AVANT_MS
         && f.ts <= msg.envoiMs + APRES_MS,
     );
-    if (!candidats.length) continue;
+    if (!fenetre.length) continue;
+
+    const taille = Number(msg.mediaSize);
+    let candidats = fenetre;
+    let motif = 'chronologie';
+
+    if (Number.isFinite(taille) && taille > 0) {
+      const memeTaille = fenetre.filter((f) => f.taille === taille);
+      if (memeTaille.length === 0) {
+        // Taille connue, aucun candidat ne la porte : le bon fichier n'est pas
+        // dans la fenêtre (déjà pris, ou réellement supprimé). Deviner ici,
+        // c'est fabriquer une erreur d'attribution.
+        if (journal) journal.abstentionTaille += 1;
+        continue;
+      }
+      candidats = memeTaille;
+      motif = memeTaille.length === 1 ? 'taille unique' : 'taille + chronologie';
+    } else if (journal) {
+      journal.sansTaille += 1;
+    }
+
     const choisi = candidats[0]; // listes déjà triées par ts croissant
     pris.add(choisi.chemin);
     couples.set(msg.msgID, choisi);
+    if (journal) journal.motifs[motif] = (journal.motifs[motif] || 0) + 1;
   }
   return couples;
 }
+
+/** Compteurs de diagnostic, pour que le verdict explique COMMENT il a décidé. */
+const journalNeuf = () => ({ motifs: {}, abstentionTaille: 0, sansTaille: 0 });
 
 /**
  * Mesure la justesse de l'appariement sur les messages qui ont CONSERVÉ leur
@@ -108,14 +155,15 @@ function apparier(messages, parExpediteur) {
  */
 async function verifier(pool, parExpediteur, tousMessages) {
   const [connus] = await pool.execute(`
-    SELECT msgID, senderID, UNIX_TIMESTAMP(sendAt) * 1000 AS envoiMs, mediaUrl
+    SELECT msgID, senderID, UNIX_TIMESTAMP(sendAt) * 1000 AS envoiMs, mediaUrl, mediaSize
       FROM message
      WHERE mediaUrl IS NOT NULL AND mediaUrl <> ''`);
   const attendu = new Map(
     connus.map((r) => [r.msgID, String(r.mediaUrl).split('/uploads/')[1]]),
   );
 
-  const couples = apparier([...tousMessages, ...connus], parExpediteur);
+  const journal = journalNeuf();
+  const couples = apparier([...tousMessages, ...connus], parExpediteur, journal);
 
   let juste = 0; let faux = 0; let absent = 0;
   const exemplesFaux = [];
@@ -144,6 +192,15 @@ async function verifier(pool, parExpediteur, tousMessages) {
     console.log('  exemples d\'erreurs :');
     for (const e of exemplesFaux) console.log(e);
   }
+  // Comment l'algorithme a tranché : une justesse élevée obtenue surtout par
+  // « chronologie » resterait fragile, puisque c'est précisément l'hypothèse
+  // qui s'était révélée fausse dans les rafales.
+  console.log('  décisions :');
+  for (const [motif, n] of Object.entries(journal.motifs)) {
+    console.log(`    ${motif.padEnd(24)} : ${n}`);
+  }
+  console.log(`    abstention (taille absente de la fenêtre) : ${journal.abstentionTaille}`);
+  console.log(`    messages sans mediaSize en base           : ${journal.sansTaille}`);
   // Zéro erreur sur zéro proposition ne prouve rien : ne jamais afficher un
   // feu vert quand l'algorithme s'est tu (inventaire vide, mauvais dossier).
   if (proposes === 0) {
@@ -183,7 +240,7 @@ async function verifier(pool, parExpediteur, tousMessages) {
   // vidés légitimement après consultation, les remettre ressusciterait un
   // contenu que l'expéditeur voulait éphémère.
   const [cibles] = await pool.execute(`
-    SELECT msgID, senderID, UNIX_TIMESTAMP(sendAt) * 1000 AS envoiMs, mediaName, type
+    SELECT msgID, senderID, UNIX_TIMESTAMP(sendAt) * 1000 AS envoiMs, mediaName, type, mediaSize
       FROM message
      WHERE mediaUrl IS NULL
        AND sendAt < DATE_SUB(NOW(), INTERVAL 30 DAY)
@@ -211,7 +268,8 @@ async function verifier(pool, parExpediteur, tousMessages) {
   console.log(`Fichiers déjà référencés par un message intact : ${dejaPris.size}`);
   console.log(`Messages à restaurer : ${cibles.length}\n`);
 
-  const couples = apparier(cibles, libres);
+  const journal = journalNeuf();
+  const couples = apparier(cibles, libres, journal);
   const retenus = [];
   const introuvables = [];
   for (const msg of cibles) {
@@ -223,6 +281,12 @@ async function verifier(pool, parExpediteur, tousMessages) {
   console.log('── Résultat du rapprochement ──');
   console.log(`  appariés                   : ${retenus.length}`);
   console.log(`  sans fichier correspondant : ${introuvables.length}`);
+  console.log('  dont, par mode de décision :');
+  for (const [motif, n] of Object.entries(journal.motifs)) {
+    console.log(`    ${motif.padEnd(24)} : ${n}`);
+  }
+  console.log(`    abstention (taille absente de la fenêtre) : ${journal.abstentionTaille}`);
+  console.log(`    messages sans mediaSize en base           : ${journal.sansTaille}`);
   if (retenus.length) {
     console.log('\n  échantillon :');
     for (const r of retenus.slice(0, 5)) console.log(`    msg ${r.msgID} → ${r.url}`);
