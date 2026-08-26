@@ -1,4 +1,5 @@
 const pool = require('../../config/db');
+const mediaPolicy = require('../../constants/mediaRetentionPolicy');
 
 // Médias partagés (messages de type image/vidéo/audio/fichier) avec
 // expéditeur + nom de conversation. Renvoie un tableau MediaItem[].
@@ -11,8 +12,15 @@ const getAllMedia = async (req, res) => {
       "m.mediaUrl IS NOT NULL",
       "m.mediaUrl <> ''",
       'm.isDeleted = 0',
+      // Le fichier a beau être supprimé du disque au-delà de la rétention,
+      // `mediaUrl` reste renseignée en base : c'est la conception du stockage
+      // partitionné, qui dérive l'expiration de l'URL plutôt que d'écrire dans
+      // la table la plus chaude. Sans ce filtre, la liste admin afficherait des
+      // médias morts — vignettes vides, aperçus en 410 — et le compteur de
+      // volumétrie serait faux.
+      'm.sendAt >= DATE_SUB(NOW(), INTERVAL ? DAY)',
     ];
-    const params = [];
+    const params = [mediaPolicy.RETENTION.mediaDays];
 
     const typeN = parseInt(type, 10);
     if ([1, 2, 3, 4].includes(typeN)) { where.push('m.type = ?'); params.push(typeN); }
