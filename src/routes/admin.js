@@ -1,7 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const { adminAuth, superAdminAuth } = require('../middleware/adminAuth');
+const { adminAudit } = require('../middleware/adminAudit');
+
+// Journal des actions : monté une fois pour tout le routeur, avant les routes.
+// L'écriture a lieu après la réponse — voir `middleware/adminAudit.js` pour
+// pourquoi ce n'est pas dans les contrôleurs.
+router.use(adminAudit);
 const { getPurges, updatePurge, runPurgeNow } = require('../controllers/admin/purges');
+const { getAudit, getAuditActions } = require('../controllers/admin/audit');
 const {
   adminLogin,
   getStats,
@@ -627,6 +634,11 @@ router.get('/users/:id/activity',          adminAuth, getUserActivity);
  *         description: Historique des connexions
  */
 router.get('/users/:id/logins',            adminAuth, getUserLogins);
+
+// Journal des actions administrateur. Filtrable : sans filtre pour la page
+// « Activité admin », avec `targetType`/`targetId` pour l'encart d'une fiche.
+router.get('/audit',                       adminAuth, getAudit);
+router.get('/audit/actions',               adminAuth, getAuditActions);
 
 /**
  * @swagger
