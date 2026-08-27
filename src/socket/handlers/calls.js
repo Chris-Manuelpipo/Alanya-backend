@@ -1517,7 +1517,19 @@ const confJoin = (io, socket, userSockets) => {
       }
 
       const session = await callSessions.getByUser(inviteeID);
-      if (!session || !callSessions.isPending(session, inviteeID)) return;
+      if (!session || !callSessions.isPending(session, inviteeID)) {
+        // Sortir en silence laissait l'invité sur un écran qui tourne, sans
+        // moyen de distinguer un refus d'une lenteur réseau. Les autres sorties
+        // de ce handler émettent toutes un call_error : celle-ci aussi.
+        console.log(
+          `[Socket call_conf_join] ⛔ aucune invitation en attente user=${inviteeID}`,
+        );
+        socket.emit('call_error', {
+          code: 'CALL_INVITE_NOT_PENDING',
+          callId: session ? session.sessionId : null,
+        });
+        return;
+      }
 
       const { sessionId } = session;
       if (session.pending.acceptedByDeviceId) {
