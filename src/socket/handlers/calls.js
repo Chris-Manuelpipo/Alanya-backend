@@ -2029,18 +2029,39 @@ const callVideoState = (io, socket, userSockets) => {
 };
 
 // Appel de groupe : diffuse l'état caméra à tous les autres participants.
+// Même double routage que `group:mute_state` ci-dessus : une conférence relaie
+// vers les seuls appareils owners de la callSession, un groupe classique passe
+// par la room Socket.IO. Sans la branche conférence, couper ou rallumer sa
+// caméra à trois n'était jamais vu des autres — ils ne sont pas dans la room.
 const groupVideoState = (io, socket, userSockets) => {
-  socket.on('group:video_state', (data) => {
+  socket.on('group:video_state', async (data) => {
     try {
       if (!socket.authenticated) return;
       const rId = (data && data.roomId) || socket.currentGroupRoom;
       if (!rId) return;
 
-      socket.to(`group_${rId}`).emit('group:video_state', {
+      const payload = {
         roomId:    rId,
         userId:    String(socket.alanyaID),
         isVideoOn: !!(data && data.isVideoOn),
-      });
+      };
+
+      const session = await callSessions.getByUser(socket.alanyaID);
+      if (session && String(session.sessionId) === String(rId)) {
+        for (const participantId of callSessions.participantIds(session)) {
+          if (Number(participantId) === Number(socket.alanyaID)) continue;
+          const deviceId = await callDeviceOwnership.getActiveDeviceId(
+            session.sessionId,
+            participantId,
+          );
+          if (deviceId) {
+            emitToDevice(io, participantId, deviceId, 'group:video_state', payload);
+          }
+        }
+        return;
+      }
+
+      socket.to(`group_${rId}`).emit('group:video_state', payload);
     } catch (error) {
       console.error('[Socket group:video_state]', error.message);
     }
