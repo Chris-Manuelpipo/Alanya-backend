@@ -10,6 +10,7 @@ const callState = require('../state/callState');
 const callSessions = require('../state/callSessions');
 const groupRooms = require('../state/groupRooms');
 const callDeviceOwnership = require('../state/callDeviceOwnership');
+const pendingIce = require('../state/pendingIce');
 const {
   emitToUser,
   emitToDevice,
@@ -842,6 +843,22 @@ const answerCall = (io, socket, userSockets) => {
         console.warn('[Socket answer_call] DB update failed:', dbErr.message);
       }
 
+      // Les candidats que l'appelant a émis pendant la sonnerie n'avaient
+      // aucun appareil où aller : le destinataire n'en avait pas encore. Sans
+      // ce rejeu il n'en reçoit jamais aucun — pas une seule paire à tester, et
+      // une allocation TURN sans permission, donc sourde aux tests de
+      // connectivité. L'appel restait muet jusqu'à l'ICE restart de l'appelant,
+      // une vingtaine de secondes plus tard.
+      const bufferedIce = await pendingIce.drain(callKey, receiverID);
+      if (bufferedIce.length) {
+        console.log(
+          `[Socket answer_call] 🧊 ${bufferedIce.length} candidat(s) ICE de la sonnerie rejoué(s) → ${receiverID} device=${deviceId}`,
+        );
+        for (const item of bufferedIce) {
+          emitToDevice(io, receiverID, deviceId, 'ice_candidate', item);
+        }
+      }
+
       const callerDeviceId = await callDeviceOwnership.getActiveDeviceId(callKey, callerID);
       const answeredPayload = {
         answer,
@@ -1010,16 +1027,32 @@ const iceCandidate = (io, socket, userSockets) => {
       if (await callState.hasResumeAckTimer(selfId)) {
         await callState.confirmResume(selfId);
       }
-      const targetDeviceId = await callDeviceOwnership.getActiveDeviceId(callKey, targetID);
-      if (!targetDeviceId) {
-        console.warn(`[Socket ice_candidate] pas de device cible user=${targetID} — drop`);
-        return;
-      }
-      emitToDevice(io, targetID, targetDeviceId, 'ice_candidate', {
+      const relayPayload = {
         candidate,
         ...(data?.generation != null ? { generation: data.generation } : {}),
         ...(data?.callId != null ? { callId: data.callId } : {}),
-      });
+      };
+
+      const targetDeviceId = await callDeviceOwnership.getActiveDeviceId(callKey, targetID);
+      if (!targetDeviceId) {
+        // Le destinataire sonne encore : il n'a pas d'appareil actif avant
+        // d'avoir décroché. Jeter le candidat le laissait sans un seul
+        // candidat distant pour tout l'appel — l'appelant ne les réémet
+        // jamais. On les garde et answer_call les rejoue.
+        const targetEntry = await callDeviceOwnership.getEntry(callKey, targetID);
+        if (targetEntry && targetEntry.state === 'ringing') {
+          const kept = await pendingIce.push(callKey, targetID, relayPayload);
+          if (!kept) {
+            console.warn(
+              `[Socket ice_candidate] tampon plein callId=${callKey} target=${targetID}`,
+            );
+          }
+          return;
+        }
+        console.warn(`[Socket ice_candidate] pas de device cible user=${targetID} — drop`);
+        return;
+      }
+      emitToDevice(io, targetID, targetDeviceId, 'ice_candidate', relayPayload);
     } catch (error) {
       console.error('[Socket ice_candidate]', error.message);
     }

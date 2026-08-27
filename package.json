@@ -12,7 +12,7 @@
         "migrate:media-partitions": "node scripts/maintenance/migrate-media-to-partitions.js",
         "bench:messages": "node scripts/load/socket-message-bench.js",
         "test:notifications": "node src/notifications/notificationContract.test.js && node src/notifications/notificationLogger.test.js && node src/notifications/notificationPolicy.test.js && node src/notifications/pushDeviceRegistry.test.js && node src/notifications/notificationPrefs.test.js && node src/notifications/notificationAndroidNative.test.js && node src/notifications/notificationApns.test.js && node src/notifications/apnsVoipProvider.test.js && node src/notifications/notificationCallRouting.test.js && node src/notifications/notificationRouting.test.js && node src/notifications/notificationIdempotence.test.js && node src/notifications/notificationTokenStale.test.js && node src/utils/messageInsert.test.js",
-        "test:calls": "node src/socket/state/callState.test.js && node src/socket/state/groupRooms.test.js",
+        "test:calls": "node src/socket/state/callState.test.js && node src/socket/state/groupRooms.test.js && node src/socket/state/pendingIce.test.js",
         "test:qr": "node src/socket/state/qrLoginSessions.test.js && node src/socket/state/qrContactTokens.test.js",
         "test:conversations": "node src/utils/conversationParticipantsBatch.test.js && node src/utils/directConversation.test.js && node src/utils/groupHistoryJoinAck.test.js",
         "test:presence": "node src/utils/userSocketRegistry.test.js",
