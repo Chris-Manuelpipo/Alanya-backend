@@ -927,6 +927,31 @@ async function processRejectCall({
     return { ok: false, reason: 'invalid_ids' };
   }
 
+  // Un refus d'invitation en conférence arrive par ce chemin-ci.
+  //
+  // La couche native ne connaît que `POST /calls/reject` : elle n'a jamais su
+  // qu'une conférence existait. Quand CallKit retire une invitation restée sans
+  // réponse — à 40 s, avant le timer serveur de 45 s —, c'est donc un refus
+  // 1-à-1 qu'elle poste, avec un identifiant de session (`conf_…`) que `toInt`
+  // ne sait pas lire. Le garde anti-refus-tardif était sauté, et la suite
+  // traitait ça comme le refus d'un appel simple : l'état serveur de l'inviteur
+  // effacé, `call_rejected` émis vers lui, et son appel en cours avec un tiers
+  // raccroché. Une invitation non répondue suffisait — pas un cas limite.
+  //
+  // On corrige ici plutôt que dans la couche native : le correctif vaut alors
+  // pour les versions déjà installées, qui ne changeront pas.
+  const inviteeSession = await callSessions.getByUser(receiverID);
+  if (inviteeSession && callSessions.isPending(inviteeSession, receiverID)) {
+    console.log(
+      `[processRejectCall] ↪ refus routé vers la session ${inviteeSession.sessionId} `
+      + `(invité=${receiverID}, hint=${callIdHint ?? 'none'})`,
+    );
+    await failInvite(io, inviteeSession.sessionId, 'declined', {
+      decliningDeviceId: normalizeDeviceId(rejectingDeviceId),
+    });
+    return { ok: true, callId: inviteeSession.sessionId, conference: true };
+  }
+
   const hintID = toInt(callIdHint);
   if (hintID) {
     const receiverEntry = await callState.getEntry(toInt(receiverID));
@@ -968,9 +993,26 @@ async function processRejectCall({
     }
   }
 
+  // Deuxième filet, indépendant du premier : ne solder l'appelant que si son
+  // état correspond bien à ce refus-ci. Un refus tardif — a fortiori venu d'un
+  // tiers dont la session a déjà été nettoyée — ne doit pas effacer l'appel
+  // qu'il est en train de mener avec quelqu'un d'autre.
+  const callerEntry = await callState.getEntry(callerID);
+  const callerMatchesReject = !!callerEntry
+    && String(callerEntry.peerId) === String(receiverID)
+    && (callKey == null || String(callerEntry.callId) === callKey);
+
   await pendingCalls.clear(receiverID);
   await callState.clear(receiverID);
-  await callState.clear(callerID);
+  if (callerMatchesReject) {
+    await callState.clear(callerID);
+  } else {
+    console.log(
+      `[processRejectCall] 🛡 état de l'appelant conservé: caller=${callerID} `
+      + `pair=${callerEntry?.peerId ?? 'none'} attendu=${receiverID} `
+      + `callId=${callerEntry?.callId ?? 'none'} refus=${callKey ?? 'none'}`,
+    );
+  }
   if (callKey) await callDeviceOwnership.release(callKey);
 
   try {
@@ -994,11 +1036,16 @@ async function processRejectCall({
     .catch((err) => console.warn('[processRejectCall] finalizeCallAndNotify error:', err.message));
 
   const rejectedCallIdStr = rejectedCallID != null ? String(rejectedCallID) : null;
-  emitToUser(io, callerID, 'call_rejected', { callId: rejectedCallIdStr });
+  // Même règle pour l'avis que pour l'état : on ne prévient l'appelant que si
+  // ce refus concerne l'appel qu'il mène. Le client a désormais sa propre garde
+  // (B4), mais elle ne doit pas être la seule.
+  if (callerMatchesReject) {
+    emitToUser(io, callerID, 'call_rejected', { callId: rejectedCallIdStr });
 
-  notifyCallEnded(callerID, receiverID, 'Destinataire', rejectedCallID, {
-    reason: 'rejected_elsewhere',
-  }).catch((err) => console.warn('[processRejectCall] FCM notifyCallEnded error:', err.message));
+    notifyCallEnded(callerID, receiverID, 'Destinataire', rejectedCallID, {
+      reason: 'rejected_elsewhere',
+    }).catch((err) => console.warn('[processRejectCall] FCM notifyCallEnded error:', err.message));
+  }
 
   const siblingPayload = {
     callId: rejectedCallIdStr,
