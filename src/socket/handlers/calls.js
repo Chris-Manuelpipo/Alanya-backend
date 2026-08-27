@@ -1870,6 +1870,12 @@ const groupOffer = (io, socket, userSockets) => {
       if (!rId || !deviceId || !(await callDeviceOwnership.isOwnerDevice(rId, socket.alanyaID, deviceId))) {
         return;
       }
+      // Signal média = preuve de session locale, comme pour ice_candidate.
+      // Sans cela, un participant de session à trois qui reprend uniquement par
+      // le maillage se faisait solder par resume_ack_timeout.
+      if (await callState.hasResumeAckTimer(socket.alanyaID)) {
+        await callState.confirmResume(socket.alanyaID);
+      }
       const targetDid = await callDeviceOwnership.getActiveDeviceId(rId, targetID);
       if (!targetDid) {
         console.warn(`[Socket group_offer] pas de device cible user=${targetID} — drop`);
@@ -1899,6 +1905,10 @@ const groupAnswer = (io, socket, userSockets) => {
       if (!rId || !deviceId || !(await callDeviceOwnership.isOwnerDevice(rId, socket.alanyaID, deviceId))) {
         return;
       }
+      // Signal média = preuve de session locale, comme pour ice_candidate.
+      if (await callState.hasResumeAckTimer(socket.alanyaID)) {
+        await callState.confirmResume(socket.alanyaID);
+      }
       const targetDid = await callDeviceOwnership.getActiveDeviceId(rId, targetID);
       if (!targetDid) {
         console.warn(`[Socket group_answer] pas de device cible user=${targetID} — drop`);
@@ -1927,6 +1937,10 @@ const groupIceCandidate = (io, socket, userSockets) => {
       const deviceId = normalizeDeviceId(socket.deviceId);
       if (!rId || !deviceId || !(await callDeviceOwnership.isOwnerDevice(rId, socket.alanyaID, deviceId))) {
         return;
+      }
+      // Signal média = preuve de session locale, comme pour ice_candidate.
+      if (await callState.hasResumeAckTimer(socket.alanyaID)) {
+        await callState.confirmResume(socket.alanyaID);
       }
       const targetDid = await callDeviceOwnership.getActiveDeviceId(rId, targetID);
       if (!targetDid) {
