@@ -698,6 +698,24 @@ const callUser = (io, socket, userSockets) => {
       });
       await callDeviceOwnership.ring(callKey, targetID);
 
+      // Marque les deux participants « ringing » AVANT d'émettre incoming_call
+      // et d'armer le timeout (séparément : un handle setTimeout ne se
+      // sérialise pas vers job_queue).
+      //
+      // L'ordre compte, et pas qu'un peu. L'appelant commence à rassembler ses
+      // candidats ICE dès qu'il a posé sa description locale, donc avant même
+      // que `call_user` ne soit traité ici : ses premiers candidats arrivaient
+      // pendant que ce handler tournait encore, et le relais les jetait sans
+      // un mot faute d'entrée callState — c'est-à-dire avant même d'atteindre
+      // le tampon de sonnerie. Poser l'état d'abord ferme cette fenêtre.
+      //
+      // Côté destinataire, c'est la même inversion : une réponse très rapide
+      // (auto-réponse depuis une notification) pouvait arriver avant que
+      // `ringing` ne soit posé et recevoir CALL_NOT_RINGING.
+      await callState.setRinging(targetID, { callId: callID, peerId: callerID, isVideo: !!isVideo });
+      await callState.setRinging(callerID, { callId: callID, peerId: targetID, isVideo: !!isVideo });
+      await callState.scheduleNoAnswer(targetID, () => onNoAnswer(io, userSockets, callID, callerID, targetID));
+
       const incomingPayload = {
         callId:      callKey,
         callerId:    String(callerID),
@@ -724,12 +742,6 @@ const callUser = (io, socket, userSockets) => {
       } else {
         console.warn(`[Socket call_user] ** Utilisateur ${targetID} non trouvé en socket — fallback FCM + rejeu à la reconnexion`);
       }
-
-      // Marque les deux participants « ringing » et arme le timeout côté cible
-      // (séparément : un handle setTimeout ne se sérialise pas vers job_queue).
-      await callState.setRinging(targetID, { callId: callID, peerId: callerID, isVideo: !!isVideo });
-      await callState.scheduleNoAnswer(targetID, () => onNoAnswer(io, userSockets, callID, callerID, targetID));
-      await callState.setRinging(callerID, { callId: callID, peerId: targetID, isVideo: !!isVideo });
 
       notifyIncomingCall(targetID, callerID, callerName, callerPhoto, isVideo, callID)
         .catch((err) => console.warn('[Socket call_user] FCM error:', err.message));
