@@ -11,7 +11,7 @@ const assert = require('assert');
 const pool = require('../../config/db');
 const callDeviceOwnership = require('../state/callDeviceOwnership');
 const groupRooms = require('../state/groupRooms');
-const { leaveGroupCall, endGroupCall, cleanupGroupRoomOnDisconnect } = require('./calls');
+const { leaveGroupCall, endGroupCall, armGroupRoomGraceOnDisconnect } = require('./calls');
 
 const OWNER = 1101;
 const MEMBRE = 1102;
@@ -52,7 +52,9 @@ async function poserOwnership(ids) {
   for (const id of ids) {
     await callDeviceOwnership.setActive(ROOM, id, {
       activeDeviceId: `dev_${id}`,
-      activeSocketId: `s_${id}`,
+      // Doit correspondre à `fakeSocket.id` : la déconnexion compare les deux
+      // pour distinguer une socket périmée d'une chute réelle.
+      activeSocketId: `sock_${id}`,
     });
   }
 }
@@ -108,15 +110,26 @@ async function main() {
     'et c\'est bien le nouvel appareil qui possède la place',
   );
 
-  // ── 3) Déconnexion brutale : même traitement ─────────────────────────────
+  // ── 3) Déconnexion brutale : l'appareil est rendu, la place est tenue ────
   await reset();
   await poserOwnership([OWNER, MEMBRE]);
+  await groupRooms.create(ROOM, { ownerID: OWNER });
+  await groupRooms.join(ROOM, MEMBRE);
+  const ioDrop = fakeIo();
   const sockDrop = fakeSocket(MEMBRE);
-  await cleanupGroupRoomOnDisconnect(fakeIo(), sockDrop);
+  await armGroupRoomGraceOnDisconnect(ioDrop, sockDrop);
   assert.strictEqual(
     await callDeviceOwnership.getActiveDeviceId(ROOM, MEMBRE),
     null,
     'une socket qui tombe rend sa place, sinon la reconnexion se heurte à elle-même',
+  );
+  assert.ok(
+    await groupRooms.getGrace(ROOM, MEMBRE),
+    'mais sa place dans le salon est tenue par une grâce',
+  );
+  assert.strictEqual(
+    ioDrop.emits.filter((e) => e.event === 'group_user_left').length, 0,
+    'et son départ n\'est PAS annoncé dans la seconde — c\'est tout l\'objet de la grâce',
   );
 
   // ── 4) Fin de salle : plus personne ne possède rien ──────────────────────

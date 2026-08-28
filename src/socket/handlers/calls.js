@@ -10,6 +10,7 @@ const callState = require('../state/callState');
 const callSessions = require('../state/callSessions');
 const groupRooms = require('../state/groupRooms');
 const callDeviceOwnership = require('../state/callDeviceOwnership');
+const { runGroupLeaveCascade } = require('../../services/groupRoomWorkers');
 const pendingIce = require('../state/pendingIce');
 const {
   emitToUser,
@@ -242,30 +243,69 @@ async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
 }
 
 /**
- * Nettoyage à la déconnexion : retire l'utilisateur de sa room d'appel de
- * groupe. Sans lui, chaque crash/kill d'app en plein appel laissait une entrée
- * `groupRooms` immortelle (fuite mémoire) et un participant fantôme qui finit
- * par rendre la room « complète » — et les autres membres n'apprenaient jamais
- * le départ.
+ * Déconnexion d'un participant d'appel de groupe : on ne l'annonce plus, on
+ * arme une grâce.
+ *
+ * Il y a deux modes de panne, et un seul demande une grâce.
+ *
+ * Le mode dominant est que le participant est DÉJÀ REVENU quand cette fonction
+ * s'exécute : Socket.IO ne constate la chute qu'au bout de son ping (25 s
+ * d'intervalle, 20 s de patience), alors que le client se reconnecte et rejoue
+ * `join_group_call` en deux secondes. Annoncer un départ à ce moment-là — ce
+ * que faisait cette fonction — expulsait quelqu'un de présent. La garde de
+ * socket périmée ci-dessous suffit à ce cas, et c'est le plus fréquent.
+ *
+ * Le mode minoritaire est la chute constatée avant le retour. C'est celui que la
+ * grâce couvre : la place est tenue quinze secondes, et l'annonce n'est faite
+ * qu'à l'échéance, par le worker, si personne n'est revenu.
  */
-async function cleanupGroupRoomOnDisconnect(io, socket) {
+async function armGroupRoomGraceOnDisconnect(io, socket) {
   const rId = socket.currentGroupRoom;
+  socket.currentGroupRoom = null;
   if (!rId) return;
+  const userID = socket.alanyaID;
+  // Sans identité, il n'y a personne à faire partir. L'annonce vivait hors de
+  // cette garde et diffusait `userId: "null"`.
+  if (userID == null) return;
+
   try {
-    if (socket.alanyaID != null) {
-      await groupRooms.leave(rId, socket.alanyaID);
-      // Une socket qui tombe libère son appareil : à la reconnexion il
-      // reprendra sa place, alors qu'une entrée figée l'en empêcherait.
-      await callDeviceOwnership.forget(String(rId), socket.alanyaID);
+    const roomKey = String(rId);
+
+    // Une socket plus récente du même compte tient déjà la place : cette
+    // déconnexion est celle d'un fantôme. `tryClaim` réécrit `activeSocketId` à
+    // chaque revendication, y compris quand l'appareil était déjà propriétaire —
+    // c'est ce qui rend la comparaison fiable.
+    //
+    // Comparer les sockets et non les appareils : un retour sur le MÊME
+    // téléphone garde le même identifiant d'appareil, et une garde par appareil
+    // armerait donc une grâce sur quelqu'un qui vient de revenir — le rejoin
+    // étant passé avant, plus rien ne l'annulerait.
+    const entry = await callDeviceOwnership.getEntry(roomKey, userID);
+    if (entry?.activeSocketId && entry.activeSocketId !== socket.id) {
+      console.log(
+        `[Socket disconnect] socket périmée ignorée user=${userID} room=${rId}`,
+      );
+      return;
     }
-    socket.to(`group_${rId}`).emit('group_user_left', {
-      roomId: rId,
-      userId: String(socket.alanyaID),
-    });
+
+    // Échec ouvert : entrée absente ou sans socket, on arme quand même. Ne rien
+    // faire laisserait le participant au roster jusqu'à l'expiration des clés.
+    //
+    // La place dans le salon est tenue, mais l'appareil est libéré tout de
+    // suite : c'est ce qui permet de revenir depuis un AUTRE téléphone.
+    await callDeviceOwnership.forget(roomKey, userID);
+    const jeton = await groupRooms.armGrace(
+      rId, userID, () => runGroupLeaveCascade(io, rId, userID),
+    );
+    if (jeton == null) {
+      // Salon disparu ou participant déjà sorti : il n'y a rien à quitter.
+      return;
+    }
+    console.log(
+      `[Socket disconnect] Grâce groupe armée user=${userID} room=${rId} jeton=${jeton}`,
+    );
   } catch (e) {
-    console.warn('[Socket disconnect] group room cleanup failed:', e.message);
-  } finally {
-    socket.currentGroupRoom = null;
+    console.warn('[Socket disconnect] group room grace failed:', e.message);
   }
 }
 
@@ -1779,6 +1819,9 @@ const createGroupCall = (io, socket, userSockets) => {
       if (!socket.authenticated) return;
       const { roomId, callerId, callerName, callerPhoto, isVideo, targetUserIds } = data;
       if (!roomId || !Array.isArray(targetUserIds)) return;
+      if (!groupRooms.isValidRoomId(String(roomId))) {
+        return socket.emit('call_error', { code: 'INVALID_ROOM_ID' });
+      }
 
       const callerID = socket.alanyaID;
       const videoCall = !!isVideo;
@@ -1845,6 +1888,11 @@ const joinGroupCall = (io, socket, userSockets) => {
       if (!socket.authenticated) return;
       const { roomId, userId, userName, userPhoto } = data;
       if (!roomId) return;
+      // L'identifiant vient du client et alimente l'espace de clés Redis ainsi
+      // que la clé de déduplication des jobs, un VARCHAR(128).
+      if (!groupRooms.isValidRoomId(String(roomId))) {
+        return socket.emit('call_error', { code: 'INVALID_ROOM_ID' });
+      }
 
       const userID = socket.alanyaID;
       if (userId != null && toInt(userId) != null && toInt(userId) !== userID) {
@@ -1878,6 +1926,12 @@ const joinGroupCall = (io, socket, userSockets) => {
         userName: userName || '', userPhoto: userPhoto || null,
       });
       if (!entree.ok) {
+        // Le salon a été terminé pendant qu'on essayait d'entrer : sans la
+        // pierre tombale, `join` l'aurait ressuscité en audio et sans
+        // organisateur.
+        if (entree.code === 'ROOM_ENDED') {
+          return socket.emit('group_call_ended', { roomId: roomKey });
+        }
         return socket.emit('error', {
           message: `Cet appel ${entree.isVideo ? 'vidéo' : 'audio'} est complet (${entree.limite} participants max)`,
           code: 'GROUP_CALL_FULL',
@@ -1901,13 +1955,6 @@ const joinGroupCall = (io, socket, userSockets) => {
         }).catch(() => {});
       }
 
-      socket.to(`group_${roomId}`).emit('group_user_joined', {
-        roomId,
-        userId:    String(userID),
-        userName:  userName  || '',
-        userPhoto: userPhoto || null,
-      });
-
       // `participants` n'était déclaré nulle part : la ligne levait une
       // ReferenceError que le catch en fin de handler avalait en une ligne de
       // log. Tout ce qui précède avait réussi — l'arrivant était bien dans la
@@ -1916,8 +1963,24 @@ const joinGroupCall = (io, socket, userSockets) => {
       // lui-même et à celui qui l'avait invité : les états micro et caméra des
       // autres lui arrivaient bien, mais tombaient dans le `containsKey` du
       // client, et leurs tuiles restaient absentes de la grille.
+      //
+      // Sa liste part AVANT l'annonce aux autres : c'est elle qui déclenche,
+      // côté arrivant, la réaffirmation de ses propres états média. L'ordre
+      // inverse faisait courir les deux gestes l'un contre l'autre.
       const participantIds = Array.from(room.participants.keys()).map(String);
-      socket.emit('group_participants', { roomId, participants: participantIds });
+      socket.emit('group_participants', {
+        roomId, participants: participantIds, resumed: !!entree.reprise,
+      });
+
+      socket.to(`group_${roomId}`).emit('group_user_joined', {
+        roomId,
+        userId:    String(userID),
+        userName:  userName  || '',
+        userPhoto: userPhoto || null,
+        // Additif : dit aux autres que c'est un retour de coupure, pas une
+        // arrivée. Aucun client ne le lit encore.
+        resumed:   !!entree.reprise,
+      });
     } catch (error) {
       console.error('[Socket join_group_call]', error.message);
     }
@@ -1929,9 +1992,14 @@ const leaveGroupCall = (io, socket, userSockets) => {
     try {
       if (!socket.authenticated) return;
       const { roomId } = data || {};
-      if (roomId && socket.alanyaID) await groupRooms.leave(roomId, socket.alanyaID);
-
+      // Le repli sur `currentGroupRoom` doit précéder le retrait : sans
+      // `roomId` dans le payload, rien n'était purgé du salon alors que le
+      // départ était bel et bien annoncé — un participant fantôme y restait.
       const rId = roomId || socket.currentGroupRoom;
+      if (rId && socket.alanyaID) {
+        await groupRooms.leave(rId, socket.alanyaID);
+      }
+
       if (rId) {
         // Sans cette libération, l'entrée restait `active` sur l'appareil qui
         // vient de partir : rejoindre la même salle depuis un autre appareil
@@ -2510,7 +2578,7 @@ module.exports = {
   joinGroupCall,
   leaveGroupCall,
   endGroupCall,
-  cleanupGroupRoomOnDisconnect,
+  armGroupRoomGraceOnDisconnect,
   groupOffer,
   groupAnswer,
   groupIceCandidate,

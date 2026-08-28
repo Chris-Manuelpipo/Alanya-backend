@@ -3,7 +3,7 @@ const { emitPresenceUpdate } = require('../../../utils/blockUtils');
 const pendingCalls = require('../../state/pendingCalls');
 const { runMeetingDisconnectCascade } = require('../../../services/meetingWorkers');
 const callState = require('../../state/callState');
-const { endActiveCallForUser, cleanupGroupRoomOnDisconnect } = require('../calls');
+const { endActiveCallForUser, armGroupRoomGraceOnDisconnect } = require('../calls');
 const callDeviceOwnership = require('../../state/callDeviceOwnership');
 const meetingDevicePresence = require('../../state/meetingDevicePresence');
 const { normalizeDeviceId } = require('../../../utils/deviceId');
@@ -140,8 +140,10 @@ const handleDisconnect = async (io, socket, userSockets) => {
   }
 
   // Appel de groupe : symétrique du bloc meetings ci-dessous. Sans lui, un
-  // crash d'app en plein appel laissait un participant fantôme à vie.
-  await cleanupGroupRoomOnDisconnect(io, socket);
+  // crash d'app en plein appel laissait un participant fantôme à vie. Comme le
+  // 1-à-1 juste au-dessus et les réunions juste en dessous, le départ passe
+  // désormais par une grâce — il n'est plus annoncé dans la seconde.
+  await armGroupRoomGraceOnDisconnect(io, socket);
 
   const meetingID = socket.currentMeetingID;
   if (meetingID) {

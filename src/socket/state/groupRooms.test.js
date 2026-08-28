@@ -80,16 +80,20 @@ const A = 1; const B = 2; const C = 3;
   await groupRooms.create('r4', { isVideo: false, ownerID: A, ownerInfo: null });
   await groupRooms.join('r4', B, null);
   let d = await groupRooms.leave('r4', B);
-  assert.deepStrictEqual(d, { restants: 1, detruit: false });
+  assert.deepStrictEqual(d, { restants: 1, detruit: false, etaitOrganisateur: false },
+    'B n\'était pas organisateur');
   assert.ok(await groupRooms.get('r4'), 'salon encore là');
   d = await groupRooms.leave('r4', A);
-  assert.deepStrictEqual(d, { restants: 0, detruit: true });
+  assert.deepStrictEqual(d, { restants: 0, detruit: true, etaitOrganisateur: true },
+    'A l\'était — et le salon disparaît avec lui');
   assert.strictEqual(await groupRooms.get('r4'), null,
     'salon vide supprimé — sinon un participant fantôme le rendrait « complet »');
 
   // Retirer quelqu'un d'absent ne casse rien.
-  assert.deepStrictEqual(await groupRooms.leave('r4', A), { restants: 0, detruit: false });
-  assert.deepStrictEqual(await groupRooms.leave(null, A), { restants: 0, detruit: false });
+  assert.deepStrictEqual(await groupRooms.leave('r4', A),
+    { restants: 0, detruit: false, etaitOrganisateur: false });
+  assert.deepStrictEqual(await groupRooms.leave(null, A),
+    { restants: 0, detruit: false, etaitOrganisateur: false });
 
   // ── destroy ───────────────────────────────────────────────────────────────
   await groupRooms.create('r5', { isVideo: false, ownerID: A, ownerInfo: null });

@@ -95,6 +95,9 @@ const {
   registerMeetingJobHandlers, setIo: setMeetingIo,
 } = require('./src/services/meetingWorkers');
 const {
+  registerGroupRoomJobHandlers, setIo: setGroupRoomIo,
+} = require('./src/services/groupRoomWorkers');
+const {
   registerCallSessionsJobHandlers, setIo: setCallSessionsIo,
   setUserSockets: setCallSessionsUserSockets,
 } = require('./src/services/callSessionsWorkers');
@@ -319,6 +322,14 @@ async function start() {
     registerCallStateJobHandlers();
     setMeetingIo(io);
     registerMeetingJobHandlers();
+    setGroupRoomIo(io);
+    // Conditionné à Redis, contrairement aux voisins : en repli mémoire, la
+    // grâce d'un salon de groupe vit dans un `setTimeout` local et ne passe
+    // jamais par la file. Une instance en mémoire qui enregistrerait ce type
+    // verrouillerait un job créé par une instance Redis, lirait sa Map vide,
+    // obtiendrait « rien à consommer », et la ligne serait supprimée comme un
+    // succès — la grâce évaporée sans que personne ne parte.
+    if (REDIS_ENABLED) registerGroupRoomJobHandlers();
     setCallSessionsIo(io);
     setCallSessionsUserSockets(userSockets);
     registerCallSessionsJobHandlers();
