@@ -42,13 +42,21 @@ const dedupe = (roomId, userId) => `grp_${roomId}_${Number(userId)}`;
 
 // L'identifiant de salon vient du client et alimente l'espace de clés Redis
 // ainsi que `dedupe_key`, un VARCHAR(128). Rien ne garantissait sa forme.
-const ROOM_ID_RE = /^[A-Za-z0-9_:-]{1,64}$/;
+//
+// Le deux-points est exclu, et pas par excès de prudence : les clés dérivées se
+// suffixent (`:p`, `:g`, `:seq`, `:dead`), donc `metaKeyOf('abc:p')` et
+// `partKeyOf('abc')` désignent le même hash. Un client pouvait ainsi écrire les
+// métadonnées d'un salon par-dessus les participants d'un autre. Les
+// identifiants réellement produits sont de la forme `group_<conv>_<ms>` et n'en
+// contiennent aucun.
+const ROOM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 function isValidRoomId(roomId) {
   return typeof roomId === 'string' && ROOM_ID_RE.test(roomId);
 }
 
 const _rooms = new Map(); // repli mémoire : roomId -> { isVideo, participants: Map, ownerID, graces: Map }
 let _seq = 0;             // jetons de grâce du repli mémoire
+const _tombes = new Map(); // repli mémoire : roomId -> échéance de la pierre tombale
 
 function _roomVide(isVideo, ownerID) {
   return {
@@ -124,6 +132,7 @@ async function create(roomId, { isVideo = false, ownerID = null, ownerInfo = nul
     return room;
   }
   _viderGraces(_rooms.get(roomId));
+  _tombes.delete(roomId);
   _rooms.set(roomId, room);
   return room;
 }
@@ -244,6 +253,7 @@ async function join(roomId, userID, info = null) {
     return { ok: true, room: await get(roomId), reprise: !!res.reprise };
   }
 
+  if (_estTombe(roomId)) return { ok: false, code: 'ROOM_ENDED' };
   let room = _rooms.get(roomId);
   if (!room || !(room.participants instanceof Map)) {
     room = _roomVide(false, null);
@@ -351,7 +361,16 @@ async function _echoir(roomId, userID, jeton, onExpire) {
  * volontaire, une fin de salon, ou ce même job rejoué.
  */
 async function expireGrace(roomId, userID, jeton) {
-  return _retirer(roomId, userID, String(jeton ?? ''));
+  // Un jeton absent ne vaut PAS « retire sans condition » : c'est la sémantique
+  // de `leave`, et l'emprunter par accident — un champ manquant dans la charge
+  // utile d'un job — ferait éjecter quelqu'un que rien ne condamnait.
+  const j = String(jeton ?? '');
+  if (j === '') {
+    return {
+      consomme: false, present: false, restants: 0, detruit: false, etaitOrganisateur: false,
+    };
+  }
+  return _retirer(roomId, userID, j);
 }
 
 /** Désarme sans retirer — le participant s'en va de lui-même. */
@@ -470,12 +489,24 @@ async function destroy(roomId) {
   const room = _rooms.get(roomId);
   _viderGraces(room);
   _rooms.delete(roomId);
+  // Parité avec le chemin Redis : sans pierre tombale, un client en retard
+  // rejoint et ressuscite le salon en audio et sans organisateur.
+  _tombes.set(roomId, Date.now() + TOMBE_SECONDES * 1000);
+}
+
+function _estTombe(roomId) {
+  const jusqua = _tombes.get(roomId);
+  if (jusqua == null) return false;
+  if (jusqua > Date.now()) return true;
+  _tombes.delete(roomId);
+  return false;
 }
 
 /** Réservé aux tests du repli mémoire. */
 function _reset() {
   for (const room of _rooms.values()) _viderGraces(room);
   _rooms.clear();
+  _tombes.clear();
   _seq = 0;
 }
 

@@ -206,12 +206,46 @@ async function main() {
     'et son ancien jeton est sans effet',
   );
 
+  // ── 9b) Un jeton absent n'est PAS un retrait inconditionnel ─────────────
+  groupRooms._reset();
+  await groupRooms.create('g9', { isVideo: false, ownerID: A, ownerInfo: null });
+  await groupRooms.join('g9', B, null);
+  await groupRooms.armGrace('g9', B, () => {}, 60_000);
+  for (const absent of [undefined, null, '']) {
+    const r = await groupRooms.expireGrace('g9', B, absent);
+    assert.strictEqual(r.consomme, false, `jeton ${String(absent)} ne consomme rien`);
+  }
+  assert.ok(
+    (await groupRooms.get('g9')).participants.has(B),
+    'un champ manquant dans un job ne doit éjecter personne',
+  );
+
+  // ── 9c) Un salon terminé ne ressuscite pas, même en repli mémoire ───────
+  groupRooms._reset();
+  await groupRooms.create('g10', { isVideo: true, ownerID: A, ownerInfo: null });
+  await groupRooms.destroy('g10');
+  const tardif = await groupRooms.join('g10', B, null);
+  assert.strictEqual(tardif.ok, false, 'un client en retard ne ressuscite pas le salon');
+  assert.strictEqual(tardif.code, 'ROOM_ENDED');
+  // Mais une VRAIE recréation lève la pierre tombale.
+  await groupRooms.create('g10', { isVideo: true, ownerID: A, ownerInfo: null });
+  assert.strictEqual(
+    (await groupRooms.join('g10', B, null)).ok, true,
+    'recréer le salon doit le rouvrir',
+  );
+
   // ── 10) Un identifiant de salon aberrant est refusé ──────────────────────
   assert.strictEqual(groupRooms.isValidRoomId('group_42_1724800000000'), true);
   assert.strictEqual(groupRooms.isValidRoomId(''), false);
   assert.strictEqual(groupRooms.isValidRoomId('a'.repeat(65)), false, 'trop long');
   assert.strictEqual(groupRooms.isValidRoomId('salle avec espace'), false);
   assert.strictEqual(groupRooms.isValidRoomId('alanya:*'), false, 'pas de joker Redis');
+  // Les clés dérivées se suffixent : `metaKeyOf('abc:p')` et `partKeyOf('abc')`
+  // désignent le même hash. Un client pouvait écrire par-dessus un autre salon.
+  assert.strictEqual(
+    groupRooms.isValidRoomId('abc:p'), false,
+    'le deux-points ferait entrer en collision les clés dérivées',
+  );
   assert.strictEqual(groupRooms.isValidRoomId(null), false);
 
   groupRooms._reset();
