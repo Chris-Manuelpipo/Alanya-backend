@@ -5,6 +5,7 @@ const {
   normalizeIncomingPayload,
   isV2Payload,
   stringifyData,
+  sanitizeAvatarUrl,
 } = require('./notificationContract');
 
 const run = () => {
@@ -110,6 +111,51 @@ const run = () => {
   });
   assert.strictEqual(withoutIds.msgID, undefined, 'msgID absent si non fourni');
   assert.ok(!('msgID' in withoutIds), 'la clé msgID est retirée, pas mise à vide');
+
+  // ── Avatars ────────────────────────────────────────────────────────────
+  // Une sentinelle non filtrée est pire qu'une absence : elle rend le champ
+  // truthy, donc pose `mutable-content: 1` sur iOS et déclenche un
+  // téléchargement Android, pour une URL qui n'en est pas une.
+  assert.strictEqual(sanitizeAvatarUrl('NON DEFINI'), '');
+  assert.strictEqual(sanitizeAvatarUrl('indefini'), '');
+  assert.strictEqual(sanitizeAvatarUrl('undefined'), '');
+  assert.strictEqual(sanitizeAvatarUrl('null'), '');
+  assert.strictEqual(sanitizeAvatarUrl('  '), '');
+  assert.strictEqual(sanitizeAvatarUrl(null), '');
+  assert.strictEqual(sanitizeAvatarUrl(undefined), '');
+
+  // Ancien hôte réécrit vers le domaine actuel, en http comme en https.
+  assert.strictEqual(
+    sanitizeAvatarUrl('https://158.220.107.211/uploads/images/a.jpg'),
+    'https://www.alanya237.com/uploads/images/a.jpg',
+  );
+  assert.strictEqual(
+    sanitizeAvatarUrl('http://158.220.107.211/uploads/images/a.jpg'),
+    'https://www.alanya237.com/uploads/images/a.jpg',
+  );
+
+  // http rejeté : Android l'accepterait, iOS non (ATS).
+  assert.strictEqual(sanitizeAvatarUrl('http://exemple.test/a.jpg'), '');
+  assert.strictEqual(sanitizeAvatarUrl('/uploads/images/a.jpg'), '');
+
+  const ok = 'https://www.alanya237.com/uploads/images/a.jpg';
+  assert.strictEqual(sanitizeAvatarUrl(ok), ok);
+  assert.strictEqual(sanitizeAvatarUrl(`  ${ok}  `), ok);
+
+  // Le contrat applique l'assainissement, quel que soit l'appelant.
+  const avatars = buildMessagePayload({
+    conversationId: 1, senderId: 2, senderName: 'A', body: 'x',
+    senderAvatar: 'NON DEFINI',
+    groupAvatar: 'https://158.220.107.211/uploads/images/g.jpg',
+    isGroup: true,
+    groupName: 'Equipe',
+  });
+  assert.strictEqual(avatars.senderAvatar, '', 'sentinelle → chaîne vide');
+  assert.strictEqual(
+    avatars.groupAvatar,
+    'https://www.alanya237.com/uploads/images/g.jpg',
+    'hôte legacy réécrit dans le payload',
+  );
 
   console.log('notificationContract.test.js: OK');
 };

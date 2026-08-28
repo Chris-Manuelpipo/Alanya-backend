@@ -53,6 +53,49 @@ const stringifyData = (data = {}) =>
  */
 const asString = (value) => (value == null ? '' : String(value));
 
+/** Valeurs sentinelle stockées en base à la place d'une URL absente. */
+const AVATAR_PLACEHOLDERS = Object.freeze([
+  'non defini',
+  'indefini',
+  'undefined',
+  'null',
+]);
+
+/** Ancien hôte du backend, encore présent dans les lignes `avatar_url` d'époque. */
+const LEGACY_MEDIA_HOST = /^https?:\/\/158\.220\.107\.211/;
+const MEDIA_HOST = 'https://www.alanya237.com';
+
+/**
+ * Rend une URL d'avatar utilisable par un client natif, ou la chaîne vide.
+ *
+ * Portage serveur de `normalizeAvatarUrl` (backend_url.dart) : le client Flutter
+ * assainit déjà ce qu'il lit de l'API, mais Kotlin et le Service Extension iOS
+ * consomment le payload push directement — sans équivalent de ce nettoyage, ils
+ * héritaient de deux pièges bien réels de la colonne `users.avatar_url` :
+ *
+ * 1. Les sentinelles littérales (« NON DEFINI »…). Non filtrées, elles rendent
+ *    `data.senderAvatar` truthy : `_buildApnsConfig` posait alors
+ *    `mutable-content: 1` et Android lançait un téléchargement, pour une URL qui
+ *    n'en est pas une.
+ * 2. L'ancien hôte `158.220.107.211`, laissé par les lignes antérieures à la
+ *    migration de domaine — injoignable en HTTPS valide aujourd'hui.
+ *
+ * `http://` est rejeté plutôt que réécrit : Android l'accepterait
+ * (`usesCleartextTraffic="true"`), iOS non (ATS). Une URL qui ne marche que sur
+ * une plateforme est un défaut plus coûteux qu'une photo absente sur les deux.
+ *
+ * @param {unknown} raw
+ * @returns {string} URL https, ou '' si rien d'exploitable
+ */
+const sanitizeAvatarUrl = (raw) => {
+  const value = asString(raw).trim();
+  if (!value) return '';
+  if (AVATAR_PLACEHOLDERS.includes(value.toLowerCase())) return '';
+
+  const rewritten = value.replace(LEGACY_MEDIA_HOST, MEDIA_HOST);
+  return rewritten.startsWith('https://') ? rewritten : '';
+};
+
 /**
  * Construit le payload v2 pour une notification message.
  * Rétrocompatible : les champs legacy (title, body, callerId) sont conservés.
@@ -96,13 +139,15 @@ const buildMessagePayload = (input = {}) => {
     conversationId: input.conversationId,
     senderId: input.senderId,
     senderName,
-    senderAvatar: input.senderAvatar ?? '',
+    // Assaini ici, et pas chez les appelants : c'est le point de passage unique
+    // des trois consommateurs (MessageNotificationHelper, NSE iOS, Flutter).
+    senderAvatar: sanitizeAvatarUrl(input.senderAvatar),
     title,
     body: isGroup && senderName ? `${senderName}: ${body}` : body,
     msgType: input.msgType ?? 0,
     isGroup: isGroup ? '1' : '0',
     groupName,
-    groupAvatar: input.groupAvatar ?? '',
+    groupAvatar: sanitizeAvatarUrl(input.groupAvatar),
     sentAt,
     unreadTotal: input.unreadTotal ?? '',
     // Legacy aliases consumed by le client actuel
@@ -220,6 +265,7 @@ module.exports = {
   buildTripPayload,
   generateEventId,
   stringifyData,
+  sanitizeAvatarUrl,
   buildMessagePayload,
   buildMessageReadSyncPayload,
   normalizeIncomingPayload,
