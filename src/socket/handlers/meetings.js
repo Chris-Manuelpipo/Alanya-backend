@@ -192,6 +192,19 @@ const meetingJoinAccept = (io, socket, userSockets) => {
   socket.on('meeting:join_accept', async (data) => {
     if (!socket.authenticated) return;
     const { meetingID, userID } = data;
+    // Admettre quelqu'un est un geste d'organisateur, comme terminer la
+    // réunion. Sans ce contrôle, n'importe quel compte authentifié pouvait
+    // diffuser un `meeting:user_joined` dans une salle où il n'était pas, et
+    // faire ouvrir aux participants une PeerConnection vers un inconnu :
+    // `socket.to(room)` n'exige pas d'appartenir à la room.
+    if (!(await isOrganiser(socket, meetingID))) {
+      console.warn(
+        `[Socket meeting:join_accept] refusé: user=${socket.alanyaID} n'organise pas ${meetingID}`,
+      );
+      return socket.emit('error', {
+        message: 'Seul l\'organisateur peut admettre un participant',
+      });
+    }
     const uID = toInt(userID);
     if (uID) {
       emitToUser(io, uID, 'meeting:accepted', { meetingID });
@@ -225,9 +238,10 @@ const meetingJoinAccept = (io, socket, userSockets) => {
 };
 
 const meetingJoinDecline = (io, socket, userSockets) => {
-  socket.on('meeting:join_decline', (data) => {
+  socket.on('meeting:join_decline', async (data) => {
     if (!socket.authenticated) return;
     const { meetingID, userID } = data;
+    if (!(await isOrganiser(socket, meetingID))) return;
     const uid = toInt(userID);
     if (uid) {
       emitToUser(io, uid, 'meeting:declined', { meetingID });

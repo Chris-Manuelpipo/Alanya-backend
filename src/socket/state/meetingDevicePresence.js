@@ -29,6 +29,16 @@ const GRACE_KIND = 'meeting_disconnect_grace';
 const dedupe = (meetingId, userId) => `meeting_presence_${Number(meetingId)}_${Number(userId)}`;
 const keyOf = (meetingId) => `alanya:meetingDevicePresence:${Number(meetingId)}`;
 
+// Filet de dernier recours sur la clé de présence.
+//
+// Elle se vide normalement d'elle-même : chaque départ retire son champ et
+// Redis efface un hash vide, `meeting:end` la supprime d'un coup. Mais rien ne
+// couvrait le cas où un champ survit à tout le monde — cascade de grâce perdue
+// avec le redémarrage qui l'attendait, réunion jamais close. La clé restait
+// alors immortelle, et son occupant fantôme empêchait le compte de revenir
+// depuis un autre appareil. Six heures dépassent largement toute réunion.
+const TTL_SECONDES = 6 * 60 * 60;
+
 function _mid(meetingId) {
   const n = Number(meetingId);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -148,6 +158,7 @@ local entry = {
   graceArmedAt = cjson.null,
 }
 redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(entry))
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[5]))
 return cjson.encode({ok=true, resumed=resumed})
 `;
 
@@ -156,7 +167,7 @@ async function _redisTryJoin(client, mid, uid, did, socketId) {
     client,
     TRY_JOIN_SCRIPT,
     [keyOf(mid)],
-    [String(uid), did, socketId ?? '', Date.now()],
+    [String(uid), did, socketId ?? '', Date.now(), String(TTL_SECONDES)],
   );
   return JSON.parse(raw);
 }
@@ -180,6 +191,7 @@ async function _redisArmDisconnectGrace(client, meetingId, userId, ms) {
   const graceArmedAt = Date.now();
   entry.graceArmedAt = graceArmedAt;
   await client.hSet(keyOf(mid), String(Number(userId)), JSON.stringify(entry));
+  await client.expire(keyOf(mid), TTL_SECONDES);
   await cancelByDedupeKey(dedupe(mid, userId), [GRACE_KIND]);
   await enqueue(
     GRACE_KIND,
@@ -196,6 +208,7 @@ async function _redisCancelDisconnectGrace(client, meetingId, userId) {
   if (entry && entry.graceArmedAt != null) {
     entry.graceArmedAt = null;
     await client.hSet(keyOf(mid), String(Number(userId)), JSON.stringify(entry));
+  await client.expire(keyOf(mid), TTL_SECONDES);
   }
   await cancelByDedupeKey(dedupe(mid, userId), [GRACE_KIND]);
 }
