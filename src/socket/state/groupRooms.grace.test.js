@@ -153,6 +153,27 @@ async function main() {
   assert.strictEqual(groupRooms._pendingGraceCount(), 1, 'une grâce court');
   await attendre(80);
   assert.strictEqual(echue, true, 'le repli mémoire déclenche bien à l\'échéance');
+  // Et il fait le travail complet, pas seulement l'annonce : n'appeler que la
+  // cascade laissait le participant annoncé parti mais toujours au salon — le
+  // fantôme que le retrait immédiat d'avant la grâce existait pour éviter.
+  assert.ok(
+    !(await groupRooms.get('g7'))?.participants?.has(B),
+    'l\'échéance doit AUSSI retirer le participant, comme le fait le worker',
+  );
+
+  // Et si quelqu'un est revenu entre-temps, l'échéance ne fait rien du tout.
+  groupRooms._reset();
+  await groupRooms.create('g7c', { isVideo: false, ownerID: A, ownerInfo: null });
+  await groupRooms.join('g7c', B, null);
+  let annonce = false;
+  await groupRooms.armGrace('g7c', B, () => { annonce = true; }, 30);
+  await groupRooms.join('g7c', B, null); // il revient
+  await attendre(80);
+  assert.strictEqual(annonce, false, 'aucune annonce de départ pour un revenant');
+  assert.ok(
+    (await groupRooms.get('g7c')).participants.has(B),
+    'et il reste bien dans le salon',
+  );
 
   // Et une remise à zéro annule ce qui courait : compter les entrées ne prouve
   // rien (la table est vidée de toute façon), il faut vérifier que le rappel ne

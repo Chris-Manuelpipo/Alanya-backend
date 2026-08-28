@@ -303,8 +303,8 @@ async function armGrace(roomId, userID, onExpire, ms = GRACE_MS) {
     // Sans worker dans CE process, la ligne resterait en base et la place serait
     // gelée jusqu'au TTL. Le doublon est sans danger : `expireGrace` consomme le
     // jeton atomiquement, le second déclencheur obtient `consomme:false`.
-    if (!isJobWorkerEnabled() && typeof onExpire === 'function') {
-      setTimeout(() => { Promise.resolve(onExpire()).catch(() => {}); }, ms).unref();
+    if (!isJobWorkerEnabled()) {
+      setTimeout(() => { _echoir(roomId, uid, jeton, onExpire); }, ms).unref();
     }
     return jeton;
   }
@@ -317,12 +317,31 @@ async function armGrace(roomId, userID, onExpire, ms = GRACE_MS) {
   if (precedente) clearTimeout(precedente.timer);
   _seq += 1;
   const jeton = String(_seq);
-  const timer = setTimeout(() => {
-    Promise.resolve(typeof onExpire === 'function' ? onExpire() : null).catch(() => {});
-  }, ms);
+  const timer = setTimeout(() => { _echoir(roomId, uid, jeton, onExpire); }, ms);
   if (typeof timer.unref === 'function') timer.unref();
   room.graces.set(uid, { jeton, timer });
   return jeton;
+}
+
+/**
+ * Échéance d'une grâce hors du chemin worker : consommer PUIS annoncer.
+ *
+ * L'ordre n'est pas négociable, et l'inverser était un défaut réel : appeler la
+ * seule cascade laissait le participant annoncé parti mais toujours dans le
+ * salon — le fantôme que le retrait immédiat d'avant la grâce existait
+ * justement pour éviter. Le chemin worker fait bien les deux
+ * (`handleGroupRoomDisconnectGrace`) ; les deux replis doivent s'aligner.
+ *
+ * `consomme:false` signifie que quelqu'un est passé avant : on n'annonce rien.
+ */
+async function _echoir(roomId, userID, jeton, onExpire) {
+  try {
+    const r = await _retirer(roomId, userID, String(jeton));
+    if (!r.consomme) return;
+    if (typeof onExpire === 'function') await onExpire();
+  } catch (e) {
+    console.warn('[groupRooms] échéance de grâce échouée:', e.message);
+  }
 }
 
 /**
