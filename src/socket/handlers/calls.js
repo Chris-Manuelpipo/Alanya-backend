@@ -252,7 +252,12 @@ async function cleanupGroupRoomOnDisconnect(io, socket) {
   const rId = socket.currentGroupRoom;
   if (!rId) return;
   try {
-    if (socket.alanyaID != null) await groupRooms.leave(rId, socket.alanyaID);
+    if (socket.alanyaID != null) {
+      await groupRooms.leave(rId, socket.alanyaID);
+      // Une socket qui tombe libère son appareil : à la reconnexion il
+      // reprendra sa place, alors qu'une entrée figée l'en empêcherait.
+      await callDeviceOwnership.forget(String(rId), socket.alanyaID);
+    }
     socket.to(`group_${rId}`).emit('group_user_left', {
       roomId: rId,
       userId: String(socket.alanyaID),
@@ -360,6 +365,16 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
 
   await callState.cancelDisconnectGrace(userID);
   await pendingCalls.clear(userID);
+
+  // Ownership de session : `release` n'était appelé que sur le chemin 1-à-1 et
+  // dans `failInvite`. Une session qui se termine normalement laissait donc son
+  // entrée `active` derrière elle — et rejoindre depuis un autre appareil était
+  // refusé définitivement. Un départ ne libère que le partant ; si la session
+  // n'a pas survécu au départ, la clé entière s'en va.
+  await callDeviceOwnership.forget(sessionId, userID);
+  if (!(await callSessions.get(sessionId))) {
+    await callDeviceOwnership.release(sessionId);
+  }
 
   // Si destroy a emporté un pending (ex. départ → <2 présents), couper CallKit C.
   if (!wasPending && hadPendingInvitee != null && !(await callSessions.get(sessionId))) {
@@ -1910,6 +1925,12 @@ const leaveGroupCall = (io, socket, userSockets) => {
 
       const rId = roomId || socket.currentGroupRoom;
       if (rId) {
+        // Sans cette libération, l'entrée restait `active` sur l'appareil qui
+        // vient de partir : rejoindre la même salle depuis un autre appareil
+        // renvoyait CALL_ANSWERED_ELSEWHERE, définitivement.
+        if (socket.alanyaID != null) {
+          await callDeviceOwnership.forget(String(rId), socket.alanyaID);
+        }
         socket.to(`group_${rId}`).emit('group_user_left', {
           roomId: rId,
           userId: String(socket.alanyaID),
@@ -1945,7 +1966,11 @@ const endGroupCall = (io, socket, userSockets) => {
       }
 
       await groupRooms.destroy(rId);
-      io.to(`group_${rId}`).emit('group_call_ended', {});
+      // La salle n'existe plus : plus personne n'a d'appareil à y posséder.
+      await callDeviceOwnership.release(String(rId));
+      // Le payload portait `{}` : le client ne pouvait pas distinguer la fin de
+      // SA salle de celle d'une précédente (voir B5, côté client).
+      io.to(`group_${rId}`).emit('group_call_ended', { roomId: String(rId) });
 
       // io.sockets.adapter.rooms/sockets ne voient que CE process : capturer
       // les membres locaux avant socketsLeave() (cross-instance, ci-dessous),

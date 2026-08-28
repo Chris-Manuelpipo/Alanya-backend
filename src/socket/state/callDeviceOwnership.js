@@ -25,6 +25,18 @@ const { runScript } = require('../../utils/redisScript');
 
 const keyOf = (key) => `alanya:callDeviceOwnership:${key}`;
 
+// Filet de sécurité : ces entrées sont censées être libérées par les chemins de
+// sortie, mais un process qui meurt en cours d'appel n'en libère aucune. Sans
+// expiration, elles s'accumulaient indéfiniment — et une entrée orpheline
+// interdit de rejoindre depuis un autre appareil, définitivement. Six heures :
+// très au-delà de tout appel, assez court pour que rien ne s'entasse.
+const TTL_MS = 6 * 60 * 60 * 1000;
+
+async function _ecrire(client, key, userId, entry) {
+  await client.hSet(keyOf(key), String(Number(userId)), JSON.stringify(entry));
+  await client.pExpire(keyOf(key), TTL_MS);
+}
+
 // ── Repli mémoire (key -> Map<userId, entry>) ───────────────────────────────
 const _byKey = new Map();
 
@@ -153,7 +165,7 @@ async function _redisSetCalling(client, key, userId, { activeDeviceId, activeSoc
     claimedAt: Date.now(),
     state: 'calling',
   };
-  await client.hSet(keyOf(key), String(Number(userId)), JSON.stringify(entry));
+  await _ecrire(client, key, userId, entry);
   return true;
 }
 
@@ -166,13 +178,13 @@ async function _redisSetActive(client, key, userId, { activeDeviceId, activeSock
     claimedAt: Date.now(),
     state: 'active',
   };
-  await client.hSet(keyOf(key), String(Number(userId)), JSON.stringify(entry));
+  await _ecrire(client, key, userId, entry);
   return true;
 }
 
 async function _redisRing(client, key, userId) {
   const entry = { activeDeviceId: null, activeSocketId: null, claimedAt: null, state: 'ringing' };
-  await client.hSet(keyOf(key), String(Number(userId)), JSON.stringify(entry));
+  await _ecrire(client, key, userId, entry);
   return true;
 }
 
@@ -221,7 +233,7 @@ async function _redisReleaseUser(client, key, userId) {
   entry.state = 'left';
   entry.activeDeviceId = null;
   entry.activeSocketId = null;
-  await client.hSet(keyOf(key), String(Number(userId)), JSON.stringify(entry));
+  await _ecrire(client, key, userId, entry);
 }
 
 async function _redisRelease(client, key) {
@@ -292,6 +304,26 @@ async function isOwnerSocket(key, userId, socketId) {
   return entry.activeSocketId === socketId && entry.state !== 'left';
 }
 
+/**
+ * Oublie l'entrée d'un utilisateur, au lieu de la marquer « left ».
+ *
+ * `releaseUser` pose l'état `left`, que `tryClaim` refuse ensuite (`CALL_LEFT`).
+ * C'est la bonne sémantique pour un appel 1-à-1, où partir est définitif. Pour
+ * une salle de groupe ou une session à trois, on peut sortir puis revenir : y
+ * laisser un `left` remplacerait simplement un refus par un autre. L'entrée
+ * disparaît donc, et une nouvelle jonction repasse par `ring` puis `tryClaim`.
+ */
+async function forget(key, userId) {
+  const k = _key(key);
+  if (!k || userId == null) return;
+  const client = getDataClient();
+  if (client) {
+    await client.hDel(keyOf(k), String(Number(userId)));
+    return;
+  }
+  _byKey.get(k)?.delete(Number(userId));
+}
+
 async function releaseUser(key, userId) {
   const client = getDataClient();
   if (client) return _redisReleaseUser(client, key, userId);
@@ -319,6 +351,7 @@ module.exports = {
   isOwnerDevice,
   isOwnerSocket,
   releaseUser,
+  forget,
   release,
   _reset,
 };
