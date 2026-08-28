@@ -148,12 +148,12 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
   setImmediate(async () => {
     try {
       const [sender] = await pool.execute(
-        'SELECT nom FROM users WHERE alanyaID = ?', [senderID]
+        'SELECT nom, avatar_url FROM users WHERE alanyaID = ?', [senderID]
       );
       const senderName = sender[0]?.nom ?? 'Talky';
 
       const [convRows] = await pool.execute(
-        'SELECT isGroup, GroupName FROM conversation WHERE conversID = ?',
+        'SELECT isGroup, GroupName, groupPhoto FROM conversation WHERE conversID = ?',
         [conversationID]
       );
       const conv = convRows[0] ?? {};
@@ -164,6 +164,8 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
         isViewOnce,
         isGroup: !!conv.isGroup,
         groupName: conv.GroupName ?? '',
+        senderAvatar: sender[0]?.avatar_url ?? '',
+        groupAvatar: conv.groupPhoto ?? '',
         mentions,
         // Sans eux, `stringifyData` les retirait du payload (clés undefined) : la
         // push d'une réponse rapide partait sans msgID, et la déduplication client

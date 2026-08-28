@@ -55,8 +55,12 @@ async function loadMessageByClientId(senderID, clientId) {
 
 /** Nom expéditeur + infos groupe en une seule requête (hors chemin critique). */
 async function loadNotifyContext(conversationID, senderID) {
+  // Les deux colonnes d'avatar viennent de la même ligne que le nom et le
+  // groupe : c'est déjà un CROSS JOIN users × conversation, donc les ajouter ne
+  // coûte aucun aller-retour supplémentaire.
   const [rows] = await pool.execute(
-    `SELECT u.nom AS senderName, c.isGroup, c.GroupName AS groupName
+    `SELECT u.nom AS senderName, u.avatar_url AS senderAvatar,
+            c.isGroup, c.GroupName AS groupName, c.groupPhoto AS groupAvatar
      FROM users u
      CROSS JOIN conversation c
      WHERE u.alanyaID = ? AND c.conversID = ?
@@ -66,8 +70,10 @@ async function loadNotifyContext(conversationID, senderID) {
   const row = rows[0] || {};
   return {
     senderName: row.senderName ?? 'Talky',
+    senderAvatar: row.senderAvatar ?? '',
     isGroup: !!row.isGroup,
     groupName: row.groupName ?? '',
+    groupAvatar: row.groupAvatar ?? '',
   };
 }
 
@@ -328,6 +334,8 @@ const messageSend = (io, socket) => {
                 isViewOnce,
                 isGroup: ctx.isGroup,
                 groupName: ctx.groupName,
+                senderAvatar: ctx.senderAvatar,
+                groupAvatar: ctx.groupAvatar,
                 msgID,
                 clientId,
                 // La liste déjà normalisée : le fan-out n'a aucune requête à
