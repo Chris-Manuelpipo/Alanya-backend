@@ -2,7 +2,7 @@ const PDFDocument = require('pdfkit');
 const { ROLE_LABELS, ACCOUNT_LABELS, LAYOUT } = require('./theme');
 const {
   drawCoverPage,
-  drawContentPageHeader,
+  startContentPage,
   drawSectionTitle,
   drawKeyValues,
   drawStatCards,
@@ -121,8 +121,7 @@ async function buildUsersPdf({ users, meta }) {
       badge: Number(meta.exported) > 0 ? `${meta.exported} profil(s)` : null,
     });
 
-    doc.addPage();
-    drawContentPageHeader(doc, docTitle);
+    startContentPage(doc, docTitle);
 
     drawSectionTitle(doc, 'Résumé de l\'export', {
       subtitle: meta.filterSummary || undefined,
@@ -176,8 +175,7 @@ async function buildAnalyticsPdf({ data, sections, meta }) {
       badge: `${sections.size} section(s)`,
     });
 
-    doc.addPage();
-    drawContentPageHeader(doc, docTitle);
+    startContentPage(doc, docTitle);
 
     if (sections.has('summary')) {
       drawSectionTitle(doc, 'Synthèse', { subtitle: 'Comparaison avec la période précédente' });

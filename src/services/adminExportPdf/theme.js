@@ -2,6 +2,9 @@
 const BRAND = {
   primary: '#6366F1',
   primaryDark: '#4F46E5',
+  primarySoft: '#818CF8',
+  onPrimary: '#FFFFFF',
+  onPrimaryMuted: '#C7D2FE',
   gold: '#C9A227',
   goldLight: '#F5EDD4',
   ink: '#0F172A',
@@ -20,7 +23,8 @@ const LAYOUT = {
   margin: 48,
   pageW: 595.28,
   pageH: 841.89,
-  coverBandH: 128,
+  /** Hauteur plancher du bandeau de garde ; il s'étire selon le titre. */
+  coverBandMinH: 268,
   contentHeaderH: 52,
   footerH: 32,
   tableHeaderH: 24,
