@@ -12,6 +12,7 @@
 // de garde, copié sans cet appel : un participant qui reprenait par le seul
 // maillage se faisait solder au bout de huit secondes.
 const assert = require('assert');
+const pool = require('../../config/db');
 const callState = require('../state/callState');
 const callDeviceOwnership = require('../state/callDeviceOwnership');
 const callSessions = require('../state/callSessions');
@@ -181,7 +182,9 @@ async function main() {
 
   await reset();
   console.log('groupRelayRouting.test.js OK');
-  process.exit(0);
+  // Le pool MySQL garde ses connexions : sans cette libération, le
+  // processus ne rend pas la main — voir C6.
+  await pool.end();
 }
 
 main().catch((e) => {

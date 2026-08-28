@@ -10,6 +10,7 @@ const callState = require('../state/callState');
 const callDeviceOwnership = require('../state/callDeviceOwnership');
 const pendingCalls = require('../state/pendingCalls');
 const { deviceRoom } = require('../../utils/deviceId');
+const pool = require('../../config/db');
 const {
   offerCallResume,
   callResumeHandshake,
@@ -212,6 +213,12 @@ async function main() {
 
   await reset();
   console.log('callResumeAck.test.js OK');
+
+  // Le test passe par des handlers qui touchent la base : le pool garde ses
+  // connexions ouvertes et le processus ne rendait jamais la main. Ce n'étaient
+  // pas des minuteries restées armées, comme le supposait l'entrée C6 de
+  // l'audit — c'étaient six connexions MySQL.
+  await pool.end();
 }
 
 main().catch((err) => {

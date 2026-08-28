@@ -5,6 +5,7 @@
 // refus d'une lenteur réseau. Les autres sorties du même handler émettent
 // toutes un `call_error`.
 const assert = require('assert');
+const pool = require('../../config/db');
 const callState = require('../state/callState');
 const callSessions = require('../state/callSessions');
 const { confJoin } = require('./calls');
@@ -60,7 +61,9 @@ async function main() {
 
   await callState.clear(INVITEE);
   console.log('confJoinErrors.test.js OK');
-  process.exit(0);
+  // Le pool MySQL garde ses connexions : sans cette libération, le
+  // processus ne rend pas la main — voir C6.
+  await pool.end();
 }
 
 main().catch((e) => {

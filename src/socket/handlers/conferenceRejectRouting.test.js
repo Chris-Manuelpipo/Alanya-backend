@@ -9,6 +9,7 @@
 // Le refus était alors traité comme celui d'un appel simple : état serveur de
 // l'inviteur effacé, `call_rejected` émis vers lui, appel en cours raccroché.
 const assert = require('assert');
+const pool = require('../../config/db');
 const callState = require('../state/callState');
 const callDeviceOwnership = require('../state/callDeviceOwnership');
 const callSessions = require('../state/callSessions');
@@ -129,7 +130,9 @@ async function main() {
 
   await reset();
   console.log('conferenceRejectRouting.test.js OK');
-  process.exit(0);
+  // Le pool MySQL garde ses connexions : sans cette libération, le
+  // processus ne rend pas la main — voir C6.
+  await pool.end();
 }
 
 main().catch((e) => {

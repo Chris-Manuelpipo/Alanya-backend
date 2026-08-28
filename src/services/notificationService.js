@@ -184,7 +184,16 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       };
     }
 
-    const messageId = await admin.messaging().send(message);
+    // Sous test, on ne sort pas de la machine. Deux raisons, et la seconde
+    // n'est pas une commodité : les suites qui passent par un handler d'appel
+    // — callResumeAck, callSessionLeave… — déclenchaient de vrais push vers de
+    // vrais appareils, et le SDK Firebase gardait ses connexions HTTP/2
+    // ouvertes, ce qui empêchait le processus de rendre la main. C'est la
+    // véritable cause de l'entrée C6 de l'audit, que l'on croyait due à des
+    // minuteries restées armées.
+    const messageId = process.env.NODE_ENV === 'test'
+      ? `test-${Date.now()}`
+      : await admin.messaging().send(message);
     logSent({
       type: data.type,
       eventId: data.eventId,

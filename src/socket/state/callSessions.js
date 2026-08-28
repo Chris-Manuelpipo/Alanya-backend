@@ -424,6 +424,34 @@ async function promotePending(sessionId) {
   return r.session;
 }
 
+/**
+ * Note l'appareil qui a accepté l'invitation en attente.
+ *
+ * `confJoin` écrivait directement sur l'objet rendu par `getByUser`. En mode
+ * mémoire ça marchait ; en mode Redis, `getByUser` rend un objet fraîchement
+ * désérialisé, donc l'écriture partait dans une copie jetable et la garde qui
+ * relit ce champ voyait toujours `null`. Défense en profondeur devenue
+ * inopérante — et invisible aux tests, qui tournent sans REDIS_URL.
+ *
+ * @returns {boolean} false si un *autre* appareil a déjà accepté.
+ */
+async function markPendingAccepted(sessionId, { deviceId, socketId = null } = {}) {
+  const appliquer = (session) => {
+    if (!session?.pending) return null;
+    const deja = session.pending.acceptedByDeviceId;
+    if (deja && deja !== deviceId) return null;
+    session.pending.acceptedByDeviceId = deviceId;
+    session.pending.acceptedSocketId = socketId;
+    return { ok: true };
+  };
+
+  const client = getDataClient();
+  if (client) {
+    return !!(await _mutate(client, sessionId, appliquer));
+  }
+  return !!appliquer(_sessions.get(sessionId));
+}
+
 // ── Transfert ───────────────────────────────────────────────────────────────
 
 /**
@@ -696,6 +724,7 @@ module.exports = {
   armPendingTimer,
   abortPending,
   promotePending,
+  markPendingAccepted,
   markTransferJoined,
   registerTransferReady,
   getTransferTimerFlags,

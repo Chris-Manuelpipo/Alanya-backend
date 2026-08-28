@@ -1606,8 +1606,20 @@ const confJoin = (io, socket, userSockets) => {
         return;
       }
 
-      session.pending.acceptedByDeviceId = deviceId;
-      session.pending.acceptedSocketId = socket.id;
+      // L'écriture partait dans une copie jetable en mode Redis : la garde
+      // anti-double-join relisait toujours null. Elle est maintenant persistée,
+      // et refuse si un autre appareil a déjà accepté.
+      const noted = await callSessions.markPendingAccepted(sessionId, {
+        deviceId,
+        socketId: socket.id,
+      });
+      if (!noted) {
+        socket.emit('call_error', {
+          code: 'CALL_ALREADY_JOINED_ON_OTHER_DEVICE',
+          callId: sessionId,
+        });
+        return;
+      }
 
       const mode = session.mode || 'join';
       const present = callSessions.participantIds(session);

@@ -9,6 +9,7 @@
 // distant : aucune paire à tester, et une allocation TURN sans permission, donc
 // sourde aux tests de connectivité de l'appelant.
 const assert = require('assert');
+const pool = require('../../config/db');
 const callState = require('../state/callState');
 const callDeviceOwnership = require('../state/callDeviceOwnership');
 const pendingIce = require('../state/pendingIce');
@@ -187,9 +188,9 @@ async function main() {
 
   await reset();
   console.log('ringingIceRelay.test.js OK');
-  // Sortie explicite : answer_call déclenche un envoi FCM en tâche de fond
-  // (rattrapé, mais il garde la boucle d'événements armée). Voir C6.
-  process.exit(0);
+  // Le pool MySQL garde ses connexions : sans cette libération, le
+  // processus ne rend pas la main — voir C6.
+  await pool.end();
 }
 
 main().catch((e) => {
