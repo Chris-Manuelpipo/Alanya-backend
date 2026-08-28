@@ -1908,7 +1908,15 @@ const joinGroupCall = (io, socket, userSockets) => {
         userPhoto: userPhoto || null,
       });
 
-      const participantIds = Array.from(participants.keys()).map(String);
+      // `participants` n'était déclaré nulle part : la ligne levait une
+      // ReferenceError que le catch en fin de handler avalait en une ligne de
+      // log. Tout ce qui précède avait réussi — l'arrivant était bien dans la
+      // salle, et les autres prévenus — mais lui ne recevait jamais la liste
+      // de ceux qui s'y trouvaient déjà. Son roster se limitait donc à
+      // lui-même et à celui qui l'avait invité : les états micro et caméra des
+      // autres lui arrivaient bien, mais tombaient dans le `containsKey` du
+      // client, et leurs tuiles restaient absentes de la grille.
+      const participantIds = Array.from(room.participants.keys()).map(String);
       socket.emit('group_participants', { roomId, participants: participantIds });
     } catch (error) {
       console.error('[Socket join_group_call]', error.message);
