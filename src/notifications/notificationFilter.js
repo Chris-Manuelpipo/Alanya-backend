@@ -13,7 +13,7 @@ const evaluateMessagePush = async (
   alanyaID,
   conversationId,
   payload,
-  { isGroup = false, isMentioned = false, preloaded = {} } = {},
+  { isGroup = false, isMentioned = false, avatarAllowed = true, preloaded = {} } = {},
 ) => {
   // `preloaded` permet au fan-out de groupe de fournir prefs/dnd/mute chargés
   // en batch (une requête pour tous les destinataires) au lieu de 3 requêtes
@@ -26,9 +26,17 @@ const evaluateMessagePush = async (
   // Sans elle, le terminal ne pourrait pas accuser réception quand l'app est
   // fermée, et l'expéditeur resterait bloqué sur une seule coche.
   // Titre et corps sont retirés : rien ne sera affiché, et le contenu du
-  // message n'a pas à voyager vers un terminal qui n'en fera rien.
+  // message n'a pas à voyager vers un terminal qui n'en fera rien. Les deux
+  // avatars suivent la même règle, pour la même raison — ce sont des données
+  // personnelles que rien n'affichera.
   const silence = (reason) => {
-    const { title: _t, body: _b, ...rest } = payload;
+    const {
+      title: _t,
+      body: _b,
+      senderAvatar: _sa,
+      groupAvatar: _ga,
+      ...rest
+    } = payload;
     return { allowed: true, silent: true, reason, payload: { ...rest, silent: '1' } };
   };
 
@@ -69,14 +77,33 @@ const evaluateMessagePush = async (
     isGroup,
   });
 
-  return {
-    allowed: true,
-    payload: {
-      ...payload,
-      ...preview,
-      soundEnabled: prefs.soundEnabled ? '1' : '0',
-    },
+  const outgoing = {
+    ...payload,
+    ...preview,
+    soundEnabled: prefs.soundEnabled ? '1' : '0',
   };
+
+  // Deux raisons de retirer les avatars d'une push par ailleurs autorisée :
+  //
+  // - `generic` masque jusqu'au nom de l'expéditeur. Laisser sa photo s'afficher
+  //   à côté d'un « Nouveau message » anonyme viderait le réglage de son sens.
+  //   `name_only` les garde : le nom est déjà montré, la photo est cohérente.
+  // - `avatarAllowed` porte le réglage `profilePhotoVisibility` de l'expéditeur,
+  //   résolu une seule fois par le fan-out. Sans lui, une photo réservée aux
+  //   contacts partait vers tout un groupe par la notification, alors que l'API
+  //   la masque partout ailleurs (canViewProfileField).
+  // Miroir exact de `applyPreviewPolicy` : toute valeur hors 'full' /
+  // 'name_only' y retombe sur l'aperçu générique. Tester `=== 'generic'`
+  // laisserait passer les avatars pour une valeur inattendue en base.
+  const mode = prefs.previewMode || 'full';
+  const isGenericPreview = mode !== 'full' && mode !== 'name_only';
+
+  if (!avatarAllowed || isGenericPreview) {
+    delete outgoing.senderAvatar;
+    delete outgoing.groupAvatar;
+  }
+
+  return { allowed: true, payload: outgoing };
 };
 
 const evaluateTypePush = async (alanyaID, type) => {

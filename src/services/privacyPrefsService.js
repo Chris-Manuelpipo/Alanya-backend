@@ -56,6 +56,28 @@ const _isContactOf = async (targetId, viewerId) => {
   return rows.length > 0;
 };
 
+/**
+ * Version batch de `_isContactOf` : lesquels, parmi [viewerIds], sont contacts
+ * de [targetId] ?
+ *
+ * Existe pour le fan-out des notifications. Y appeler `canViewProfileField` par
+ * destinataire aurait ré-introduit le N+1 que le chargement groupé de
+ * `notifyNewMessage` a précisément supprimé — une requête par membre, soit ~200
+ * pour un groupe de 200. Ici, une seule, quel que soit l'effectif.
+ *
+ * @param {number} targetId
+ * @param {Array<number>} viewerIds
+ * @returns {Promise<Set<number>>}
+ */
+const contactsAmong = async (targetId, viewerIds = []) => {
+  if (targetId == null || viewerIds.length === 0) return new Set();
+  const [rows] = await pool.query(
+    'SELECT idFriend FROM preferredContact WHERE alanyaID = ? AND idFriend IN (?)',
+    [targetId, viewerIds],
+  );
+  return new Set(rows.map((r) => Number(r.idFriend)));
+};
+
 const _passesVisibility = (level, isSelf, isContact) => {
   if (isSelf) return true;
   if (level === 'everyone') return true;
@@ -139,6 +161,7 @@ module.exports = {
   upsertUserPrivacyPrefs,
   canViewProfileField,
   canAddUser,
+  contactsAmong,
   _passesVisibility,
   _isContactOf,
   _normalizeRow,

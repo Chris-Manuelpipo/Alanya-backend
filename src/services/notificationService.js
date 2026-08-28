@@ -24,6 +24,7 @@ const {
   loadConversationMuteMany,
 } = require('../notifications/notificationPrefs');
 const { loadUserDndScheduleMany } = require('./dndScheduleService');
+const { loadUserPrivacyPrefs, contactsAmong } = require('./privacyPrefsService');
 const { shouldUseAndroidNativeDataOnly } = require('../notifications/notificationAndroidNative');
 const { shouldUseDeviceRegistry } = require('../notifications/notificationRouting');
 const { resolveTripPush, isTripType, TRIP_TYPES } = require('../notifications/notificationTripRouting');
@@ -334,6 +335,40 @@ const sendToUserLegacy = async (alanyaID, data = {}, options = {}) => {
   }
 };
 
+/**
+ * Qui, parmi les destinataires, a le droit de voir la photo de l'expéditeur ?
+ *
+ * La photo en jeu est celle d'UN seul utilisateur — l'expéditeur — donc son
+ * réglage se lit une fois, hors de la boucle de fan-out. Le cas courant
+ * ('everyone', la valeur par défaut) et le cas 'nobody' se tranchent sans
+ * aucune requête supplémentaire ; seul 'contacts' en coûte une, batchée pour
+ * toute la liste. Appeler `canViewProfileField` par destinataire aurait rendu
+ * le fan-out linéaire en requêtes, ce que le chargement groupé plus bas a
+ * justement supprimé.
+ *
+ * @param {number} senderID
+ * @param {Array<number>} recipientIds
+ * @returns {Promise<(recipientId: number) => boolean>}
+ */
+const resolveAvatarVisibility = async (senderID, recipientIds) => {
+  let level = 'everyone';
+  try {
+    const prefs = await loadUserPrivacyPrefs(senderID);
+    level = prefs.profilePhotoVisibility || 'everyone';
+  } catch (e) {
+    // Une préférence illisible ne doit pas priver tout un groupe de sa
+    // notification : on retombe sur le comportement d'avant ce filtre.
+    console.warn('[FCM] profilePhotoVisibility illisible:', e.message);
+    return () => true;
+  }
+
+  if (level === 'everyone') return () => true;
+  if (level === 'nobody') return () => false;
+
+  const contacts = await contactsAmong(senderID, recipientIds);
+  return (recipientId) => contacts.has(Number(recipientId));
+};
+
 const MAX_PUSH_CONCURRENCY = 5;
 
 // Nombre de destinataires traités en parallèle par notifyNewMessage : borne le
@@ -566,6 +601,7 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       prefsMap,
       dndMap,
       muteMap,
+      canSeeAvatar,
     ] = await Promise.all([
       pool
         .query(
@@ -576,6 +612,7 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       loadUserNotificationPrefsMany(recipientIds),
       loadUserDndScheduleMany(recipientIds),
       loadConversationMuteMany(conversationID, recipientIds),
+      resolveAvatarVisibility(senderID, recipientIds),
     ]);
     const unreadMap = new Map(
       unreadRows.map((r) => [Number(r.alanyaID), Number(r.total) || 0]),
@@ -603,6 +640,7 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       const decision = await evaluateMessagePush(recipientId, conversationID, payload, {
         isGroup,
         isMentioned: mentioned,
+        avatarAllowed: canSeeAvatar(recipientId),
         preloaded: {
           prefs: prefsMap.get(recipientId),
           dnd: dndMap.get(recipientId),
