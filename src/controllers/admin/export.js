@@ -25,6 +25,10 @@ function buildUsersFilterSummary(query) {
     const types = { 0: 'Personnel', 1: 'Business', 2: 'Officiel' };
     parts.push(types[query.account_type] || `Type ${query.account_type}`);
   }
+  if (query.type_compte != null && query.type_compte !== '') {
+    const roles = { 0: 'Utilisateur', 1: 'Admin', 2: 'Super Admin' };
+    parts.push(roles[query.type_compte] || `Rôle ${query.type_compte}`);
+  }
   if (query.idPays) parts.push(`Pays #${query.idPays}`);
   if (query.from || query.to) {
     parts.push(`Inscrits ${query.from || '…'} → ${query.to || '…'}`);

@@ -26,6 +26,10 @@ function buildUsersWhere(query) {
     where.push('u.account_type = ?');
     params.push(Number(query.account_type));
   }
+  if (query.type_compte != null && query.type_compte !== '') {
+    where.push('u.type_compte = ?');
+    params.push(Number(query.type_compte));
+  }
   if (from) { where.push('u.created_at >= ?'); params.push(from); }
   if (to) { where.push('u.created_at <= ?'); params.push(to); }
   if (idPays) { where.push('u.idPays = ?'); params.push(idPays); }
