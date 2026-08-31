@@ -316,12 +316,21 @@ async function armGroupRoomGraceOnDisconnect(io, socket) {
 async function closeCallHistory(io, userSockets, callID) {
   if (!callID) return;
   try {
-    // status 3 = manqué / coupé sans réponse propre. La durée est recalculée
-    // si start_time existe.
+    // status 3 = manqué / coupé sans réponse propre. La durée n'existe que si
+    // l'appel a été décroché, et c'est `status = 1` qui l'atteste — pas
+    // `start_time`, dont la valeur dépend de l'état du schéma (voir la
+    // migration 075).
+    //
+    // L'ordre des deux assignations compte : MySQL les évalue de gauche à
+    // droite en voyant les valeurs déjà écrites, donc le CASE ci-dessous lit
+    // le statut NEUF. Un appel jamais décroché vient de passer 0 → 3 : il
+    // tombe dans le ELSE et repart à zéro. C'est le comportement voulu.
     await pool.execute(
       `UPDATE callHistory
        SET status = CASE WHEN status = 0 THEN 3 ELSE status END,
-           duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+           duree = CASE WHEN status = 1
+                        THEN GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+                        ELSE 0 END
        WHERE IDcall = ?`,
       [callID],
     );
@@ -726,9 +735,17 @@ const callUser = (io, socket, userSockets) => {
       let callID = null;
       try {
         const callerIp = getClientIp(socket);
+        // `start_time` n'est plus renseignée ici : c'est l'heure de DÉCROCHAGE,
+        // écrite par answer_call. La remplir dès l'ouverture faisait partir le
+        // chronomètre à la sonnerie. L'heure d'initiation est dans created_at.
+        //
+        // Tant que la migration 075 n'est pas appliquée, la colonne est encore
+        // `NOT NULL DEFAULT CURRENT_TIMESTAMP` en base et sera donc remplie
+        // malgré cette omission — sans conséquence : les calculs de durée ne
+        // s'appuient plus sur elle mais sur `status = 1`.
         const [result] = await pool.execute(
-          `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, start_time, ip)
-           VALUES (?, ?, ?, 0, NOW(), NOW(), ?)`,
+          `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, ip)
+           VALUES (?, ?, ?, 0, NOW(), ?)`,
           [callerID, targetID, isVideo ? 1 : 0, callerIp]
         );
         callID = result.insertId;
@@ -1240,9 +1257,14 @@ const endCall = (io, socket, userSockets) => {
 
       if (endedCallID) {
         try {
+          // Le cas courant ici est l'annulation pendant la sonnerie : l'appel
+          // n'a jamais été décroché, il n'a donc pas de durée. `status = 1` est
+          // le seul témoin d'un décrochage — c'est answer_call qui l'écrit.
           await pool.execute(
             `UPDATE callHistory
-             SET duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW())),
+             SET duree = CASE WHEN status = 1
+                              THEN GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+                              ELSE 0 END,
                  mode = COALESCE(?, mode)
              WHERE IDcall = ?`,
             [mode, endedCallID]
@@ -1345,7 +1367,9 @@ async function closeSessionHistoryFor(sessionId, userID) {
   try {
     await pool.execute(
       `UPDATE callHistory
-       SET duree = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+       SET duree = CASE WHEN status = 1
+                        THEN GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+                        ELSE 0 END
        WHERE sessionID = ? AND (idCaller = ? OR idReceiver = ?) AND duree = 0`,
       [sessionId, userID, userID],
     );

@@ -1,0 +1,59 @@
+-- Migration 075 : `start_time` redevient l'heure de décrochage
+--
+-- FACULTATIVE. Le correctif fonctionne sans elle — voir « Pourquoi le code ne
+-- l'attend pas » plus bas. Elle ne touche aucune ligne : c'est une correction
+-- de schéma, pas un rattrapage de données.
+--
+-- ── Le défaut ──────────────────────────────────────────────────────────────
+--
+-- `callHistory.start_time` marque le DÉCROCHAGE : c'est `answer_call` qui
+-- l'écrit, par `SET start_time = NOW(), status = 1`. L'heure d'initiation, elle,
+-- est portée par `created_at`.
+--
+-- Les deux INSERT d'ouverture d'appel (`call_user` côté socket, `POST /calls`
+-- côté REST) la remplissaient pourtant dès la première sonnerie. Le chronomètre
+-- partait donc au moment où le téléphone commençait à sonner, et les trois
+-- endroits qui calculent la durée — `end_call`, `closeCallHistory`, la route
+-- `PUT /calls/:id/end` — appliquaient `TIMESTAMPDIFF(SECOND, start_time, NOW())`
+-- sans jamais regarder le statut. Un appel jamais décroché repartait avec son
+-- temps de sonnerie inscrit comme durée d'appel, et le journal l'affichait :
+-- « Appel manqué • 0:28 ».
+--
+-- Deux chemins seulement écrivaient, ce qui explique que le défaut soit
+-- intermittent : l'annulation par l'appelant pendant la sonnerie (`end_call`)
+-- et la déconnexion / l'app tuée pendant la sonnerie (`closeCallHistory`, qui
+-- bascule en même temps le statut 0 → 3). Le timeout sans réponse et le refus,
+-- eux, ne touchent qu'au statut — d'où des appels manqués avec durée à côté
+-- d'appels manqués sans.
+--
+-- ── Pourquoi le code ne l'attend pas ───────────────────────────────────────
+--
+-- La migration 001 déclare `start_time DATETIME NULL DEFAULT NULL` : la colonne
+-- était prévue pour rester vide jusqu'au décrochage. La prod dit autre chose —
+-- `datetime NOT NULL DEFAULT CURRENT_TIMESTAMP`. La divergence est antérieure à
+-- ce correctif et n'est datée par aucune migration du dépôt.
+--
+-- Elle n'est pas un détail : avec ce DEFAULT, retirer `start_time` de la liste
+-- de colonnes des INSERT ne suffit pas — MySQL la remplit quand même avec
+-- l'heure de la sonnerie, et un correctif fondé sur sa nullité serait resté
+-- sans effet, sans la moindre erreur pour le signaler.
+--
+-- Le code ne s'appuie donc pas sur elle mais sur `status = 1`, seul témoin d'un
+-- décrochage, et se comporte correctement que cette migration soit appliquée
+-- ou non. Elle ne fait que rétablir l'intention de la 001, pour que la colonne
+-- cesse de mentir sur les appels à venir.
+--
+-- ── Les lignes déjà écrites ────────────────────────────────────────────────
+--
+-- Elles gardent leur fausse durée : 682 lignes sur 2 065 au 31/08/2026. Rien
+-- ne les réécrit, ici ni ailleurs — c'est l'affichage qui les neutralise, côté
+-- application (`Call.hasDuration`, qui exige `status == 1`), ce qui couvre du
+-- même geste le cache local `local_calls`. Un `UPDATE callHistory SET duree = 0
+-- WHERE status <> 1 AND duree > 0` reste possible plus tard si le besoin vient
+-- des statistiques admin, qui lisent `SUM(duree)` sans filtrer le statut.
+--
+-- Rejouable telle quelle.
+
+ALTER TABLE callHistory
+  MODIFY COLUMN start_time DATETIME NULL DEFAULT NULL
+    COMMENT 'Heure de décrochage ; NULL tant que l''appel n''a pas été répondu';

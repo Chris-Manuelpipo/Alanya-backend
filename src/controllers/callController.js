@@ -81,9 +81,12 @@ const createCall = async (req, res) => {
     }
 
     const callerIp = getClientIp(req);
+    // `start_time` n'est plus renseignée à l'ouverture — voir le même INSERT
+    // dans le handler call_user : elle marque le décrochage, pas la sonnerie.
+    // L'heure d'initiation est portée par created_at.
     const [result] = await pool.execute(
-      `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, start_time, ip)
-       VALUES (?, ?, ?, 0, NOW(), NOW(), ?)`,
+      `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, ip)
+       VALUES (?, ?, ?, 0, NOW(), ?)`,
       [idCaller, idReceiver, type, callerIp]
     );
 
@@ -109,10 +112,19 @@ const endCall = async (req, res) => {
     const alanyaID     = req.user.alanyaID;
     const mode = parseCallMode(rawMode);
  
+    // `duree` est assignée AVANT `status`, et cet ordre est le correctif :
+    // MySQL évalue les assignations de gauche à droite en voyant les valeurs
+    // déjà écrites, donc le CASE lit ici le statut tel qu'il était EN BASE, et
+    // non celui que le client annonce dans son corps de requête. Seul un
+    // décrochage effectif — `status = 1`, écrit par answer_call — donne une
+    // durée ; sans quoi il suffirait de poster `status: 1` pour transformer un
+    // temps de sonnerie en durée d'appel.
     await pool.execute(
       `UPDATE callHistory
-       SET status = ?,
-           duree  = GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW())),
+       SET duree  = CASE WHEN status = 1
+                         THEN GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+                         ELSE 0 END,
+           status = ?,
            mode   = COALESCE(?, mode)
        WHERE IDcall = ? AND (idCaller = ? OR idReceiver = ?)`,
       [status, mode, id, alanyaID, alanyaID]
