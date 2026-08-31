@@ -44,19 +44,29 @@ async function fetchAnalyticsData(fromInput, toInput) {
        WHERE sendAt BETWEEN ? AND ? GROUP BY DATE(sendAt) ORDER BY date ASC`,
       [from, to],
     ),
+    // `missed` compte 0 ET 3 : deux statuts pour un même fait, séquelle de deux
+    // conventions qui ont cohabité. Le schéma dit 0 = manqué, le handler socket
+    // écrit 3 sur timeout sans réponse. Ne compter que 0 laissait les lignes en
+    // 3 hors de TOUTE catégorie — ni répondues, ni manquées, ni rejetées. Les
+    // trois restent disjointes, leur somme reste le total : le camembert de
+    // l'écran Analytics en dépend.
+    //
+    // `totalDuration` filtre sur le décrochage : sans ce filtre, il comptait le
+    // temps de SONNERIE des appels sans réponse comme du temps d'appel —
+    // 3 143 heures au 31/08/2026. La moyenne juste en dessous filtrait déjà.
     pool.execute(
       `SELECT
          COUNT(*)             AS total,
          SUM(type = 0)        AS audio,
          SUM(type = 1)        AS video,
          SUM(status = 1)      AS answered,
-         SUM(status = 0)      AS missed,
+         SUM(status = 0 OR status = 3) AS missed,
          SUM(status = 2)      AS rejected,
          SUM(mode = 0)        AS relay,
          SUM(mode = 1)        AS p2p,
          SUM(mode IS NULL)    AS modeUnknown,
          COALESCE(ROUND(AVG(CASE WHEN status = 1 THEN duree END)), 0) AS avgDuration,
-         COALESCE(SUM(duree), 0) AS totalDuration
+         COALESCE(SUM(CASE WHEN status = 1 THEN duree ELSE 0 END), 0) AS totalDuration
        FROM callHistory WHERE created_at BETWEEN ? AND ?`,
       [from, to],
     ),

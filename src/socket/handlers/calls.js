@@ -325,11 +325,18 @@ async function closeCallHistory(io, userSockets, callID) {
     // droite en voyant les valeurs déjà écrites, donc le CASE ci-dessous lit
     // le statut NEUF. Un appel jamais décroché vient de passer 0 → 3 : il
     // tombe dans le ELSE et repart à zéro. C'est le comportement voulu.
+    //
+    // Le plafond de 86 400 s (24 h) est un garde-fou, pas une règle métier :
+    // une poignée de lignes ont été soldées très longtemps après coup — la
+    // plus extrême 23 jours après son décrochage — parce qu'un état d'appel
+    // périmé a fini par être nettoyé. Deux cas en quatre mois ne justifient
+    // pas d'en chercher le mécanisme, mais rien ne justifie non plus qu'une
+    // telle valeur atteigne le journal ou les cumuls de l'admin.
     await pool.execute(
       `UPDATE callHistory
        SET status = CASE WHEN status = 0 THEN 3 ELSE status END,
            duree = CASE WHEN status = 1
-                        THEN GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+                        THEN LEAST(GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW())), 86400)
                         ELSE 0 END
        WHERE IDcall = ?`,
       [callID],
@@ -1260,11 +1267,26 @@ const endCall = (io, socket, userSockets) => {
           // Le cas courant ici est l'annulation pendant la sonnerie : l'appel
           // n'a jamais été décroché, il n'a donc pas de durée. `status = 1` est
           // le seul témoin d'un décrochage — c'est answer_call qui l'écrit.
+          //
+          // Le statut, lui, restait à 0 À VIE. `callState.clear()` juste
+          // au-dessus annule le job `call_no_answer`, donc onNoAnswer — seul
+          // écrivain de `status = 3` — ne s'exécutera jamais, et cet UPDATE ne
+          // touchait que la durée. La ligne n'était alors ni « manquée », ni
+          // « refusée », ni « terminée » : elle restait « en cours », affichée
+          // en vert comme un appel abouti et absente du badge d'appels manqués.
+          // On applique la règle que closeCallHistory tient déjà pour la
+          // déconnexion — raccrocher et perdre le réseau doivent classer
+          // l'appel de la même façon.
+          //
+          // L'ordre des deux assignations est ici indifférent : un `status = 1`
+          // est inchangé dans les deux lectures, et un `status = 0` donne
+          // `duree = 0` que le CASE voie 0 ou 3.
           await pool.execute(
             `UPDATE callHistory
              SET duree = CASE WHEN status = 1
-                              THEN GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+                              THEN LEAST(GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW())), 86400)
                               ELSE 0 END,
+                 status = CASE WHEN status = 0 THEN 3 ELSE status END,
                  mode = COALESCE(?, mode)
              WHERE IDcall = ?`,
             [mode, endedCallID]
@@ -1368,7 +1390,7 @@ async function closeSessionHistoryFor(sessionId, userID) {
     await pool.execute(
       `UPDATE callHistory
        SET duree = CASE WHEN status = 1
-                        THEN GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+                        THEN LEAST(GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW())), 86400)
                         ELSE 0 END
        WHERE sessionID = ? AND (idCaller = ? OR idReceiver = ?) AND duree = 0`,
       [sessionId, userID, userID],

@@ -122,7 +122,7 @@ const endCall = async (req, res) => {
     await pool.execute(
       `UPDATE callHistory
        SET duree  = CASE WHEN status = 1
-                         THEN GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW()))
+                         THEN LEAST(GREATEST(0, TIMESTAMPDIFF(SECOND, start_time, NOW())), 86400)
                          ELSE 0 END,
            status = ?,
            mode   = COALESCE(?, mode)
