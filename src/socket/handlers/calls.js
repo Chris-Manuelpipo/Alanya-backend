@@ -1198,9 +1198,22 @@ const iceCandidate = (io, socket, userSockets) => {
 };
 
 const endCall = (io, socket, userSockets) => {
-  socket.on('end_call', async (data) => {
+  // L'accusé n'est pas un confort : c'est la seule preuve que le raccrochage a
+  // été traité. Sans lui, l'émetteur ne peut pas distinguer un socket vivant
+  // d'un socket zombie — TCP mort, mais Socket.IO ne le constate qu'au bout de
+  // son ping (25 s d'intervalle, 20 s de patience). Le paquet part dans le
+  // vide, personne ne prévient le pair, et celui-ci reste sur « Reconnexion… »
+  // jusqu'à son propre délai. C'est le cas d'autant plus probable que l'appel
+  // a duré : plus de temps pour que la connexion meure sans le dire.
+  socket.on('end_call', async (data, ack) => {
+    const repondre = typeof ack === 'function' ? ack : () => {};
     try {
-      if (!socket.authenticated) return;
+      // Un refus explicite, pas un silence : l'émetteur remet alors le
+      // raccrochage en file et reconstruit son socket.
+      if (!socket.authenticated) {
+        repondre({ ok: false, reason: 'unauthenticated' });
+        return;
+      }
       const { targetUserId, mode: rawMode } = data;
       const targetID = toInt(targetUserId);
       const callerID = socket.alanyaID;
@@ -1212,6 +1225,7 @@ const endCall = (io, socket, userSockets) => {
       if (await leaveCallSession(io, userSockets, callerID, 'hangup')) {
         socket.currentCallID     = null;
         socket.currentCallTarget = null;
+        repondre({ ok: true, handled: 'left_session' });
         return;
       }
 
@@ -1225,6 +1239,7 @@ const endCall = (io, socket, userSockets) => {
       ) {
         socket.currentCallID     = null;
         socket.currentCallTarget = null;
+        repondre({ ok: true, handled: 'already_idle' });
         return;
       }
 
@@ -1316,8 +1331,10 @@ const endCall = (io, socket, userSockets) => {
 
       socket.currentCallID     = null;
       socket.currentCallTarget = null;
+      repondre({ ok: true, handled: 'ended' });
     } catch (error) {
       console.error('[Socket end_call]', error.message);
+      repondre({ ok: false, reason: 'error' });
     }
   });
 };
