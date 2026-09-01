@@ -66,11 +66,19 @@ async function cancelByDedupeKey(dedupeKey, kinds) {
   );
 }
 
-/** Un job de ce kind/dedupeKey est-il actuellement en attente (armé) ? */
+/**
+ * Un job de ce kind/dedupeKey est-il actuellement en attente (armé) ?
+ *
+ * `failed_at IS NULL` n'est pas un détail : une ligne définitivement en échec
+ * garde sa clé de déduplication, et sans ce filtre elle passait pour une grâce
+ * encore armée. `callState` s'en sert pour décider si un `in_call` tient
+ * toujours — un compte restait donc « occupé », incapable de passer ou de
+ * recevoir un appel, jusqu'à la purge de la ligne morte.
+ */
 async function hasJob(dedupeKey, kind) {
   if (!dedupeKey) return false;
   const [rows] = await pool.execute(
-    'SELECT 1 FROM job_queue WHERE dedupe_key = ? AND kind = ? LIMIT 1',
+    'SELECT 1 FROM job_queue WHERE dedupe_key = ? AND kind = ? AND failed_at IS NULL LIMIT 1',
     [dedupeKey, kind],
   );
   return rows.length > 0;

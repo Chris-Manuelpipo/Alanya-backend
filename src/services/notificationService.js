@@ -98,9 +98,16 @@ const VISIBLE_TYPES = [
   ...TRIP_TYPES,
 ];
 
-const CALL_TYPES = ['call', 'group_call'];
+const CALL_TYPES = ['call', 'group_call', 'call_ended'];
 // Aligné sur NO_ANSWER_MS (45 s, calls.js) : un push d'appel délivré après le
 // timeout serveur ferait sonner un appel déjà classé « sans réponse ».
+//
+// `call_ended` en fait partie, et ce n'était pas le cas : le push qui ARRÊTE la
+// sonnerie partait en priorité normale avec 24 h de validité, quand celui qui la
+// démarre part en priorité haute avec 45 s. Sur un appareil en veille, Android
+// pouvait donc retarder indéfiniment l'ordre d'arrêt — le téléphone continuait
+// de sonner après que l'appelant a raccroché — et livrer des heures plus tard un
+// ordre devenu absurde.
 const CALL_TTL_MS = 45_000;
 
 const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
