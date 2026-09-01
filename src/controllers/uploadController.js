@@ -3,6 +3,7 @@ const path = require('path');
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const pool = require('../config/db');
 const { UPLOADS_DIR } = require('../services/mediaPartitions');
+const { invalidateSenderIdentity } = require('../utils/senderIdentityCache');
 
 const _toBool = (v) => v === true || v === 1 || v === '1' || v === 'true';
 
@@ -41,6 +42,8 @@ const uploadAvatar = async (req, res) => {
         'UPDATE users SET avatar_url = ? WHERE alanyaID = ?',
         [url, req.user.alanyaID],
       );
+      // Le payload temps réel des messages sert l'avatar depuis un cache 60 s.
+      invalidateSenderIdentity(req.user.alanyaID);
     }
 
     res.json({

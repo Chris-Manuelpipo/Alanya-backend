@@ -13,6 +13,7 @@ const { guardDisplayNames } = require('../utils/displayNameGuard');
 const { ACCOUNT_TYPE } = require('../constants/accountTypes');
 const { isOfficialAccount } = require('../utils/officialAccountGuard');
 const { ensureDefaultContactLists } = require('../utils/defaultContactLists');
+const { invalidateSenderIdentity } = require('../utils/senderIdentityCache');
 
 const SALT_ROUNDS = 10;
 
@@ -819,6 +820,10 @@ const updateMe = async (req, res) => {
         `UPDATE users SET ${updates.join(', ')} WHERE alanyaID = ?`,
         values
       );
+      // Nom, pseudo et pays voyagent dans le payload temps réel des messages,
+      // servi depuis un cache 60 s : sans ceci un changement de nom n'y
+      // apparaîtrait qu'à l'expiration.
+      invalidateSenderIdentity(req.user.alanyaID);
     }
 
     const [rows] = await pool.execute(_selectUserWithPays, [req.user.alanyaID]);

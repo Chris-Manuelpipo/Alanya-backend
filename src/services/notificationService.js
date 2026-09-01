@@ -279,7 +279,7 @@ const sendToUser = async (alanyaID, data = {}, options = {}) => {
 
 const sendToUserLegacy = async (alanyaID, data = {}, options = {}) => {
   try {
-    const { io = null, skipIfDeviceOnline = false } = options;
+    const { io = null, skipIfDeviceOnline = false, excludeDeviceId = null } = options;
     const connectedDevices =
       skipIfDeviceOnline && io ? await getConnectedDeviceIds(io, alanyaID) : new Set();
 
@@ -294,6 +294,24 @@ const sendToUserLegacy = async (alanyaID, data = {}, options = {}) => {
     }
 
     const { fcm_token: fcmToken, device_ID: deviceId } = rows[0];
+
+    // Le repli legacy ne connaît qu'un jeton — celui du compte. S'il désigne
+    // l'appareil qu'on voulait précisément épargner, ne rien envoyer : un
+    // `call_ended` porte le callId exact de l'appel en cours, et l'appareil qui
+    // vient de décrocher raccrocherait de lui-même.
+    if (excludeDeviceId) {
+      // Require local, comme `sendCallEndedToUser` plus bas : le module n'est
+      // pas importé en tête de fichier, et cette fonction-ci n'est pas dans sa
+      // portée.
+      const { normalizeDeviceId } = require('../utils/deviceId');
+      const legacyDid = normalizeDeviceId(deviceId);
+      if (legacyDid && legacyDid === excludeDeviceId) {
+        console.warn(
+          `[FCM] legacy: appareil exclu, envoi annulé user=${alanyaID}`,
+        );
+        return;
+      }
+    }
 
     if (skipIfDeviceOnline) {
       if (
@@ -492,25 +510,20 @@ const sendCallEndedToUser = async (alanyaID, data = {}, options = {}) => {
   try {
     const targets = await resolveCallPushTargets(alanyaID);
     if (targets.length === 0) {
-      return sendToUserLegacy(alanyaID, data, {});
+      return sendToUserLegacy(alanyaID, data, { excludeDeviceId });
     }
 
-    for (const target of targets) {
-      const targetDid = normalizeDeviceId(target.deviceId);
+    // La décision de « qui reçoit » vit dans `callEndedTargets`, avec son test.
+    const { filterCallEndedTargets } = require('../notifications/callEndedTargets');
+    const retenues = filterCallEndedTargets(targets, excludeDeviceId);
+    if (retenues.length < targets.length) {
+      console.warn(
+        `[PushCall] call_ended: ${targets.length - retenues.length} cible(s) `
+        + `écartée(s) user=${alanyaID}`,
+      );
+    }
 
-      // Target sans deviceId clair : ne pas envoyer call_ended (évite de tuer
-      // le gagnant si excludeDeviceId est ambigu / si ids divergent).
-      if (!targetDid) {
-        console.warn(
-          `[PushCall] skip call_ended user=${alanyaID} reason=missing_or_ambiguous_deviceId`,
-        );
-        continue;
-      }
-
-      if (excludeDeviceId && targetDid === excludeDeviceId) {
-        continue;
-      }
-
+    for (const target of retenues) {
       if (options.excludeDeviceId && !excludeDeviceId) {
         console.warn(
           `[PushCall] excludeDeviceId missing/ambiguous user=${alanyaID}`,
@@ -545,7 +558,9 @@ const sendCallEndedToUser = async (alanyaID, data = {}, options = {}) => {
     }
   } catch (error) {
     console.error('[PushCall] sendCallEndedToUser error:', error.message);
-    await sendToUserLegacy(alanyaID, data, {});
+    // L'exclusion voyage jusque dans le repli : une panne SQL ne doit pas
+    // pousser `call_ended` vers l'appareil qui vient de décrocher.
+    await sendToUserLegacy(alanyaID, data, { excludeDeviceId });
   }
 };
 

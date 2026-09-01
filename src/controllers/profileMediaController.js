@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
+const { MEDIA_THUMB_SELECT } = require('../utils/messageThumbSql');
 
 const MEDIA_TYPES = [1, 2]; // image, video
 
@@ -85,7 +86,7 @@ const getMyMedia = async (req, res) => {
       `SELECT m.msgID, m.conversationID, m.senderID, m.type, m.mediaUrl,
               m.mediaName, m.mediaDuration, m.mediaSize, m.sendAt,
               u.pseudo AS senderPseudo, u.nom AS senderNom,
-              TO_BASE64(mt.thumb) AS mediaThumb
+              ${MEDIA_THUMB_SELECT}
          FROM message m
          JOIN conv_participants cp
            ON cp.conversID = m.conversationID AND cp.alanyaID = ?

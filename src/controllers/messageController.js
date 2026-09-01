@@ -9,6 +9,7 @@ const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
 const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
+const { MEDIA_THUMB_SELECT } = require('../utils/messageThumbSql');
 const { relinkForForward } = require('../services/mediaPartitions');
 
 // Même origine que celle composée à l'upload : une URL de transfert doit être
@@ -53,7 +54,7 @@ const getMessages = async (req, res) => {
              p.timeZone   AS messageTz,
              p.decalageHoraire AS messageTzOffset,
              (m.viewedAt IS NOT NULL) AS viewedByMe,
-             TO_BASE64(mt.thumb) AS mediaThumb
+             ${MEDIA_THUMB_SELECT}
       FROM message m
       JOIN conv_participants cp
         ON cp.conversID = m.conversationID AND cp.alanyaID = ?
@@ -192,7 +193,7 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     const [existing] = await _execute(conn,
       `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
               p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset,
-              TO_BASE64(mt.thumb) AS mediaThumb
+              ${MEDIA_THUMB_SELECT}
        FROM message m
        JOIN users u ON m.senderID = u.alanyaID
        LEFT JOIN pays p ON u.idPays = p.idPays
@@ -255,6 +256,9 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
       clientId,
       content,
       type,
+      // Explicite comme sur le chemin socket : `sendAt` n'est plus `NOW()`,
+      // c'est l'appelant qui décide (voir utils/messageInsert).
+      sendAt: new Date(),
       clickSentAt,
       mediaUrl,
       mediaName,
@@ -285,7 +289,7 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
       conn,
       `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
               p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset,
-              TO_BASE64(mt.thumb) AS mediaThumb
+              ${MEDIA_THUMB_SELECT}
        FROM message m
        JOIN users u ON m.senderID = u.alanyaID
        LEFT JOIN pays p ON u.idPays = p.idPays
@@ -329,7 +333,7 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
   const [rows] = await _execute(conn,
     `SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
             p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset,
-            TO_BASE64(mt.thumb) AS mediaThumb
+            ${MEDIA_THUMB_SELECT}
      FROM message m
      JOIN users u ON m.senderID = u.alanyaID
      LEFT JOIN pays p ON u.idPays = p.idPays
@@ -445,7 +449,7 @@ const updateMessage = async (req, res) => {
     );
 
     const [rows] = await pool.execute(
-      `SELECT m.*, TO_BASE64(mt.thumb) AS mediaThumb
+      `SELECT m.*, ${MEDIA_THUMB_SELECT}
        FROM message m
        LEFT JOIN message_thumb mt ON mt.msgID = m.msgID
        WHERE m.msgID = ?`,
@@ -1146,7 +1150,7 @@ const getMessagesSince = async (req, res) => {
              p.timeZone   AS messageTz,
              p.decalageHoraire AS messageTzOffset,
              (m.viewedAt IS NOT NULL) AS viewedByMe,
-             TO_BASE64(mt.thumb) AS mediaThumb
+             ${MEDIA_THUMB_SELECT}
       FROM message m
       JOIN conv_participants cp ON cp.conversID = m.conversationID AND cp.alanyaID = ?
       JOIN users u ON m.senderID = u.alanyaID

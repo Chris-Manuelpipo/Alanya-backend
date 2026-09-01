@@ -13,7 +13,7 @@ const socketAuth = (io, socket, userSockets) => {
     try {
       const { token, deviceId, device_ID: deviceIdSnake } = data || {};
       if (!token) {
-        return socket.emit('auth:error', { message: 'Token requis' });
+        return socket.emit('auth:error', { message: 'Token requis', code: 'TOKEN_REQUIRED' });
       }
 
       let decoded;
@@ -23,11 +23,11 @@ const socketAuth = (io, socket, userSockets) => {
         if (err.name === 'TokenExpiredError') {
           return socket.emit('auth:error', { message: 'Token expiré', code: 'TOKEN_EXPIRED' });
         }
-        return socket.emit('auth:error', { message: 'Token invalide' });
+        return socket.emit('auth:error', { message: 'Token invalide', code: 'TOKEN_INVALID' });
       }
 
       if (decoded.type !== 'access') {
-        return socket.emit('auth:error', { message: 'Type de token invalide' });
+        return socket.emit('auth:error', { message: 'Type de token invalide', code: 'TOKEN_INVALID' });
       }
 
       // Même garde que le middleware HTTP (migration 026) : sans elle, un
@@ -44,7 +44,7 @@ const socketAuth = (io, socket, userSockets) => {
       );
 
       if (rows.length === 0) {
-        return socket.emit('auth:error', { message: 'Utilisateur introuvable, banni ou appareil déconnecté' });
+        return socket.emit('auth:error', { message: 'Utilisateur introuvable, banni ou appareil déconnecté', code: 'AUTH_REJECTED' });
       }
 
       const alanyaID = rows[0].alanyaID;
@@ -68,7 +68,12 @@ const socketAuth = (io, socket, userSockets) => {
 
     } catch (error) {
       console.error('[Socket auth:login]', error.message);
-      socket.emit('auth:error', { message: 'Erreur d\'authentification' });
+      // Ce catch enveloppe un `pool.execute` vers un MySQL distant : un pool
+      // saturé, un hoquet réseau, un timeout, et l'on arrive ici. Le code dit au
+      // client que l'échec est PASSAGER — sans lui, il restait connecté mais
+      // jamais authentifié, sans aucune voie de retour, jusqu'au redémarrage de
+      // l'application.
+      socket.emit('auth:error', { message: 'Erreur d\'authentification', code: 'AUTH_INTERNAL' });
     }
   });
 };

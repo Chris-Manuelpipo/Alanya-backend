@@ -1,6 +1,5 @@
 const pool = require('../../../config/db');
-const { evaluateDirectMessageSend } = require('../../../utils/blockUtils');
-const { assertCanSendToConversation } = require('../../../utils/groupSendPolicy');
+const { resolveSendPolicy } = require('../../../utils/messageSendPolicy');
 const {
   sanitizeMentions,
   serializeMentionsColumn,
@@ -12,6 +11,9 @@ const {
   setCachedParticipants,
 } = require('../../../utils/conversationParticipantsCache');
 const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../../../utils/messageInsert');
+const { getSenderIdentity } = require('../../../utils/senderIdentityCache');
+const { buildSentPayload } = require('../../../utils/sentMessagePayload');
+const { MEDIA_THUMB_SELECT } = require('../../../utils/messageThumbSql');
 
 // `mt.thumb` rejoint APRÈS m.* et réencodé en base64 : mysql2 retourne un
 // objet JS où la dernière colonne du même nom l'emporte, donc `mediaThumb`
@@ -21,7 +23,7 @@ const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require(
 const MSG_SELECT = `
   SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
          p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset,
-         TO_BASE64(mt.thumb) AS mediaThumb
+         ${MEDIA_THUMB_SELECT}
   FROM message m
   JOIN users u ON m.senderID = u.alanyaID
   LEFT JOIN pays p ON u.idPays = p.idPays
@@ -140,6 +142,11 @@ const joinConversation = (io, socket) => {
 const messageSend = (io, socket) => {
   socket.on('message:send', async (data) => {
     let clientId = null;
+    // L'accusé part désormais avant les écritures d'aperçu et de non-lus. Si
+    // l'une d'elles échoue, le message est bel et bien enregistré et confirmé :
+    // envoyer un `send_failed` après coup ferait basculer en rouge une bulle
+    // déjà passée au ✓, et le client la rejouerait pour rien.
+    let acked = false;
     const t0 = Date.now();
     try {
       if (!socket.authenticated) {
@@ -182,10 +189,13 @@ const messageSend = (io, socket) => {
         return;
       }
 
-      // Appartenance + mode annonce. `evaluateDirectMessageSend` ci-dessous ne
-      // couvre que le 1-1 : sans cette vérification, rien n'empêchait d'écrire
-      // dans un groupe dont on n'est pas membre.
-      const sendPolicy = await assertCanSendToConversation(conversationID, senderID);
+      // Appartenance, mode annonce, compte officiel et blocages en une passe :
+      // 2 requêtes au lieu de 4 (1 seule pour un groupe). Voir
+      // `utils/messageSendPolicy` — verdicts et codes strictement identiques à
+      // l'enchaînement `assertCanSendToConversation` + `evaluateDirectMessageSend`
+      // qu'elle remplace ici, ces deux-là restant en service ailleurs.
+      const sendPolicy = await resolveSendPolicy(conversationID, senderID);
+      logMsgPath(clientId, 'policy_checked', t0);
       if (!sendPolicy.ok) {
         emitSendFailed(socket, {
           clientId,
@@ -197,35 +207,35 @@ const messageSend = (io, socket) => {
           code: sendPolicy.code,
         });
       }
+      const { silentDrop } = sendPolicy;
 
-      const blockEval = await evaluateDirectMessageSend(conversationID, senderID);
-      logMsgPath(clientId, 'policy_checked', t0);
-      if (blockEval.isDirect && blockEval.action === 'reject') {
-        const code = blockEval.code || 'BLOCKED_BY_SENDER';
-        emitSendFailed(socket, {
-          clientId,
-          code,
-          message: 'Cannot message blocked user',
-        });
-        return socket.emit('error', {
-          message: 'Cannot message blocked user',
-          code,
-        });
-      }
-      const silentDrop = blockEval.isDirect && blockEval.action === 'silent';
-
-      const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
+      // Ces quatre lectures sont indépendantes les unes des autres : les lancer
+      // ensemble met leur coût en parallèle au lieu de l'additionner. Les deux
+      // dernières passent par un cache 60 s et ne coûtent donc rien la plupart
+      // du temps ; les deux premières ne touchent la base que s'il y a
+      // effectivement une citation ou une mention.
+      const [resolvedReplyToID, mentionsValue, senderIdentity, participants] =
+        await Promise.all([
+          resolveReplyToID(conversationID, replyToID),
+          // Écrites DANS l'INSERT et pas en UPDATE séparé : l'idempotence devient
+          // gratuite, un rejeu du même clientID ne peut ni les dupliquer ni les
+          // perdre. L'intersection avec les participants se fait côté serveur.
+          sanitizeMentions(
+            conversationID, senderID, mentions, { all: mentionsAll === true },
+          ),
+          getSenderIdentity(senderID),
+          silentDrop
+            ? Promise.resolve([])
+            : loadParticipantsExcept(conversationID, senderID),
+        ]);
       const resolvedReplyToContent =
         (replyToContent != null && String(replyToContent).trim() !== '')
           ? replyToContent
           : null;
 
-      // Écrites DANS l'INSERT et pas en UPDATE séparé : l'idempotence devient
-      // gratuite, un rejeu du même clientID ne peut ni les dupliquer ni les
-      // perdre. L'intersection avec les participants se fait côté serveur.
-      const mentionsValue = await sanitizeMentions(
-        conversationID, senderID, mentions, { all: mentionsAll === true },
-      );
+      // Date d'envoi décidée ici et non par `NOW()` : c'est ce qui permet
+      // d'acquitter sans relire la ligne (voir utils/messageInsert).
+      const sendAt = new Date();
 
       // Idempotence via unique (senderID, clientID) : insertId = nouveau ou existant.
       const [result] = await pool.execute(
@@ -236,6 +246,7 @@ const messageSend = (io, socket) => {
           clientId,
           content,
           type,
+          sendAt,
           clickSentAt,
           mediaUrl,
           mediaName,
@@ -254,13 +265,13 @@ const messageSend = (io, socket) => {
       const isNewInsert = result.affectedRows === 1;
       logMsgPath(clientId, 'insert_done', t0);
 
-      // Écriture séparée dans message_thumb (audit scalabilité 06/08/2026
-      // §2.2, migration 060) : idempotente (ON DUPLICATE KEY UPDATE), donc
-      // sûre à rejouer même sur le chemin replay/course ci-dessous.
-      await insertMessageThumb(pool, msgID, mediaThumb);
-
-      // Replay / course : message déjà présent → ack seulement, pas de double unread.
+      // Replay / course : message déjà présent → ack seulement, pas de double
+      // unread. La ligne existante peut déjà porter des accusés, une édition ou
+      // un épinglage, donc ici on la relit vraiment — chemin rare, et seule
+      // cette relecture dit la vérité. La vignette est écrite avant, pour que
+      // la relecture la ramène.
       if (!isNewInsert) {
+        await insertMessageThumb(pool, msgID, mediaThumb);
         const existing = await loadMessageById(msgID) || await loadMessageByClientId(senderID, clientId);
         if (existing) {
           const payload = toClientMsg(existing, clientId);
@@ -277,7 +288,55 @@ const messageSend = (io, socket) => {
         return;
       }
 
+      // Payload identique à celui que rendait la relecture `MSG_SELECT`, mais
+      // construit en mémoire : plus rien ne sépare l'INSERT de l'accusé.
+      const payload = buildSentPayload({
+        msgID,
+        senderID,
+        conversationID,
+        clientId,
+        sendAt,
+        clickSentAt,
+        content,
+        type,
+        mediaUrl,
+        mediaName,
+        mediaDuration,
+        mediaSize,
+        mediaPageCount,
+        mediaThumb,
+        replyToID: resolvedReplyToID,
+        replyToContent: resolvedReplyToContent,
+        isStatusReply,
+        isForwarded,
+        isViewOnce,
+        mentions: mentionsValue,
+        senderIdentity,
+      });
+
+      // Accusé expéditeur en premier : c'est lui qui fait passer la bulle de
+      // l'horloge au ✓. Tout ce qui suit est hors du chemin critique.
+      socket.emit('message:sent', payload);
+      socket.to(`user_${senderID}`).emit('message:sent', payload);
+      acked = true;
+      logMsgPath(clientId, 'sender_ack_emit', t0);
+
+      if (!silentDrop && participants.length > 0) {
+        // Forme tableau : une seule émission, le payload n'est encodé qu'une fois
+        // (la boucle unitaire le sérialisait N fois sur l'event loop).
+        io.to(participants.map((p) => `user_${p.alanyaID}`))
+          .emit('message:received', payload);
+        logMsgPath(clientId, 'recipient_emit', t0);
+      }
+
+      // Vignette : le destinataire l'a déjà reçue dans le payload, l'écriture
+      // ne sert qu'aux relectures ultérieures (historique, sync).
+      await insertMessageThumb(pool, msgID, mediaThumb);
+
       if (!silentDrop) {
+        // Aperçu de conversation et non-lus : après les émissions. Le client
+        // recalcule son propre aperçu depuis le message reçu, il n'attend pas
+        // ces deux écritures pour afficher quoi que ce soit.
         await pool.execute(
           `UPDATE conversation
            SET lastMessage = ?, lastMessageAt = NOW(),
@@ -293,35 +352,6 @@ const messageSend = (io, socket) => {
           'UPDATE conv_participants SET unreadCount = unreadCount + 1 WHERE conversID = ? AND alanyaID != ?',
           [conversationID, senderID],
         );
-      }
-
-      const msg = await loadMessageById(msgID);
-      if (!msg) {
-        emitSendFailed(socket, {
-          clientId,
-          code: 'INSERT_LOST',
-          message: 'Message inserted but not found',
-        });
-        return;
-      }
-
-      const payload = toClientMsg(msg, clientId);
-
-      if (!silentDrop) {
-        const participants = await loadParticipantsExcept(conversationID, senderID);
-
-        if (participants.length > 0) {
-          // Forme tableau : une seule émission, le payload n'est encodé qu'une fois
-          // (la boucle unitaire le sérialisait N fois sur l'event loop).
-          io.to(participants.map((p) => `user_${p.alanyaID}`))
-            .emit('message:received', payload);
-        }
-        logMsgPath(clientId, 'recipient_emit', t0);
-
-        // Accusé expéditeur immédiatement (avant prep FCM).
-        socket.emit('message:sent', payload);
-        socket.to(`user_${senderID}`).emit('message:sent', payload);
-        logMsgPath(clientId, 'sender_ack_emit', t0);
 
         // Prep FCM hors chemin critique.
         setImmediate(() => {
@@ -353,13 +383,13 @@ const messageSend = (io, socket) => {
             })
             .catch((e) => console.warn('[FCM notification]', e.message));
         });
-      } else {
-        socket.emit('message:sent', payload);
-        socket.to(`user_${senderID}`).emit('message:sent', payload);
-        logMsgPath(clientId, 'sender_ack_emit', t0);
       }
     } catch (error) {
       console.error('[Socket message:send]', error.message);
+      // Après l'accusé, l'échec ne concerne plus l'envoi lui-même (aperçu de
+      // conversation, compteur de non-lus) : on le journalise sans démentir un
+      // ✓ déjà affiché. Le rattrapage périodique corrigera l'aperçu.
+      if (acked) return;
       emitSendFailed(socket, {
         clientId,
         code: 'SERVER_ERROR',
