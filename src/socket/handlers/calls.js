@@ -12,6 +12,7 @@ const groupRooms = require('../state/groupRooms');
 const callDeviceOwnership = require('../state/callDeviceOwnership');
 const { runGroupLeaveCascade } = require('../../services/groupRoomWorkers');
 const pendingIce = require('../state/pendingIce');
+const { canFallBackToLastCall } = require('../rejectFallback');
 const {
   emitToUser,
   emitToDevice,
@@ -1095,7 +1096,11 @@ async function processRejectCall({
   if (callKey) await callDeviceOwnership.release(callKey);
 
   try {
-    if (!rejectedCallID) {
+    // Le repli ne vaut que si le refus ne désigne PAS déjà autre chose qu'un
+    // appel à deux — voir `canFallBackToLastCall`. Une invitation de groupe
+    // refusée porte un `roomId`, et ce repli lui faisait réécrire le dernier
+    // appel à deux entre les mêmes personnes.
+    if (!rejectedCallID && canFallBackToLastCall(callIdHint)) {
       const [rows] = await pool.execute(
         `SELECT IDcall FROM callHistory
          WHERE idCaller = ? AND idReceiver = ?
@@ -1103,6 +1108,11 @@ async function processRejectCall({
         [callerID, receiverID]
       );
       rejectedCallID = rows[0]?.IDcall ?? null;
+    } else if (!rejectedCallID) {
+      console.log(
+        `[processRejectCall] repli refusé: hint=${callIdHint} ne désigne pas `
+        + 'un appel à deux (salon de groupe ou session)',
+      );
     }
     if (rejectedCallID) {
       await pool.execute('UPDATE callHistory SET status = 2 WHERE IDcall = ?', [rejectedCallID]);
