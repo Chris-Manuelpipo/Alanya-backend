@@ -115,6 +115,45 @@ async function processOneJob(conn) {
   const kinds = [...handlers.keys()];
   if (kinds.length === 0) return false;
 
+  // La transaction est rendue, quoi qu'il arrive.
+  //
+  // Elle n'entoure que la prise du verrou — le handler tourne après le commit,
+  // sur le pool. Mais si le SELECT, l'UPDATE ou le commit lui-même lève
+  // (coupure MySQL, verrou expiré, pool saturé), la connexion repartait au pool
+  // **transaction ouverte**. Le prochain emprunteur héritait alors d'une
+  // transaction qui n'est pas la sienne, avec ses verrous de lignes : de quoi
+  // bloquer les délais d'appel qui passent tous par cette file.
+  let job;
+  try {
+    job = await _prendreUnJob(conn);
+  } catch (err) {
+    try {
+      await conn.rollback();
+    } catch (e2) {
+      console.warn('[jobQueue] rollback échoué:', e2.message);
+    }
+    throw err;
+  }
+  if (!job) return false;
+
+  const handler = handlers.get(job.kind);
+  const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
+
+  try {
+    // Invariant : le SELECT ci-dessus filtre déjà sur les kinds connus. Un
+    // handler manquant ici signalerait un désenregistrement en cours de route.
+    if (!handler) throw new Error(`Handler inconnu: ${job.kind}`);
+    await handler(payload, job);
+    await pool.execute('DELETE FROM job_queue WHERE id = ?', [job.id]);
+  } catch (err) {
+    await _solderEchec(job, payload, err);
+  }
+  return true;
+}
+
+/** Verrouille et rend le prochain job exécutable, ou `null`. */
+async function _prendreUnJob(conn) {
+  const kinds = [...handlers.keys()];
   await conn.beginTransaction();
   const [rows] = await conn.execute(
     `SELECT id, kind, payload, attempts, max_attempts
@@ -130,7 +169,7 @@ async function processOneJob(conn) {
   );
   if (!rows.length) {
     await conn.commit();
-    return false;
+    return null;
   }
   const job = rows[0];
   await conn.execute(
@@ -138,42 +177,34 @@ async function processOneJob(conn) {
     [WORKER_ID, job.id],
   );
   await conn.commit();
+  return job;
+}
 
-  const handler = handlers.get(job.kind);
-  const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
-
-  try {
-    // Invariant : le SELECT ci-dessus filtre déjà sur les kinds connus. Un
-    // handler manquant ici signalerait un désenregistrement en cours de route.
-    if (!handler) throw new Error(`Handler inconnu: ${job.kind}`);
-    await handler(payload, job);
-    await pool.execute('DELETE FROM job_queue WHERE id = ?', [job.id]);
-  } catch (err) {
-    const attempts = job.attempts + 1;
-    const terminal = attempts >= job.max_attempts;
-    if (terminal) {
-      await pool.execute(
-        `UPDATE job_queue
-         SET attempts = ?, failed_at = NOW(), last_error = ?, locked_at = NULL, locked_by = NULL
-         WHERE id = ?`,
-        [attempts, String(err.message || err).slice(0, 2000), job.id],
-      );
-      if (job.kind === 'broadcast_push' && payload?.broadcastId) {
-        const { markPushJobFailed } = require('./broadcastService');
-        await markPushJobFailed(payload.broadcastId).catch(() => {});
-      }
-    } else {
-      const delay = backoffSeconds(attempts);
-      await pool.execute(
-        `UPDATE job_queue
-         SET attempts = ?, run_after = DATE_ADD(NOW(), INTERVAL ? SECOND),
-             last_error = ?, locked_at = NULL, locked_by = NULL
-         WHERE id = ?`,
-        [attempts, delay, String(err.message || err).slice(0, 2000), job.id],
-      );
+/** Compte une tentative ratée, et solde le job quand il n'en reste plus. */
+async function _solderEchec(job, payload, err) {
+  const attempts = job.attempts + 1;
+  const terminal = attempts >= job.max_attempts;
+  if (terminal) {
+    await pool.execute(
+      `UPDATE job_queue
+       SET attempts = ?, failed_at = NOW(), last_error = ?, locked_at = NULL, locked_by = NULL
+       WHERE id = ?`,
+      [attempts, String(err.message || err).slice(0, 2000), job.id],
+    );
+    if (job.kind === 'broadcast_push' && payload?.broadcastId) {
+      const { markPushJobFailed } = require('./broadcastService');
+      await markPushJobFailed(payload.broadcastId).catch(() => {});
     }
+  } else {
+    const delay = backoffSeconds(attempts);
+    await pool.execute(
+      `UPDATE job_queue
+       SET attempts = ?, run_after = DATE_ADD(NOW(), INTERVAL ? SECOND),
+           last_error = ?, locked_at = NULL, locked_by = NULL
+       WHERE id = ?`,
+      [attempts, delay, String(err.message || err).slice(0, 2000), job.id],
+    );
   }
-  return true;
 }
 
 /**
