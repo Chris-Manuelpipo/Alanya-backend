@@ -1933,6 +1933,20 @@ const createGroupCall = (io, socket, userSockets) => {
 
       const fcmTargets = [];
       for (const targetID of uniqueTargets) {
+        // Le chemin 1-à-1 protège sa cible depuis toujours — `call_user`
+        // refuse et émet `call_busy` quand elle est déjà en communication. Le
+        // groupe ne consultait rien : l'invitation partait chez tout le monde,
+        // et arrivait en plein écran, sonnerie comprise, par-dessus une
+        // conversation en cours. `isApplicationForeground` rend faux dès que le
+        // verrou d'écran est posé, c'est-à-dire l'état normal d'un appel audio.
+        //
+        // On n'invite pas quelqu'un qui parle déjà.
+        if (await callState.isBusyForNewCall(targetID, callerID, pendingCalls)) {
+          console.log(
+            `[create_group_call] invité ${targetID} occupé — non sonné`,
+          );
+          continue;
+        }
         await callDeviceOwnership.ring(String(roomId), targetID);
         fcmTargets.push(targetID);
         if (await isUserOnline(io, targetID)) {
@@ -2085,6 +2099,17 @@ const leaveGroupCall = (io, socket, userSockets) => {
           userId: String(socket.alanyaID),
         });
         socket.leave(`group_${rId}`);
+
+        // Le salon s'est-il vidé ? Alors les invités qui sonnent encore
+        // sonnent pour un appel que plus personne ne mène.
+        try {
+          const restant = await groupRooms.get(rId);
+          if (!restant || !restant.participants || restant.participants.size === 0) {
+            await notifierFinAuxInvitesEnSonnerie(rId, socket.alanyaID);
+          }
+        } catch (err) {
+          console.warn('[Socket leave_group_call] fin de salon:', err.message);
+        }
       }
 
       socket.currentGroupRoom = null;
@@ -2093,6 +2118,43 @@ const leaveGroupCall = (io, socket, userSockets) => {
     }
   });
 };
+
+/**
+ * Prévient par push les invités qui sonnent encore pour un appel de groupe.
+ *
+ * `end_group_call` et le départ du dernier participant ne diffusaient qu'à la
+ * salle socket `group_<id>`. Or un invité dont l'application est fermée n'y est
+ * jamais entré : il n'a été joint que par `notifyGroupCall`. Rien ne retirait
+ * donc son entrée CallKit, et son téléphone sonnait les quarante secondes
+ * complètes — écran de verrouillage compris — pour un appel que tout le monde
+ * avait déjà quitté. À l'expiration, l'entrée retirée déclenchait en plus un
+ * refus vers le serveur.
+ *
+ * Le 1-à-1 et la conférence poussent bien un `call_ended` dans ce cas ; le
+ * groupe était le seul à ne pas le faire.
+ */
+async function notifierFinAuxInvitesEnSonnerie(roomId, ownerID) {
+  const rId = String(roomId);
+  let enSonnerie = [];
+  try {
+    enSonnerie = await callDeviceOwnership.listUsers(rId, 'ringing');
+  } catch (err) {
+    console.warn('[groupe] listUsers échoué:', err.message);
+    return;
+  }
+  if (!enSonnerie.length) return;
+  console.log(
+    `[groupe] fin de ${rId} → ${enSonnerie.length} invité(s) encore en sonnerie`,
+  );
+  await Promise.allSettled(
+    enSonnerie.map((inviteID) =>
+      notifyCallEnded(inviteID, ownerID, 'Appel de groupe', rId, {
+        reason: 'group_ended',
+      }).catch((err) =>
+        console.warn(`[groupe] call_ended vers ${inviteID}:`, err.message)),
+    ),
+  );
+}
 
 const endGroupCall = (io, socket, userSockets) => {
   socket.on('end_group_call', async (data) => {
@@ -2115,6 +2177,8 @@ const endGroupCall = (io, socket, userSockets) => {
       }
 
       await groupRooms.destroy(rId);
+      // Avant de libérer la propriété : c'est elle qui sait qui sonne encore.
+      await notifierFinAuxInvitesEnSonnerie(rId, socket.alanyaID);
       // La salle n'existe plus : plus personne n'a d'appareil à y posséder.
       await callDeviceOwnership.release(String(rId));
       // Le payload portait `{}` : le client ne pouvait pas distinguer la fin de

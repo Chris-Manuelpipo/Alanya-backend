@@ -236,6 +236,44 @@ async function _redisReleaseUser(client, key, userId) {
   await _ecrire(client, key, userId, entry);
 }
 
+/**
+ * Les comptes dont l'appareil est encore en état [state] pour cette clé.
+ *
+ * `end_group_call` et le départ du dernier participant ne prévenaient que la
+ * salle socket — or un invité dont l'application est fermée n'y est jamais
+ * entré : il n'a été joint que par push. Rien ne retirait donc son entrée
+ * CallKit, et son téléphone sonnait les quarante secondes complètes pour un
+ * appel que tout le monde avait déjà quitté. Le 1-à-1 et la conférence
+ * poussent bien un `call_ended` dans ce cas ; le groupe, non.
+ *
+ * Cette liste est ce qui manquait pour le faire : elle dit qui sonne encore.
+ */
+async function _redisListUsers(client, key, state) {
+  const k = _key(key);
+  if (!k) return [];
+  const brut = await client.hGetAll(keyOf(k));
+  const out = [];
+  for (const [userId, raw] of Object.entries(brut || {})) {
+    try {
+      const entry = JSON.parse(raw);
+      if (!state || entry?.state === state) out.push(Number(userId));
+    } catch {
+      // Entrée illisible : on ne peut rien en dire, on ne l'invente pas.
+    }
+  }
+  return out;
+}
+
+function _memListUsers(key, state) {
+  const m = _byKey.get(_key(key));
+  if (!m) return [];
+  const out = [];
+  for (const [userId, entry] of m.entries()) {
+    if (!state || entry?.state === state) out.push(Number(userId));
+  }
+  return out;
+}
+
 async function _redisRelease(client, key) {
   const k = _key(key);
   if (k) await client.del(keyOf(k));
@@ -247,6 +285,16 @@ async function getEntry(key, userId) {
   const client = getDataClient();
   if (client) return _redisGetEntry(client, key, userId);
   return _memGetEntry(key, userId);
+}
+
+/**
+ * Les comptes suivis pour cette clé, filtrés sur [state] si fourni.
+ * Voir `_redisListUsers` pour ce que ça débloque.
+ */
+async function listUsers(key, state = null) {
+  const client = getDataClient();
+  if (client) return _redisListUsers(client, key, state);
+  return _memListUsers(key, state);
 }
 
 async function getActiveDeviceId(key, userId) {
@@ -342,6 +390,7 @@ function _reset() {
 }
 
 module.exports = {
+  listUsers,
   setCalling,
   setActive,
   ring,
