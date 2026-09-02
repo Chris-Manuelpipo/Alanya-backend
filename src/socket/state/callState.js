@@ -98,6 +98,26 @@ function _memSetRinging(userId, { callId = null, peerId = null, isVideo = false 
   });
 }
 
+function _memSetInGroup(userId, roomId) {
+  if (userId == null) return false;
+  const prev = _states.get(userId);
+  if (!canRecordGroupCall(prev?.status ?? null)) return false;
+  _memClearTimers(prev);
+  _states.set(userId, {
+    status: 'in_group',
+    callId: roomId != null ? String(roomId) : (prev?.callId ?? null),
+    peerId: null,
+    noAnswerTimer: null,
+    disconnectTimer: null,
+    resumeAckTimer: null,
+    resumeOwnerMissingTimer: null,
+    lastAnswer: null,
+    isVideo: !!prev?.isVideo,
+    ringingSince: null,
+  });
+  return true;
+}
+
 function _memSetInCall(userId, { callId = null, peerId = null, lastAnswer = undefined, isVideo = undefined } = {}) {
   if (userId == null) return;
   const prev = _states.get(userId);
@@ -243,6 +263,20 @@ async function _redisSetInCall(client, userId, { callId = null, peerId = null, l
   });
 }
 
+async function _redisSetInGroup(client, userId, roomId) {
+  const prev = await _redisGetEntry(client, userId);
+  if (!canRecordGroupCall(prev?.status ?? null)) return false;
+  await _redisWriteEntry(client, userId, {
+    status: 'in_group',
+    callId: roomId != null ? String(roomId) : (prev?.callId ?? null),
+    peerId: null,
+    lastAnswer: null,
+    isVideo: !!prev?.isVideo,
+    ringingSince: null,
+  });
+  return true;
+}
+
 async function _redisClear(client, userId) {
   await cancelByDedupeKey(dedupe(userId), KINDS);
   await client.del(keyOf(userId));
@@ -329,9 +363,38 @@ async function get(userId) {
 }
 
 /** @deprecated Préférer isBusyForNewCall avec remoteId. */
+/**
+ * Ce statut occupe-t-il l'utilisateur pour un NOUVEL appel ?
+ *
+ * `in_group` s'ajoute aux deux historiques. Les appels de groupe n'étaient
+ * inscrits nulle part : ni `create_group_call` ni `join_group_call` n'écrivaient
+ * dans `callState`. Un utilisateur en pleine conversation de groupe était donc
+ * invisible à cette question, et `call_user` — qui protège sa cible depuis
+ * toujours — laissait passer un appel à deux vers lui. Sonnerie plein écran
+ * par-dessus sa conversation.
+ *
+ * Le statut est distinct, et c'est l'essentiel : partout ailleurs, les chemins
+ * 1-à-1 testent explicitement `ringing` ou `in_call` — la grâce de déconnexion,
+ * l'appariement d'`answer_call`, la sortie de `end_call`, le refus tardif. Un
+ * `in_group` leur reste invisible, et ne peut donc pas les faire dérailler.
+ */
+function statusOccupies(status) {
+  return status === 'ringing' || status === 'in_call' || status === 'in_group';
+}
+
+/**
+ * Peut-on inscrire un appel de groupe par-dessus l'état courant ?
+ *
+ * Non si l'utilisateur est déjà dans un appel à deux : cet état-là porte un
+ * pair et un identifiant dont tout le reste dépend, et l'écraser coûterait plus
+ * cher que le renseignement gagné. `isBusyForNewCall` le voit déjà occupé.
+ */
+function canRecordGroupCall(currentStatus) {
+  return currentStatus == null || currentStatus === 'in_group';
+}
+
 async function isBusy(userId) {
-  const status = await get(userId);
-  return status === 'ringing' || status === 'in_call';
+  return statusOccupies(await get(userId));
 }
 
 async function findExistingRingingPair(callerID, targetID) {
@@ -371,7 +434,10 @@ async function isBusyForNewCall(userId, remoteId, pendingCalls = null) {
   await clearStaleRinging(userId, pendingCalls);
   const entry = await getEntry(userId);
   if (!entry) return false;
-  if (entry.status !== 'ringing' && entry.status !== 'in_call') return false;
+  if (!statusOccupies(entry.status)) return false;
+  // Un appel de groupe occupe, mais n'a pas de pair : la clause d'exception
+  // ci-dessous ne le concerne pas.
+  if (entry.status === 'in_group') return true;
   if (entry.status === 'ringing' && _samePeer(entry.peerId, remoteId)) return false;
   return true;
 }
@@ -391,6 +457,30 @@ async function setInCall(userId, opts = {}) {
   const client = getDataClient();
   if (client) return _redisSetInCall(client, userId, opts);
   return _memSetInCall(userId, opts);
+}
+
+/**
+ * Inscrit [userId] comme engagé dans l'appel de groupe [roomId].
+ * Rend `false` si un appel à deux occupe déjà l'état — voir `canRecordGroupCall`.
+ */
+async function setInGroup(userId, roomId) {
+  if (userId == null) return false;
+  const client = getDataClient();
+  if (client) return _redisSetInGroup(client, userId, roomId);
+  return _memSetInGroup(userId, roomId);
+}
+
+/**
+ * Retire l'inscription de groupe, et **seulement** elle.
+ *
+ * Un `clear` nu effacerait un appel à deux commencé entre-temps.
+ */
+async function clearGroup(userId) {
+  if (userId == null) return false;
+  const entry = await getEntry(userId);
+  if (entry?.status !== 'in_group') return false;
+  await clear(userId);
+  return true;
 }
 
 async function clear(userId) {
@@ -499,6 +589,10 @@ async function hasResumeAckTimer(userId) {
 }
 
 module.exports = {
+  setInGroup,
+  clearGroup,
+  statusOccupies,
+  canRecordGroupCall,
   get,
   isBusy,
   isBusyForNewCall,

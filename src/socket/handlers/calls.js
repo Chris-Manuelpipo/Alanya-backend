@@ -1953,6 +1953,9 @@ const createGroupCall = (io, socket, userSockets) => {
         activeDeviceId: callerDeviceId,
         activeSocketId: socket.id,
       });
+      // L'organisateur est engagé : sans cette inscription il restait invisible
+      // à `isBusyForNewCall`, et un appel à deux lui arrivait par-dessus.
+      await callState.setInGroup(callerID, roomId);
 
       const fcmTargets = [];
       for (const targetID of uniqueTargets) {
@@ -2051,6 +2054,9 @@ const joinGroupCall = (io, socket, userSockets) => {
 
       socket.join(`group_${roomId}`);
       socket.currentGroupRoom = roomId;
+      // Engagé : voir `callState.statusOccupies`. Sans pair et sous un statut
+      // distinct, donc invisible aux chemins 1-à-1.
+      await callState.setInGroup(userID, roomId);
 
       if (!claim.alreadyOwner) {
         await emitToUserExceptDevice(io, userID, deviceId, 'call_ended', {
@@ -2116,6 +2122,9 @@ const leaveGroupCall = (io, socket, userSockets) => {
         // renvoyait CALL_ANSWERED_ELSEWHERE, définitivement.
         if (socket.alanyaID != null) {
           await callDeviceOwnership.forget(String(rId), socket.alanyaID);
+          // `clearGroup` et non `clear` : un appel à deux commencé entre-temps
+          // ne doit pas partir avec le départ du salon.
+          await callState.clearGroup(socket.alanyaID);
         }
         socket.to(`group_${rId}`).emit('group_user_left', {
           roomId: rId,
@@ -2200,8 +2209,15 @@ const endGroupCall = (io, socket, userSockets) => {
       }
 
       await groupRooms.destroy(rId);
-      // Avant de libérer la propriété : c'est elle qui sait qui sonne encore.
+      // Avant de libérer la propriété : c'est elle qui sait qui sonne encore,
+      // et qui participe.
       await notifierFinAuxInvitesEnSonnerie(rId, socket.alanyaID);
+      try {
+        const engages = await callDeviceOwnership.listUsers(String(rId));
+        await Promise.allSettled(engages.map((uid) => callState.clearGroup(uid)));
+      } catch (err) {
+        console.warn('[Socket end_group_call] libération callState:', err.message);
+      }
       // La salle n'existe plus : plus personne n'a d'appareil à y posséder.
       await callDeviceOwnership.release(String(rId));
       // Le payload portait `{}` : le client ne pouvait pas distinguer la fin de
