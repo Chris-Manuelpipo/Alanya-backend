@@ -833,10 +833,25 @@ const callUser = (io, socket, userSockets) => {
 };
 
 const answerCall = (io, socket, userSockets) => {
-  socket.on('answer_call', async (data) => {
+  // L'accusé, pour la même raison que sur `end_call` : sans lui, l'émetteur ne
+  // peut pas distinguer un socket vivant d'un socket zombie — TCP mort, mais
+  // Socket.IO ne le constate qu'au bout de son ping. La réponse WebRTC partait
+  // alors dans le vide et n'était JAMAIS rejouée, contrairement au raccrochage
+  // qui a reçu file et accusé. L'appelé affichait « en cours » avec son
+  // chronomètre, l'appelant restait sur « connexion », et aucun média ne
+  // passait.
+  socket.on('answer_call', async (data, ack) => {
+    const repondre = typeof ack === 'function' ? ack : () => {};
+    let repondu = false;
+    const solder = (r) => {
+      if (repondu) return;
+      repondu = true;
+      repondre(r);
+    };
     try {
       if (!socket.authenticated) {
         console.warn('[Socket answer_call] ** Non authentifié');
+        solder({ ok: false, reason: 'unauthenticated' });
         return;
       }
       const { callerId, answer, callId: rawCallId } = data || {};
@@ -850,12 +865,14 @@ const answerCall = (io, socket, userSockets) => {
       }
       if (!deviceId) {
         socket.emit('call_error', { code: 'DEVICE_ID_REQUIRED' });
+        solder({ ok: false, reason: 'DEVICE_ID_REQUIRED' });
         return;
       }
 
       const callId = toInt(rawCallId);
       if (!callId) {
         socket.emit('call_error', { code: 'CALL_ID_REQUIRED' });
+        solder({ ok: false, reason: 'CALL_ID_REQUIRED' });
         return;
       }
       const callKey = String(callId);
@@ -891,6 +908,7 @@ const answerCall = (io, socket, userSockets) => {
           ? 'DEVICE_ID_REQUIRED'
           : (claim.reason === 'NO_SESSION' ? 'CALL_INVALID_STATE' : 'CALL_ANSWERED_ELSEWHERE');
         socket.emit('call_error', { code, callId: callKey });
+        solder({ ok: false, reason: code });
         return;
       }
 
@@ -964,6 +982,11 @@ const answerCall = (io, socket, userSockets) => {
       emitToDevice(io, callerID, callerDeviceId, 'call_answered', answeredPayload);
     } catch (error) {
       console.error('[Socket answer_call]', error.message);
+      solder({ ok: false, reason: 'error' });
+    } finally {
+      // Toute sortie non soldée est un traitement mené à son terme : la
+      // réponse est arrivée et a été traitée, c'est tout ce que l'accusé dit.
+      solder({ ok: true });
     }
   });
 };
