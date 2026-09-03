@@ -2,6 +2,9 @@ const pool = require('../config/db');
 const { notifyMeetingInvite } = require('../services/notificationService');
 const { maxParticipantsForMeeting } = require('../constants/participantLimits');
 const { isBlockedEitherWay } = require('../utils/blockUtils');
+const { loadMeetingAccessByRoom } = require('../services/meetingAccess');
+const { verdictLecture, verdictEntree } = require('../services/meetingAccessRules');
+const { solderMeeting } = require('../services/meetingClosure');
  
 function toMysqlUtc(value) {
   const d = new Date(value);
@@ -106,6 +109,15 @@ const getMeetingById = async (req, res) => {
 const getMeetingByRoom = async (req, res) => {
   try {
     const { room } = req.params;
+
+    // Contrôle d'appartenance en ligne plutôt que par middleware : la clé est un
+    // code de salon, pas `:id`. Et c'est ici que le 404 indifférencié compte le
+    // plus — `mtg-<millisecondes>` s'énumère.
+    const acces = await loadMeetingAccessByRoom(room, req.user.alanyaID);
+    if (verdictLecture(acces) !== 'ok') {
+      return res.status(404).json({ error: 'Meeting not found' });
+    }
+
     const [rows] = await pool.execute(
       `SELECT m.*, ${START_TIME_UTC}, u.nom as organiser_nom, u.pseudo as organiser_pseudo, u.avatar_url as organiser_avatar
        FROM meeting m
@@ -166,6 +178,17 @@ const updateMeeting = async (req, res) => {
     values.push(id);
     await pool.execute(`UPDATE meeting SET ${updates.join(', ')} WHERE idMeeting = ?`, values);
 
+    // Repli HTTP de « terminer pour tout le monde ». Le client n'avait que le
+    // chemin socket : socket tombée, l'écran se fermait quand même et `isEnd`
+    // restait 0 — la réunion réapparaissait « en cours » au chargement suivant.
+    // Terminer par ici doit solder et prévenir exactement comme `meeting:end`,
+    // sans quoi le repli laisserait la base à moitié dans l'état d'avant.
+    if (isEnd === 1) {
+      await solderMeeting(id);
+      const io = req.app.get('io');
+      if (io) io.to(`meeting_${id}`).emit('meeting:ended', { meetingID: Number(id) });
+    }
+
     const [rows] = await pool.execute(
       `SELECT *, DATE_FORMAT(start_time, '%Y-%m-%dT%H:%i:%s.000Z') AS start_time
        FROM meeting WHERE idMeeting = ?`,
@@ -182,6 +205,11 @@ const deleteMeeting = async (req, res) => {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
 
+    // L'organisateur est établi par `requireMeetingOrganiser` (routes/meetings.js).
+    // Avant lui, ce `DELETE FROM participant` s'exécutait sans aucune condition :
+    // un tiers ne supprimait pas la réunion — la seconde requête, elle, filtrait
+    // bien sur `idOrganiser` — mais il en vidait la liste des participants, et la
+    // route répondait 200 comme si tout s'était bien passé.
     await pool.execute('DELETE FROM participant WHERE idMeeting = ?', [id]);
     await pool.execute('DELETE FROM meeting WHERE idMeeting = ? AND idOrganiser = ?', [id, alanyaID]);
 
@@ -196,15 +224,20 @@ const joinMeeting = async (req, res) => {
     const { id } = req.params;
     const alanyaID = req.user.alanyaID;
 
-    const [meetings] = await pool.execute(
-      'SELECT type_media FROM meeting WHERE idMeeting = ?',
-      [id],
-    );
-    if (meetings.length === 0) {
-      return res.status(404).json({ error: 'Meeting not found' });
+    // `requireMeetingParticipant` a déjà chargé la réunion et la place de
+    // l'appelant : on ne la relit pas. Rien ne clôt une réunion à son échéance —
+    // `isEnd` n'est écrit que par l'organisateur — donc sans cette garde on
+    // rejoignait encore une réunion terminée depuis trois semaines.
+    const acces = req.meetingAccess;
+    const verdict = verdictEntree(acces);
+    if (verdict === 'terminee') {
+      return res.status(410).json({ error: 'Réunion terminée', code: 'MEETING_ENDED' });
+    }
+    if (verdict === 'echue') {
+      return res.status(410).json({ error: 'Réunion échue', code: 'MEETING_EXPIRED' });
     }
 
-    const limit = maxParticipantsForMeeting(meetings[0].type_media ?? 0);
+    const limit = maxParticipantsForMeeting(acces.typeMedia);
 
     const [existing] = await pool.execute(
       'SELECT * FROM participant WHERE idMeeting = ? AND IDparticipant = ?',
@@ -212,6 +245,10 @@ const joinMeeting = async (req, res) => {
     );
 
     if (existing.length === 0) {
+      // Depuis `requireMeetingParticipant`, cette branche n'est plus atteinte
+      // que par l'organisateur dont la ligne `participant` aurait disparu — une
+      // purge, une migration. Elle n'inscrit donc plus personne d'étranger : la
+      // garde a remplacé l'auto-inscription qui ouvrait la réunion à tous.
       const [countRows] = await pool.execute(
         'SELECT COUNT(*) AS total FROM participant WHERE idMeeting = ?',
         [id],

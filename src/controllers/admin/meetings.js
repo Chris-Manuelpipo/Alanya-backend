@@ -1,4 +1,6 @@
-const pool = require('../../config/db'); 
+const pool = require('../../config/db');
+const { solderMeeting } = require('../../services/meetingClosure');
+
 
 // Toutes les réunions de l'application avec organisateur et nombre de participants.
 const getAllMeetings = async (req, res) => {
@@ -36,7 +38,18 @@ const endMeeting = async (req, res) => {
     const { id } = req.params;
     const [rows] = await pool.execute('SELECT idMeeting FROM meeting WHERE idMeeting = ?', [id]);
     if (rows.length === 0) return res.status(404).json({ error: 'Réunion introuvable' });
-    await pool.execute('UPDATE meeting SET isEnd = 1 WHERE idMeeting = ?', [id]);
+
+    // Deux oublis, pas un : l'arrêt administrateur posait `isEnd = 1` sans solder
+    // les participants — ils restaient `connecte = 1` sans durée — et **sans rien
+    // diffuser**. Les gens restaient donc en réunion, sans rien savoir, pendant
+    // que le tableau de bord la comptait terminée.
+    await solderMeeting(id);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`meeting_${id}`).emit('meeting:ended', { meetingID: Number(id) });
+    }
+
     res.json({ message: 'Réunion terminée' });
   } catch (error) {
     console.error('[Admin] endMeeting error:', error.message);

@@ -3,6 +3,9 @@ const { emitToUser, emitToDevice, normalizeDeviceId } = require('../../utils/use
 const meetingMuteStates = require('../state/meetingMuteStates');
 const meetingVideoStates = require('../state/meetingVideoStates');
 const meetingDevicePresence = require('../state/meetingDevicePresence');
+const { loadMeetingAccess } = require('../../services/meetingAccess');
+const { verdictEntree } = require('../../services/meetingAccessRules');
+const { solderMeeting } = require('../../services/meetingClosure');
 
 function toInt(v) {
   const n = parseInt(v, 10);
@@ -101,6 +104,35 @@ const meetingJoinRoom = (io, socket, userSockets) => {
           meetingID: mID,
           code: 'DEVICE_ID_REQUIRED',
           message: 'Identifiant appareil requis',
+        });
+      }
+
+      // Appartenance AVANT `tryJoin` : réservée après, un intrus consommerait
+      // le slot d'appareil actif du compte avant de se faire refuser.
+      //
+      // Le handler vérifiait l'identité, l'appareil et la présence
+      // multi-appareils — mais jamais que le compte figurait dans `participant`.
+      // Un compte authentifié qui connaissait un `idMeeting` entrait dans la
+      // salle, recevait le roster et les instantanés micro/caméra, et échangeait
+      // offres, réponses et candidats ICE avec les présents.
+      const acces = await loadMeetingAccess(mID, uID);
+      const verdict = verdictEntree(acces);
+      if (verdict !== 'ok') {
+        // « Terminée » et « échue » ne sont dits qu'à un membre : lui apprendre
+        // que c'est fini ne lui révèle rien. L'inconnu, lui, ne reçoit que
+        // NOT_A_PARTICIPANT, indiscernable d'une réunion inexistante.
+        const codes = {
+          introuvable: 'NOT_A_PARTICIPANT',
+          terminee: 'MEETING_ENDED',
+          echue: 'MEETING_EXPIRED',
+        };
+        console.warn(
+          `[Socket meeting:join_room] refusé (${verdict}): user=${uID} meeting=${mID}`,
+        );
+        return socket.emit('meeting:join_denied', {
+          meetingID: mID,
+          code: codes[verdict],
+          message: 'Réunion indisponible',
         });
       }
 
@@ -270,7 +302,10 @@ const meetingEnd = (io, socket, userSockets) => {
     }
 
     try {
-      await pool.execute('UPDATE meeting SET isEnd = 1 WHERE idMeeting = ?', [meetingID]);
+      // Solder, et pas seulement poser `isEnd` : les présents restaient sinon
+      // `connecte = 1` à vie, sans durée, puisque `meeting:ended` fait partir le
+      // client sans qu'il appelle `POST /leave`.
+      await solderMeeting(meetingID);
     } catch (err) {
       console.error('[Socket meeting:end] DB error:', err.message);
     }

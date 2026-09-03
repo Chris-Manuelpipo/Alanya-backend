@@ -7,9 +7,18 @@ const startMeetingScheduler = async () => {
   console.log('[MeetingScheduler] Démarrage du scheduler de notifications');
   const { withLease } = require('./schedulerLease');
 
+  const { balayer } = require('./meetingClosure');
+
   schedulerInterval = setInterval(async () => {
     try {
-      await withLease('meeting_scheduler', () => checkAndNotifyUpcomingMeetings());
+      // Un seul minuteur et un seul bail pour les deux passes réunion : le
+      // rappel des réunions qui approchent, et le solde de celles qui sont
+      // échues et vides. En créer un second aurait ajouté une ligne
+      // `scheduler_leases` et une cadence à surveiller, pour la même table.
+      await withLease('meeting_scheduler', async () => {
+        await checkAndNotifyUpcomingMeetings();
+        await balayer();
+      });
     } catch (error) {
       console.error('[MeetingScheduler] Erreur:', error.message);
     }
