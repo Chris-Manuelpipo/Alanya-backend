@@ -49,9 +49,14 @@ const createMeeting = async (req, res) => {
       [idOrganiser, toMysqlUtc(start_time), duree || 60, objet, room, type_media]
     );
 
+    // L'organisateur est réputé « a rejoint » dès la création — sans quoi son
+    // propre détail l'annoncerait « en attente ». `connecte = 0` en revanche :
+    // il ne l'est pas encore réellement, `createAndJoin` enchaîne toujours sur
+    // `meeting:join_room`, qui pose `connecte = 1`. Avant ce correctif la ligne
+    // mentait dès l'INSERT, avant même qu'un invité soit ajouté (voir F5).
     await pool.execute(
-      `INSERT INTO participant (idMeeting, IDparticipant, status, start_time, connecte, duree) 
-       VALUES (?, ?, 1, NOW(), 1, 0)`,
+      `INSERT INTO participant (idMeeting, IDparticipant, status, start_time, connecte, duree)
+       VALUES (?, ?, 1, NOW(), 0, 0)`,
       [result.insertId, idOrganiser]
     );
 
@@ -266,9 +271,12 @@ const joinMeeting = async (req, res) => {
         [id, alanyaID]
       );
     } else {
-      // Inscription/autorisation seulement — présence live = meeting:join_room.
+      // `status = 1` : c'est ici, au premier join réel, que « a rejoint »
+      // devient vrai — pas à l'invitation. `meeting:join_room` pose le même
+      // champ ; les deux écritures sont idempotentes, chacune couvre l'un des
+      // deux chemins d'entrée (HTTP direct, socket après reconnexion).
       await pool.execute(
-        'UPDATE participant SET start_time = NOW() WHERE idMeeting = ? AND IDparticipant = ?',
+        'UPDATE participant SET status = 1, start_time = NOW() WHERE idMeeting = ? AND IDparticipant = ?',
         [id, alanyaID]
       );
     }
@@ -279,35 +287,11 @@ const joinMeeting = async (req, res) => {
   }
 };
 
-const acceptJoinRequest = async (req, res) => {
-  try {
-    const { id, userId } = req.params;
-
-    await pool.execute(
-      'UPDATE participant SET status = 1 WHERE idMeeting = ? AND IDparticipant = ?',
-      [id, userId]
-    );
-
-    res.json({ message: 'Join request accepted' });
-  } catch (error) {
-    throw error;
-  }
-};
-
-const declineJoinRequest = async (req, res) => {
-  try {
-    const { id, userId } = req.params;
-
-    await pool.execute(
-      'DELETE FROM participant WHERE idMeeting = ? AND IDparticipant = ? AND status = 0',
-      [id, userId]
-    );
-
-    res.json({ message: 'Join request declined' });
-  } catch (error) {
-    throw error;
-  }
-};
+// acceptJoinRequest / declineJoinRequest ont été retirées avec le RSVP qui les
+// justifiait. Aucun appelant côté application ; après ce lot, "accepter"
+// écrirait "a rejoint" sur quelqu'un qui n'a pas rejoint, et "refuser"
+// supprimait exactement les invités légitimes (`WHERE status = 0`). Voir
+// migrations/077_participant_status_rejoint.sql.
 
 const inviteParticipants = async (req, res) => {
   try {
@@ -334,7 +318,6 @@ const inviteParticipants = async (req, res) => {
     );
     const currentCount = countRows[0]?.total ?? 0;
 
-    // Ajouter les participants directement acceptés (status 1), non connectés (0)
     let added = 0;
     for (const participantId of participant_ids) {
       if (currentCount + added >= limit) break;
@@ -352,8 +335,13 @@ const inviteParticipants = async (req, res) => {
       );
 
       if (existing.length === 0) {
+        // `status = 0` : invité, pas encore venu. Avant ce correctif la ligne
+        // était insérée à 1 — « accepté » — pour quelqu'un qui n'avait pas
+        // ouvert l'application. Le badge du détail lisait exactement ce champ
+        // et affichait « Accepté » pour tout le monde, y compris un invité qui
+        // ignore encore l'invitation.
         await pool.execute(
-          'INSERT INTO participant (idMeeting, IDparticipant, status, start_time, connecte, duree) VALUES (?, ?, 1, NOW(), 0, 0)',
+          'INSERT INTO participant (idMeeting, IDparticipant, status, start_time, connecte, duree) VALUES (?, ?, 0, NOW(), 0, 0)',
           [id, participantId]
         );
         added += 1;
@@ -412,8 +400,6 @@ module.exports = {
   updateMeeting,
   deleteMeeting,
   joinMeeting,
-  acceptJoinRequest,
-  declineJoinRequest,
   inviteParticipants,
   leaveMeeting,
 };

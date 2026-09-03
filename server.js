@@ -69,8 +69,7 @@ const {
 } = require('./src/socket/handlers/calls');
 
 const {
-  meetingCreate, meetingJoinRoom, meetingJoinRequest,
-  meetingJoinAccept, meetingJoinDecline,
+  meetingCreate, meetingJoinRoom,
   meetingStart, meetingEnd, meetingChat,
   meetingLeave, meetingOffer, meetingAnswer, meetingIceCandidate,
   meetingMuteState, meetingVideoState,
@@ -236,9 +235,6 @@ io.on('connection', (socket) => {
   callRejoin(io, socket, userSockets);
   meetingCreate(io, socket, userSockets);
   meetingJoinRoom(io, socket, userSockets);
-  meetingJoinRequest(io, socket, userSockets);
-  meetingJoinAccept(io, socket, userSockets);
-  meetingJoinDecline(io, socket, userSockets);
   meetingStart(io, socket, userSockets);
   meetingEnd(io, socket, userSockets);
   meetingChat(io, socket, userSockets);

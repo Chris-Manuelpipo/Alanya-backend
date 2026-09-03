@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const {
+  requireMeetingParticipant,
+  requireMeetingOrganiser,
+} = require('../middleware/meetingAuth');
 
 const {
   getMeetings,
@@ -10,8 +14,6 @@ const {
   updateMeeting,
   deleteMeeting,
   joinMeeting,
-  acceptJoinRequest,
-  declineJoinRequest,
   inviteParticipants,
   leaveMeeting,
 } = require('../controllers/meetingController');
@@ -147,9 +149,14 @@ router.get('/by-room/:room', auth, getMeetingByRoom);
  *       200:
  *         description: Réunion supprimée
  */
-router.get('/:id', auth, getMeetingById);
+// requireMeetingParticipant : la route rendait la fiche complète — noms,
+// pseudos, avatars, présence — à tout compte authentifié.
+router.get('/:id', auth, requireMeetingParticipant, getMeetingById);
+// updateMeeting fait déjà sa vérification d'organisateur en ligne.
 router.put('/:id', auth, updateMeeting);
-router.delete('/:id', auth, deleteMeeting);
+// requireMeetingOrganiser : la route supprimait les lignes `participant` avant
+// de regarder qui appelait, et répondait 200 dans tous les cas.
+router.delete('/:id', auth, requireMeetingOrganiser, deleteMeeting);
 
 /**
  * @swagger
@@ -169,7 +176,11 @@ router.delete('/:id', auth, deleteMeeting);
  *       200:
  *         description: Participant ajouté
  */
-router.post('/:id/join', auth, joinMeeting);
+// requireMeetingParticipant : la route inscrivait l'appelant sans vérifier la
+// moindre invitation. Combinée à `GET /:id` et à `meeting:join_room`, la chaîne
+// « lire la fiche → s'inscrire → entrer dans la salle » était franchissable par
+// n'importe quel compte connaissant un identifiant de réunion.
+router.post('/:id/join', auth, requireMeetingParticipant, joinMeeting);
 
 /**
  * @swagger
@@ -224,54 +235,9 @@ router.post('/:id/leave', auth, leaveMeeting);
  */
 router.post('/:id/invite', auth, inviteParticipants);
 
-/**
- * @swagger
- * /api/meetings/{id}/accept/{userId}:
- *   post:
- *     summary: Accepter une demande de participation
- *     tags: [Réunions]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: integer
- *       - in: path
- *         name: userId
- *         required: true
- *         schema:
- *           type: integer
- *     responses:
- *       200:
- *         description: Demande acceptée
- */
-router.post('/:id/accept/:userId', auth, acceptJoinRequest);
-
-/**
- * @swagger
- * /api/meetings/{id}/decline/{userId}:
- *   post:
- *     summary: Refuser une demande de participation
- *     tags: [Réunions]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: integer
- *       - in: path
- *         name: userId
- *         required: true
- *         schema:
- *           type: integer
- *     responses:
- *       200:
- *         description: Demande refusée
- */
-router.post('/:id/decline/:userId', auth, declineJoinRequest);
+// Les routes accept/:userId et decline/:userId, et le RSVP qu'elles
+// servaient, ont été retirées : aucun appelant côté application, et leur
+// sémantique devenait fausse une fois que `status = 1` a cessé de vouloir
+// dire « accepté » pour vouloir dire « a rejoint ». Voir meetingController.js.
 
 module.exports = router;

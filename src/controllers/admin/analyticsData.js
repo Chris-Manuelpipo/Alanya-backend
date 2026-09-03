@@ -121,24 +121,24 @@ async function fetchAnalyticsData(fromInput, toInput) {
     // Réunions, niveau participant. Deux familles de mesures qui ne se
     // recouvrent pas :
     //
-    //  — la réponse à l'invitation (`status`), hors organisateur : celui-ci est
+    //  — qui a rejoint (`status`), hors organisateur : celui-ci est
     //    auto-inséré `status = 1` à la création de la réunion, le compter
-    //    ferait remonter un « accepté » garanti par réunion ;
+    //    ferait remonter un « a rejoint » garanti par réunion ;
     //  — la présence réelle (`duree > 0`), organisateur compris : lui aussi
     //    assiste, et sa durée est écrite comme celle des autres.
     //
-    // Un no-show, c'est avoir accepté puis n'être jamais venu — pas « ne pas
-    // avoir répondu », que l'ancien calcul confondait avec un refus.
+    // `status` n'est plus une réponse à une invitation depuis que
+    // `inviteParticipants` insère à 0 et que le premier join réel le fait
+    // passer à 1 (migration 077) : il n'existe donc plus de « refusé » ni de
+    // « no-show » à mesurer — un invité qui n'est jamais venu est simplement
+    // resté à `status = 0`.
     pool.execute(
       `SELECT
          COUNT(*) AS participants,
          COALESCE(SUM(p.duree > 0), 0) AS attendees,
          COALESCE(SUM(p.IDparticipant <> m.idOrganiser), 0) AS invitations,
-         COALESCE(SUM(p.status = 1 AND p.IDparticipant <> m.idOrganiser), 0) AS accepted,
-         COALESCE(SUM(p.status = 2 AND p.IDparticipant <> m.idOrganiser), 0) AS declined,
-         COALESCE(SUM(p.status = 0 AND p.IDparticipant <> m.idOrganiser), 0) AS pending,
-         COALESCE(SUM(p.status = 1 AND p.duree = 0
-                      AND p.IDparticipant <> m.idOrganiser), 0) AS noShow
+         COALESCE(SUM(p.status = 1 AND p.IDparticipant <> m.idOrganiser), 0) AS joined,
+         COALESCE(SUM(p.status = 0 AND p.IDparticipant <> m.idOrganiser), 0) AS invitedNeverJoined
        FROM participant p
        JOIN meeting m ON m.idMeeting = p.idMeeting
        WHERE m.start_time BETWEEN ? AND ?`,
@@ -209,10 +209,8 @@ async function fetchAnalyticsData(fromInput, toInput) {
   const mParticipants = _num(meetingParts.participants);
   const mAttendees = _num(meetingParts.attendees);
   const mInvitations = _num(meetingParts.invitations);
-  const mAccepted = _num(meetingParts.accepted);
-  const mDeclined = _num(meetingParts.declined);
-  const mPending = _num(meetingParts.pending);
-  const mNoShow = _num(meetingParts.noShow);
+  const mJoined = _num(meetingParts.joined);
+  const mInvitedNeverJoined = _num(meetingParts.invitedNeverJoined);
 
   return {
     messagesByType: msgByType.map((r) => ({
@@ -262,13 +260,10 @@ async function fetchAnalyticsData(fromInput, toInput) {
       participants: mParticipants,
       attendees: mAttendees,
       invitations: mInvitations,
-      accepted: mAccepted,
-      declined: mDeclined,
-      invited: mPending,
-      noShow: mNoShow,
+      joined: mJoined,
+      invitedNeverJoined: mInvitedNeverJoined,
       attendanceRate: mParticipants ? Math.round((mAttendees / mParticipants) * 100) : 0,
-      acceptanceRate: mInvitations ? Math.round((mAccepted / mInvitations) * 100) : 0,
-      noShowRate: mAccepted ? Math.round((mNoShow / mAccepted) * 100) : 0,
+      joinRate: mInvitations ? Math.round((mJoined / mInvitations) * 100) : 0,
     },
     users: {
       byRole: usersByRole.map((r) => ({

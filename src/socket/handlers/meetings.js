@@ -149,8 +149,12 @@ const meetingJoinRoom = (io, socket, userSockets) => {
       socket.currentMeetingID = mID;
 
       try {
+        // `status = 1` : c'est ici, à l'entrée réelle dans la salle, que « a
+        // rejoint » devient vrai — pas à l'invitation. C'est le seul chemin
+        // qu'emprunte réellement l'application (`joinMeetingHttp` puis
+        // `join_room`), donc le seul écrivain qui compte en pratique.
         await pool.execute(
-          'UPDATE participant SET connecte = 1, start_time = NOW() WHERE idMeeting = ? AND IDparticipant = ?',
+          'UPDATE participant SET status = 1, connecte = 1, start_time = NOW() WHERE idMeeting = ? AND IDparticipant = ?',
           [mID, uID],
         );
       } catch (dbErr) {
@@ -204,82 +208,11 @@ const meetingJoinRoom = (io, socket, userSockets) => {
   });
 };
 
-const meetingJoinRequest = (io, socket, userSockets) => {
-  socket.on('meeting:join_request', async (data) => {
-    try {
-      if (!socket.authenticated) return;
-      const { meetingID, userID, userName } = data;
-      socket.to(`meeting_${meetingID}`).emit('meeting:join_requested', {
-        meetingID,
-        userID,
-        userName,
-      });
-    } catch (error) {
-      socket.emit('error', { message: error.message });
-    }
-  });
-};
-
-const meetingJoinAccept = (io, socket, userSockets) => {
-  socket.on('meeting:join_accept', async (data) => {
-    if (!socket.authenticated) return;
-    const { meetingID, userID } = data;
-    // Admettre quelqu'un est un geste d'organisateur, comme terminer la
-    // réunion. Sans ce contrôle, n'importe quel compte authentifié pouvait
-    // diffuser un `meeting:user_joined` dans une salle où il n'était pas, et
-    // faire ouvrir aux participants une PeerConnection vers un inconnu :
-    // `socket.to(room)` n'exige pas d'appartenir à la room.
-    if (!(await isOrganiser(socket, meetingID))) {
-      console.warn(
-        `[Socket meeting:join_accept] refusé: user=${socket.alanyaID} n'organise pas ${meetingID}`,
-      );
-      return socket.emit('error', {
-        message: 'Seul l\'organisateur peut admettre un participant',
-      });
-    }
-    const uID = toInt(userID);
-    if (uID) {
-      emitToUser(io, uID, 'meeting:accepted', { meetingID });
-    }
-
-    let nom = null;
-    let pseudo = null;
-    if (uID) {
-      try {
-        const [userRows] = await pool.execute(
-          'SELECT nom, pseudo FROM users WHERE alanyaID = ?',
-          [uID]
-        );
-        if (userRows.length > 0) {
-          nom = userRows[0].nom;
-          pseudo = userRows[0].pseudo;
-        }
-      } catch (err) {
-        console.error('[Socket meeting:join_accept] user lookup:', err.message);
-      }
-    }
-
-    socket.to(`meeting_${meetingID}`).emit('meeting:user_joined', {
-      meetingID,
-      userID:   String(userID),
-      userName: nom || pseudo || null,
-      nom,
-      pseudo,
-    });
-  });
-};
-
-const meetingJoinDecline = (io, socket, userSockets) => {
-  socket.on('meeting:join_decline', async (data) => {
-    if (!socket.authenticated) return;
-    const { meetingID, userID } = data;
-    if (!(await isOrganiser(socket, meetingID))) return;
-    const uid = toInt(userID);
-    if (uid) {
-      emitToUser(io, uid, 'meeting:declined', { meetingID });
-    }
-  });
-};
+// meetingJoinRequest / meetingJoinAccept / meetingJoinDecline ont été retirés
+// avec le RSVP qu'ils servaient : aucun appelant côté application, et
+// `meeting:join_accept` diffusait un `meeting:user_joined` dans une room —
+// surface qui disparaît avec le code. `status = 1` veut désormais dire « a
+// rejoint », posé par `meeting:join_room` lui-même.
 
 const meetingStart = (io, socket, userSockets) => {
   socket.on('meeting:start', async (data) => {
@@ -519,9 +452,6 @@ const meetingVideoState = (io, socket, userSockets) => {
 module.exports = {
   meetingCreate,
   meetingJoinRoom,     
-  meetingJoinRequest,
-  meetingJoinAccept,
-  meetingJoinDecline,
   meetingStart,
   meetingEnd,
   meetingChat,
