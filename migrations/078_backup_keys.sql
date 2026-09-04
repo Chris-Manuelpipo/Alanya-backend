@@ -1,4 +1,4 @@
--- Migration 069 : clés de chiffrement des sauvegardes, et métadonnée de compte
+-- Migration 078 : clés de chiffrement des sauvegardes, et métadonnée de compte
 --
 -- L'application dépose sur le Drive de l'inscrit une sauvegarde chiffrée de sa
 -- base locale. La clé n'est pas choisie par lui : elle est dérivée ici, d'un
@@ -64,12 +64,48 @@ WHERE NOT EXISTS (SELECT 1 FROM backup_key_secrets);
 
 -- ── Métadonnée de sauvegarde, portée par le compte ──────────────────────
 
-ALTER TABLE users
-  ADD COLUMN backup_last_at     DATETIME     NULL,
-  ADD COLUMN backup_bytes       BIGINT UNSIGNED NULL,
-  ADD COLUMN backup_kid         INT UNSIGNED NULL,
-  ADD COLUMN backup_message_count INT UNSIGNED NULL,
-  -- Adresse Google masquée, jamais complète. Sert uniquement à dire
-  -- « connectez-vous avec a•••@gmail.com » au lieu d'un « aucune sauvegarde
-  -- trouvée » indiscernable d'une absence réelle.
-  ADD COLUMN backup_account_hint VARCHAR(64) NULL;
+-- Rejouable, comme la 071 : les colonnes sont posées une à une derrière un
+-- test sur `information_schema`. Sans ce garde-fou, rejouer la migration
+-- s'arrête sur « Duplicate column name » — ce qui arrive forcément ici,
+-- puisque ce fichier a d'abord porté le numéro 069 et a été appliqué sous ce
+-- nom-là. Rien ne trace les migrations passées dans ce projet : la seule
+-- protection est que le fichier supporte d'être rejoué.
+--
+-- `backup_account_hint` : adresse Google masquée, jamais complète. Sert
+-- uniquement à dire « connectez-vous avec a•••@gmail.com » au lieu d'un
+-- « aucune sauvegarde trouvée » indiscernable d'une absence réelle.
+
+SET @col := 'backup_last_at';
+SET @has := (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = @col);
+SET @sql := IF(@has = 0,
+  'ALTER TABLE users ADD COLUMN backup_last_at DATETIME NULL', 'DO 0');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @col := 'backup_bytes';
+SET @has := (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = @col);
+SET @sql := IF(@has = 0,
+  'ALTER TABLE users ADD COLUMN backup_bytes BIGINT UNSIGNED NULL', 'DO 0');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @col := 'backup_kid';
+SET @has := (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = @col);
+SET @sql := IF(@has = 0,
+  'ALTER TABLE users ADD COLUMN backup_kid INT UNSIGNED NULL', 'DO 0');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @col := 'backup_message_count';
+SET @has := (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = @col);
+SET @sql := IF(@has = 0,
+  'ALTER TABLE users ADD COLUMN backup_message_count INT UNSIGNED NULL', 'DO 0');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @col := 'backup_account_hint';
+SET @has := (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = @col);
+SET @sql := IF(@has = 0,
+  'ALTER TABLE users ADD COLUMN backup_account_hint VARCHAR(64) NULL', 'DO 0');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
