@@ -19,7 +19,8 @@ const getUsers = async (req, res) => {
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
               u.type_compte, u.account_type, u.verification_status, u.verified_until,
               up.is_online AS is_online, up.last_seen AS last_seen, u.exclus, u.exclude_at,
-              u.exclude_reason, u.created_at, u.idPays, p.libelle AS pays_libelle
+              u.exclude_reason, u.created_at, u.idPays, p.libelle AS pays_libelle,
+              u.backup_last_at, u.backup_bytes, u.backup_message_count
        FROM users u
        LEFT JOIN pays p ON u.idPays = p.idPays
        LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
@@ -52,7 +53,12 @@ const getUserById = async (req, res) => {
               u.type_compte, u.account_type, u.verification_status, u.verified_until,
               up.is_online AS is_online, up.last_seen AS last_seen, u.exclus, u.exclude_at,
               u.exclude_reason, u.created_at, u.idPays, u.fcm_token, u.device_ID,
-              p.libelle AS pays_libelle, p.prefix AS pays_prefix
+              p.libelle AS pays_libelle, p.prefix AS pays_prefix,
+              -- Sauvegarde : ce que le serveur sait, et rien de plus. Il ne
+              -- détient PAS l'archive — elle est sur le Drive de l'inscrit ou
+              -- dans son téléphone. D'où l'absence de toute action ici.
+              u.backup_last_at, u.backup_bytes, u.backup_kid,
+              u.backup_message_count, u.backup_account_hint
        FROM users u
        LEFT JOIN pays p ON u.idPays = p.idPays
        LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID

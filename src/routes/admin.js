@@ -17,6 +17,10 @@ const {
   getBackupKeyAccess,
   getBackupKeyAccessSummary,
 } = require('../controllers/admin/backupAccess');
+const {
+  getBackupOverview,
+  getBackupKeyUsage,
+} = require('../controllers/admin/backups');
 const { getReports, getReportActions, postReportAction } = require('../controllers/admin/reports');
 const {
   adminLogin,
@@ -659,6 +663,11 @@ router.get('/audit/actions',               adminAuth, requirePermission('audit.r
 // routine, elles n'ont rien à faire dans le journal des gestes d'administrateur.
 router.get('/backup/key-access',            adminAuth, requirePermission('audit.read'), getBackupKeyAccess);
 router.get('/backup/key-access/summary',    adminAuth, requirePermission('audit.read'), getBackupKeyAccessSummary);
+
+// État des sauvegardes du parc. Lecture seule, et il ne peut pas en être
+// autrement : le serveur ne détient aucune archive.
+router.get('/backup/overview',              adminAuth, requirePermission('stats.read'), getBackupOverview);
+router.get('/backup/key-usage',             adminAuth, requirePermission('stats.read'), getBackupKeyUsage);
 
 // ── File de modération ──
 router.get('/reports',                     adminAuth, requirePermission('reports.read'), getReports);

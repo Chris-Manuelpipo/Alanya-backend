@@ -1,6 +1,22 @@
 /** Filtres et tri partagés entre GET /users et GET /users/export. */
 
-const ALLOWED_SORT = { created_at: 'u.created_at', nom: 'u.nom', last_seen: 'up.last_seen' };
+const ALLOWED_SORT = {
+  created_at: 'u.created_at',
+  nom: 'u.nom',
+  last_seen: 'up.last_seen',
+  // Les comptes sans sauvegarde d'abord en ordre croissant : ce sont eux qu'on
+  // cherche. `NULL` trie avant tout en MySQL, ce qui tombe juste ici.
+  backup_last_at: 'u.backup_last_at',
+};
+
+/**
+ * Au-delà, une sauvegarde est considérée comme périmée.
+ *
+ * Trente jours, comme la rétention des médias sur le serveur : passé ce délai,
+ * une restauration ne ramènerait de toute façon plus les photos et vidéos. Les
+ * deux durées disent la même chose et n'ont aucune raison de diverger.
+ */
+const BACKUP_STALE_DAYS = 30;
 
 function buildUsersWhere(query) {
   const {
@@ -34,6 +50,23 @@ function buildUsersWhere(query) {
   if (to) { where.push('u.created_at <= ?'); params.push(to); }
   if (idPays) { where.push('u.idPays = ?'); params.push(idPays); }
 
+  // État de sauvegarde. `never` est la question la plus utile du lot : ces
+  // comptes perdront tout au changement de téléphone, et rien ne le signale
+  // aujourd'hui.
+  const backup = String(query.backup || '');
+  if (backup === 'never') {
+    where.push('u.backup_last_at IS NULL');
+  } else if (backup === 'stale') {
+    where.push(
+      `u.backup_last_at IS NOT NULL
+       AND u.backup_last_at < DATE_SUB(NOW(), INTERVAL ${BACKUP_STALE_DAYS} DAY)`,
+    );
+  } else if (backup === 'recent') {
+    where.push(
+      `u.backup_last_at >= DATE_SUB(NOW(), INTERVAL ${BACKUP_STALE_DAYS} DAY)`,
+    );
+  }
+
   const sort = query.sort || 'created_at';
   const order = query.order || 'desc';
   const sortCol = ALLOWED_SORT[sort] || ALLOWED_SORT.created_at;
@@ -58,7 +91,8 @@ const USERS_SELECT = `
   SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.avatar_url,
          u.type_compte, u.account_type, u.verification_status, u.verified_until,
          up.is_online AS is_online, up.last_seen AS last_seen, u.exclus, u.exclude_at,
-         u.exclude_reason, u.created_at, u.idPays, p.libelle AS pays_libelle
+         u.exclude_reason, u.created_at, u.idPays, p.libelle AS pays_libelle,
+         u.backup_last_at, u.backup_bytes, u.backup_message_count
   FROM users u
   LEFT JOIN pays p ON u.idPays = p.idPays
   LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
@@ -87,6 +121,7 @@ async function fetchUsersForExport(pool, query, exportLimit) {
 }
 
 module.exports = {
+  BACKUP_STALE_DAYS,
   buildUsersWhere,
   parseExportLimit,
   fetchUsersForExport,
