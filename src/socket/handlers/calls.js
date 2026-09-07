@@ -35,6 +35,11 @@ const {
 //
 // Serveur → Client :
 //   incoming_call { callId, callerId, callerName, callerPhoto, isVideo, offer }
+//   call_ringing  { callId, targetId, isVideo }  — à l'APPELANT seul, dès que la
+//                 ligne sonne. C'est là qu'il apprend l'identifiant de l'appel :
+//                 il n'en avait aucun avant `call_answered`, et tout état
+//                 terminal reçu pendant la sonnerie — un refus, au premier chef
+//                 — était jeté de son côté faute de correspondance.
 //   call_answered { answer, callId? }
 //   call_rejected { callId? }
 //   call_ended    { callId?, reason?, claimedByAnotherDevice? }
@@ -795,6 +800,24 @@ const callUser = (io, socket, userSockets) => {
       await callState.setRinging(targetID, { callId: callID, peerId: callerID, isVideo: !!isVideo });
       await callState.setRinging(callerID, { callId: callID, peerId: targetID, isVideo: !!isVideo });
       await callState.scheduleNoAnswer(targetID, () => onNoAnswer(io, userSockets, callID, callerID, targetID));
+
+      // L'appelant apprend l'identifiant de son appel AVANT le décrochage.
+      //
+      // Il ne le recevait jusqu'ici que dans `call_answered` : pendant toute la
+      // sonnerie, il ne connaissait que l'horodatage qu'il s'était fabriqué pour
+      // ouvrir sa session CallKit. Ses gardes de callId — celles qui empêchent
+      // un événement en retard de raccrocher l'appel suivant — comparaient donc
+      // le `2169` du serveur à un horodatage, et jetaient le refus du
+      // destinataire. La sonnerie de retour continuait jusqu'au filet des
+      // 45 secondes, qui annonçait « pas de réponse » sur un appel refusé.
+      //
+      // À la socket seule, pas au compte : les autres appareils de l'appelant
+      // n'ont pas cet appel.
+      socket.emit('call_ringing', {
+        callId:   callKey,
+        targetId: String(targetID),
+        isVideo:  !!isVideo,
+      });
 
       const incomingPayload = {
         callId:      callKey,
