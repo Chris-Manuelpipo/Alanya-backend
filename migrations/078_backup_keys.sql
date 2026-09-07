@@ -1,4 +1,4 @@
--- Migration 069 : clés de chiffrement des sauvegardes, et métadonnée de compte
+-- Migration 078 : clés de chiffrement des sauvegardes, et métadonnée de compte
 --
 -- L'application dépose sur le Drive de l'inscrit une sauvegarde chiffrée de sa
 -- base locale. La clé n'est pas choisie par lui : elle est dérivée ici, d'un
@@ -64,12 +64,26 @@ WHERE NOT EXISTS (SELECT 1 FROM backup_key_secrets);
 
 -- ── Métadonnée de sauvegarde, portée par le compte ──────────────────────
 
-ALTER TABLE users
-  ADD COLUMN backup_last_at     DATETIME     NULL,
-  ADD COLUMN backup_bytes       BIGINT UNSIGNED NULL,
-  ADD COLUMN backup_kid         INT UNSIGNED NULL,
-  ADD COLUMN backup_message_count INT UNSIGNED NULL,
-  -- Adresse Google masquée, jamais complète. Sert uniquement à dire
-  -- « connectez-vous avec a•••@gmail.com » au lieu d'un « aucune sauvegarde
-  -- trouvée » indiscernable d'une absence réelle.
-  ADD COLUMN backup_account_hint VARCHAR(64) NULL;
+-- Rejouable : un seul test suffit. Les cinq colonnes sont posées ensemble et
+-- le seront toujours ensemble ; vérifier la première suffit à savoir si le
+-- bloc est déjà passé.
+--
+-- Le garde-fou n'est pas ici par principe -- la moitié des migrations de ce
+-- dépôt s'en passent. Il est là parce que ce fichier a d'abord porté le
+-- numéro 069 et a été appliqué sous ce nom : sans lui, quiconque reprend le
+-- dépôt et applique la 078 s'arrête sur « Duplicate column name ». Rien ne
+-- trace les migrations passées, la seule protection est le fichier lui-même.
+--
+-- `backup_account_hint` : adresse Google masquée, jamais complète. Sert
+-- uniquement à dire « connectez-vous avec a•••@gmail.com » au lieu d'un
+-- « aucune sauvegarde trouvée » indiscernable d'une absence réelle.
+SET @has := (SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+    AND COLUMN_NAME = 'backup_last_at');
+SET @sql := IF(@has = 0, 'ALTER TABLE users
+    ADD COLUMN backup_last_at       DATETIME        NULL,
+    ADD COLUMN backup_bytes         BIGINT UNSIGNED NULL,
+    ADD COLUMN backup_kid           INT UNSIGNED    NULL,
+    ADD COLUMN backup_message_count INT UNSIGNED    NULL,
+    ADD COLUMN backup_account_hint  VARCHAR(64)     NULL', 'DO 0');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

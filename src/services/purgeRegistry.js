@@ -23,7 +23,7 @@ const pool = require('../config/db');
 const mediaPolicy = require('../constants/mediaRetentionPolicy');
 const tripPolicy = require('../constants/tripPolicy');
 
-const NAMES = ['media', 'media_partitions', 'broadcast', 'story', 'welcome_status', 'trip', 'data_retention'];
+const NAMES = ['media', 'media_partitions', 'broadcast', 'story', 'welcome_status', 'trip', 'data_retention', 'backup_key_access'];
 
 /** Borne une valeur de réglage. Une saisie hors bornes est ramenée, jamais rejetée en silence. */
 function clampInt(value, { min, max, fallback }) {
@@ -238,6 +238,47 @@ const DESCRIPTORS = {
     async run() {
       const { runNightlyTripPurge } = require('./tripRetention');
       return runNightlyTripPurge();
+    },
+  },
+
+  backup_key_access: {
+    label: 'Journal des clés de sauvegarde',
+    description:
+      'Supprime les lignes de `backup_key_access` au-delà de la rétention. '
+      + "Chaque inscrit demande sa clé à chaque sauvegarde et à chaque "
+      + "restauration : la table grossit avec l'usage, pas avec les incidents. "
+      + 'Sa valeur est forensique — reconstituer après coup qui a obtenu quoi — '
+      + "et cette valeur s'épuise avec le temps, contrairement au volume.",
+    knobs: [{
+      key: 'retentionDays',
+      label: 'Conservation du journal',
+      unit: 'jours',
+      // Six mois : assez pour couvrir une enquête ouverte longtemps après les
+      // faits, assez court pour que la table reste une donnée personnelle
+      // qu'on ne garde pas indéfiniment.
+      min: 30,
+      max: 730,
+      default: () => 180,
+    }],
+    async stats(opts) {
+      const [rows] = await pool.execute(
+        `SELECT COUNT(*) AS lignes, MIN(created_at) AS plusAncienne
+           FROM backup_key_access
+          WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+        [opts.retentionDays],
+      );
+      return {
+        lignes: Number(rows[0].lignes) || 0,
+        plusAncienne: rows[0].plusAncienne,
+      };
+    },
+    async run(opts) {
+      const [res] = await pool.execute(
+        `DELETE FROM backup_key_access
+          WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+        [opts.retentionDays],
+      );
+      return { supprimees: res.affectedRows || 0 };
     },
   },
 
