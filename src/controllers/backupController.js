@@ -4,6 +4,7 @@ const {
   keyByKid,
   BackupSecretUnavailable,
 } = require('../services/backupKeyService');
+const { recordKeyAccess } = require('../services/backupKeyAudit');
 
 /**
  * Journal des accès aux clés de sauvegarde.
@@ -13,11 +14,18 @@ const {
  * constatable — ce qui est la différence entre une garantie tenable et une
  * promesse en l'air.
  */
-const _auditKeyAccess = (req, kid, outcome) => {
+const _auditKeyAccess = (req, kid, outcome, reason) => {
+  // La sortie du serveur reste utile au diagnostic immédiat.
   console.log(
     `[BackupKey] alanyaID=${req.user.alanyaID} appareil=${req.user.appareilId ?? '-'} ` +
       `kid=${kid} ip=${req.ip} → ${outcome}`
   );
+  // Mais elle ne survit pas à une rotation de journaux et reste hors de portée
+  // du panneau d'administration. La table, elle, rend l'abus constatable.
+  //
+  // Volontairement non attendu : la clé est déjà en route vers l'inscrit, et
+  // rien ne justifie de retarder sa réponse pour une écriture de journal.
+  void recordKeyAccess(req, kid, outcome, reason);
 };
 
 const _sendKey = async (req, res, loader, requestedKid) => {
@@ -27,7 +35,7 @@ const _sendKey = async (req, res, loader, requestedKid) => {
     return res.json({ kid, key: key.toString('base64') });
   } catch (e) {
     if (e instanceof BackupSecretUnavailable) {
-      _auditKeyAccess(req, requestedKid ?? '-', `refusée (${e.message})`);
+      _auditKeyAccess(req, requestedKid ?? null, 'refusee', e.message);
       // 503 et non 500 : la configuration du serveur est en cause, pas la
       // requête. L'application invitera à réessayer plus tard plutôt que de
       // laisser croire à une perte de données.
@@ -36,6 +44,7 @@ const _sendKey = async (req, res, loader, requestedKid) => {
         code: 'BACKUP_KEY_UNAVAILABLE',
       });
     }
+    _auditKeyAccess(req, requestedKid ?? null, 'refusee', 'erreur serveur');
     console.error('[BackupKey] ERROR:', e);
     return res.status(500).json({ error: 'Erreur serveur' });
   }

@@ -13,6 +13,10 @@ const { adminAudit } = require('../middleware/adminAudit');
 router.use(adminAudit);
 const { getPurges, updatePurge, runPurgeNow } = require('../controllers/admin/purges');
 const { getAudit, getAuditActions } = require('../controllers/admin/audit');
+const {
+  getBackupKeyAccess,
+  getBackupKeyAccessSummary,
+} = require('../controllers/admin/backupAccess');
 const { getReports, getReportActions, postReportAction } = require('../controllers/admin/reports');
 const {
   adminLogin,
@@ -649,6 +653,12 @@ router.get('/users/:id/logins',            adminAuth, requirePermission('users.r
 // « Activité admin », avec `targetType`/`targetId` pour l'encart d'une fiche.
 router.get('/audit',                       adminAuth, requirePermission('audit.read'), getAudit);
 router.get('/audit/actions',               adminAuth, requirePermission('audit.read'), getAuditActions);
+
+// Journal des clés de sauvegarde. Même permission que l'audit — c'est le même
+// métier — mais une route à part : ce sont des milliers d'opérations de
+// routine, elles n'ont rien à faire dans le journal des gestes d'administrateur.
+router.get('/backup/key-access',            adminAuth, requirePermission('audit.read'), getBackupKeyAccess);
+router.get('/backup/key-access/summary',    adminAuth, requirePermission('audit.read'), getBackupKeyAccessSummary);
 
 // ── File de modération ──
 router.get('/reports',                     adminAuth, requirePermission('reports.read'), getReports);
