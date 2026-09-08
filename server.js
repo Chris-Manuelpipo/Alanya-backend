@@ -11,6 +11,11 @@ const cors       = require('cors');
 const path       = require('path');
 const { REDIS_ENABLED, REDIS_URL, createRedisClient, connectWithTimeout } = require('./src/config/redis');
 const { setDataClient } = require('./src/config/redisData');
+const pool = require('./src/config/db');
+
+// Rempli par `start()` quand Redis est configuré, pour que l'arrêt propre
+// puisse rendre ces connexions au lieu de les abandonner.
+const clientsRedis = [];
 
 const errorHandler = require('./src/middleware/errorHandler');
 const { generalLimiter } = require('./src/middleware/rateLimiter');
@@ -263,7 +268,6 @@ io.on('connection', (socket) => {
  */
 const resetStalePresence = async () => {
   try {
-    const pool = require('./src/config/db');
     const [res] = await pool.execute(
       'UPDATE user_presence SET is_online = 0 WHERE is_online = 1',
     );
@@ -306,6 +310,9 @@ async function start() {
     }
     io.adapter(createAdapter(pubClient, subClient));
     setDataClient(dataClient);
+    // Conservés pour l'arrêt propre : sans référence, ces trois clients
+    // resteraient ouverts côté Redis jusqu'à expiration de leur socket.
+    clientsRedis.push(pubClient, subClient, dataClient);
     console.log('[Redis] adapter Socket.IO actif —', REDIS_URL.replace(/:\/\/[^@]*@/, '://***@'));
   } else {
     console.log('[Redis] REDIS_URL absent — adapter en mémoire (mono-instance uniquement)');
@@ -412,18 +419,68 @@ process.on('unhandledRejection', (reason) => {
     reason instanceof Error ? reason.stack : reason);
 });
 
+// Une exception non capturée n'est pas du même bois qu'une promesse rejetée.
+// La seconde dégrade une requête ; la première laisse le processus dans un état
+// indéfini — transaction restée ouverte, connexion à demi fermée, variable
+// écrite à moitié. Continuer à servir dans cet état produit des corruptions
+// silencieuses, autrement plus coûteuses à diagnostiquer qu'un redémarrage de
+// deux secondes que pm2 assure de lui-même.
+//
+// L'intention de la version précédente — « ne pas abattre le service » — était
+// juste ; c'est le remède qui était pire que le mal.
 process.on('uncaughtException', (err) => {
-  console.error('[UncaughtException]', err?.stack || err);
+  console.error('[UncaughtException] état du processus indéfini, arrêt :', err?.stack || err);
+  arretPropre(1, 'uncaughtException');
 });
 
-process.on('SIGINT', () => {
-  console.log('Arrêt du serveur...');
-  stopMeetingScheduler();
-  stopVerificationScheduler();
-  stopJobWorker();
-  stopTripStaleSweeper();
-  stopAccountLifecycleSchedulers();
-  process.exit(0);
-});
+// Au-delà, on sort sans attendre. Sans ce couperet, pm2 patienterait jusqu'à
+// son propre délai avant d'envoyer SIGKILL — en laissant derrière lui les
+// connexions MySQL que le serveur n'a pas rendues.
+const DELAI_ARRET_MS = 5000;
+
+let arretEnCours = false;
+
+async function arretPropre(code, cause) {
+  if (arretEnCours) return; // SIGTERM après SIGINT, ou deux exceptions de suite
+  arretEnCours = true;
+  console.log(`[Arrêt] ${cause} — fermeture en cours...`);
+
+  const couperet = setTimeout(() => {
+    console.error('[Arrêt] délai dépassé, sortie forcée');
+    process.exit(code);
+  }, DELAI_ARRET_MS);
+  couperet.unref();
+
+  try {
+    // 1. Les ordonnanceurs d'abord : un job qui démarrerait après la fermeture
+    //    du pool écrirait sur une connexion morte.
+    stopMeetingScheduler();
+    stopVerificationScheduler();
+    stopJobWorker();
+    stopTripStaleSweeper();
+    stopAccountLifecycleSchedulers();
+
+    // 2. Les sockets ensuite. `server.close()` seul ne suffirait pas : il
+    //    attend la fin des connexions en cours, or une socket Socket.IO ne se
+    //    termine jamais d'elle-même — on atteindrait le couperet à chaque
+    //    redéploiement. `io.close()` déconnecte les clients puis ferme le
+    //    serveur HTTP sous-jacent.
+    await new Promise((resoudre) => io.close(resoudre));
+
+    // 3. Les dépendances en dernier, quand plus personne ne peut les solliciter.
+    await pool.end();
+    await Promise.all(clientsRedis.map((c) => c.quit().catch(() => {})));
+  } catch (e) {
+    console.error('[Arrêt] erreur pendant la fermeture:', e.message);
+  }
+
+  process.exit(code);
+}
+
+// SIGINT est ce que pm2 envoie au redémarrage ; SIGTERM ce qu'envoient systemd,
+// Docker et `pm2 stop`. Les deux méritent le même soin : jusqu'ici, chaque
+// déploiement coupait net les requêtes et les sockets en vol.
+process.on('SIGINT', () => arretPropre(0, 'SIGINT'));
+process.on('SIGTERM', () => arretPropre(0, 'SIGTERM'));
 
 module.exports = { app, server, io };
