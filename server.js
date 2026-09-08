@@ -1,6 +1,11 @@
 require('dotenv').config();
 
-// ── Firebase Admin — initialisé EN PREMIER avant tout autre require ───
+// ── Sentry — AVANT tout le reste ──────────────────────────────────────
+// Le SDK instrumente Express, MySQL et HTTP en les remplaçant au chargement :
+// requis après eux, il n'accrocherait plus rien. Inerte sans `SENTRY_DSN`.
+const { Sentry, capturer: capturerSentry, vider: viderSentry } = require('./src/config/sentry');
+
+// ── Firebase Admin — initialisé avant tout autre require ──────────────
 require('./src/config/firebase');
 
 const express    = require('express');
@@ -191,6 +196,11 @@ app.use('/', qrLandingRoutes);
 // Contrôle de vie : interroge réellement MySQL et Redis, et renvoie 503 dès
 // qu'une dépendance ne répond pas. Voir src/routes/health.js.
 app.use('/', healthRoutes);
+
+// Avant `errorHandler` : celui-ci répond « Erreur interne du serveur » et
+// referme le dossier. Placé après, Sentry ne verrait plus jamais une seule
+// erreur de route.
+Sentry.setupExpressErrorHandler(app);
 
 app.use(errorHandler);
 
@@ -417,6 +427,7 @@ start();
 process.on('unhandledRejection', (reason) => {
   console.error('[UnhandledRejection] requête dégradée, process préservé :',
     reason instanceof Error ? reason.stack : reason);
+  capturerSentry(reason instanceof Error ? reason : new Error(String(reason)));
 });
 
 // Une exception non capturée n'est pas du même bois qu'une promesse rejetée.
@@ -430,6 +441,7 @@ process.on('unhandledRejection', (reason) => {
 // juste ; c'est le remède qui était pire que le mal.
 process.on('uncaughtException', (err) => {
   console.error('[UncaughtException] état du processus indéfini, arrêt :', err?.stack || err);
+  capturerSentry(err);
   arretPropre(1, 'uncaughtException');
 });
 
@@ -452,6 +464,12 @@ async function arretPropre(code, cause) {
   couperet.unref();
 
   try {
+    // 0. Vider Sentry avant tout le reste : sur le chemin `uncaughtException`,
+    //    l'erreur qui provoque cet arrêt est encore dans le tampon d'envoi.
+    //    Sortir sans la vider reviendrait à perdre exactement l'événement pour
+    //    lequel on a installé le rapport d'erreurs.
+    await viderSentry();
+
     // 1. Les ordonnanceurs d'abord : un job qui démarrerait après la fermeture
     //    du pool écrirait sur une connexion morte.
     stopMeetingScheduler();
