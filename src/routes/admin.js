@@ -21,6 +21,11 @@ const {
   getBackupOverview,
   getBackupKeyUsage,
 } = require('../controllers/admin/backups');
+const {
+  getKeys,
+  rotateKey,
+  retireKey,
+} = require('../controllers/admin/backupKeys');
 const { getReports, getReportActions, postReportAction } = require('../controllers/admin/reports');
 const {
   adminLogin,
@@ -668,6 +673,14 @@ router.get('/backup/key-access/summary',    adminAuth, requirePermission('audit.
 // autrement : le serveur ne détient aucune archive.
 router.get('/backup/overview',              adminAuth, requirePermission('stats.read'), getBackupOverview);
 router.get('/backup/key-usage',             adminAuth, requirePermission('stats.read'), getBackupKeyUsage);
+
+// Versions de clé. La lecture au niveau admin — savoir où l'on en est n'est
+// pas un pouvoir. L'écriture au super-admin : une rotation mal conduite rend
+// illisibles les sauvegardes déjà déposées. Aucune route ne SUPPRIME une
+// version, et c'est délibéré.
+router.get('/backup/keys',                  adminAuth, requirePermission('settings.read'), getKeys);
+router.post('/backup/keys',                 adminAuth, requirePermission('backup.keys'), rotateKey);
+router.post('/backup/keys/:kid/retire',     adminAuth, requirePermission('backup.keys'), retireKey);
 
 // ── File de modération ──
 router.get('/reports',                     adminAuth, requirePermission('reports.read'), getReports);
