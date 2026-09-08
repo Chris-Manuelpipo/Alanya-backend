@@ -5,7 +5,50 @@ on:
     branches: [main]
 
 jobs:
+  # Filet posé avant le déploiement : un push sur `main` part directement en
+  # production, sans étape de validation intermédiaire ni retour arrière autre
+  # qu'un revert qui redéclenche le même pipeline. Ce job est la seule occasion
+  # d'arrêter un commit cassé avant qu'il n'atteigne les utilisateurs.
+  #
+  # Ne sont retenues que les suites qui passent sans MySQL ni Redis — vérifié
+  # une par une en exécutant chacune contre une base volontairement injoignable.
+  # Les suites écartées (`test:calls`, `test:backup`, `test:reports`,
+  # `test:audit`, `test:adminops`) interrogent réellement la base ; `test:media`
+  # est incluse car sa seule dépendance était une variable d'environnement, pas
+  # une connexion. `test:concurrency` exige un vrai Redis et refuse de se passer
+  # pour un skip silencieux : elle reste hors CI tant qu'aucun service Redis
+  # n'est déclaré ici.
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      # `npm ci` et non `npm install --omit=dev` : les suites ont besoin des
+      # devDependencies (socket.io-client), et le lockfile doit faire foi.
+      - run: npm ci
+
+      - name: Suites sans base ni Redis
+        run: |
+          npm run test:notifications
+          npm run test:qr
+          npm run test:conversations
+          npm run test:meetings
+          npm run test:presence
+          npm run test:i18n
+          npm run test:welcome
+          npm run test:roles
+          npm run test:ai
+          npm run test:trips
+          npm run test:media
+
   deploy:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - name: Déploiement via SSH
