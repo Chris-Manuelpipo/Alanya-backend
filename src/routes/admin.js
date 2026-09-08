@@ -12,6 +12,7 @@ const { adminAudit } = require('../middleware/adminAudit');
 // pourquoi ce n'est pas dans les contrôleurs.
 router.use(adminAudit);
 const { getPurges, updatePurge, runPurgeNow } = require('../controllers/admin/purges');
+const { getServiceHealth } = require('../controllers/admin/health');
 const { getAudit, getAuditActions } = require('../controllers/admin/audit');
 const {
   getBackupKeyAccess,
@@ -236,6 +237,22 @@ router.get('/trips/retention',             adminAuth, requirePermission('trips.r
  *         description: Compteurs après purge et journal mis à jour
  */
 router.post('/trips/retention/purge',      adminAuth, requirePermission('trips.purge'), runTripPurge);
+
+/**
+ * @swagger
+ * /api/admin/health:
+ *   get:
+ *     summary: Santé du service — file de jobs, purges, Redis, pool MySQL
+ *     tags: [Admin]
+ *     description: >
+ *       Le versant qu'une sonde externe ne peut pas voir : un job en échec
+ *       silencieux, une purge qui ne tourne plus, un pool saturé. Distinct de
+ *       `/health`, qui est public et se limite à « le serveur répond-il ».
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: État des dépendances et des traitements de fond }
+ */
+router.get('/health',                      adminAuth, requirePermission('stats.read'), getServiceHealth);
 
 /**
  * @swagger

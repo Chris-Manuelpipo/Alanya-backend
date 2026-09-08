@@ -469,6 +469,39 @@ async function listRuns(name, limit = 20) {
   return rows;
 }
 
+/**
+ * Dernier passage de chaque purge, pour la page « santé du service ».
+ *
+ * Distinct de `describeAll()`, qui balaie plusieurs tables pour chiffrer ce qui
+ * serait supprimé : ici on ne veut qu'une ligne par purge, assez légère pour
+ * être rafraîchie régulièrement.
+ *
+ * Les purges qui n'ont jamais tourné sont rendues avec `dernierPassage: null`
+ * plutôt qu'omises — c'est précisément le cas qu'il faut voir. Sans cela, rien
+ * ne distinguerait « la purge tourne et n'a rien à faire » de « la purge ne
+ * tourne pas ».
+ */
+async function lastRunPerPurge() {
+  const [rows] = await pool.query(
+    `SELECT r.name, r.ran_at, r.ok, r.error, r.duration_ms, r.trigger_source
+       FROM purge_runs r
+       JOIN (SELECT name, MAX(id) AS id FROM purge_runs GROUP BY name) d
+         ON d.id = r.id`,
+  );
+  const parNom = new Map(rows.map((r) => [r.name, r]));
+  return NAMES.map((name) => {
+    const r = parNom.get(name);
+    return {
+      name,
+      dernierPassage: r ? r.ran_at : null,
+      ok: r ? !!r.ok : null,
+      erreur: r ? r.error : null,
+      dureeMs: r ? r.duration_ms : null,
+      declencheur: r ? r.trigger_source : null,
+    };
+  });
+}
+
 /** Vue complète pour l'admin : réglages, ce qui serait supprimé, historique. */
 async function describeAll({ withStats = true, runsPerPurge = 5 } = {}) {
   const out = [];
@@ -511,5 +544,6 @@ module.exports = {
   runPurge,
   runPurgeIfEnabled,
   listRuns,
+  lastRunPerPurge,
   describeAll,
 };

@@ -265,6 +265,55 @@ function stopJobWorker() {
   }
 }
 
+/**
+ * Photographie de la file, pour la page « santé du service » de l'admin.
+ *
+ * Ces colonnes étaient renseignées depuis toujours — `failed_at` et
+ * `last_error` en particulier — mais rien ne les lisait : un job de purge ou de
+ * notification qui échouait définitivement le faisait en silence, sans que
+ * personne ne puisse le constater autrement qu'en interrogeant la base à la
+ * main. C'est exactement le type de panne qu'aucune supervision externe ne peut
+ * voir, puisque le serveur, lui, répond parfaitement.
+ *
+ * Un job est « en attente » s'il n'a ni échoué ni été verrouillé par un worker.
+ * Les trois comptages tiennent en une requête : `SUM` d'un prédicat vaut 1 ou 0
+ * par ligne. Sur une table vide, `SUM` rend NULL et non 0 — d'où le `Number()`.
+ */
+async function stats({ limiteEchecs = 10 } = {}) {
+  const [[compte]] = await pool.query(
+    `SELECT
+       SUM(failed_at IS NULL AND locked_at IS NULL)     AS en_attente,
+       SUM(failed_at IS NULL AND locked_at IS NOT NULL) AS verrouilles,
+       SUM(failed_at IS NOT NULL)                       AS en_echec
+     FROM job_queue`,
+  );
+
+  const n = Math.min(Math.max(Number(limiteEchecs) || 10, 1), 50);
+  const [echecs] = await pool.query(
+    `SELECT id, kind, attempts, max_attempts, failed_at, last_error
+       FROM job_queue
+      WHERE failed_at IS NOT NULL
+      ORDER BY failed_at DESC, id DESC
+      LIMIT ?`,
+    [n],
+  );
+
+  return {
+    enAttente: Number(compte.en_attente || 0),
+    verrouilles: Number(compte.verrouilles || 0),
+    enEchec: Number(compte.en_echec || 0),
+    workerActif: isJobWorkerEnabled(),
+    derniersEchecs: echecs.map((e) => ({
+      id: e.id,
+      kind: e.kind,
+      tentatives: e.attempts,
+      tentativesMax: e.max_attempts,
+      echoueLe: e.failed_at,
+      erreur: e.last_error,
+    })),
+  };
+}
+
 module.exports = {
   enqueue,
   cancelByDedupeKey,
@@ -275,4 +324,5 @@ module.exports = {
   stopJobWorker,
   reclaimOrphans,
   processOneJob,
+  stats,
 };
