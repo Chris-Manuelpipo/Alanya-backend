@@ -42,6 +42,7 @@ const adminRoutes        = require('./src/routes/admin');
 const welcomeRoutes      = require('./src/routes/welcome');
 const reportRoutes       = require('./src/routes/reports');
 const qrLandingRoutes    = require('./src/routes/qrLanding');
+const healthRoutes       = require('./src/routes/health');
 
 // ── Socket handlers ───────────────────────────────────────────────────
 const socketAuth = require('./src/socket/handlers/auth');
@@ -182,7 +183,9 @@ app.use('/notify',            notifyRoutes);
 // c'est cette URL qui est encodée dans les QR d'identité et partagée.
 app.use('/', qrLandingRoutes);
 
-app.get('/health', (_, res) => res.json({ status: 'Serveur ok', timestamp: new Date().toISOString() }));
+// Contrôle de vie : interroge réellement MySQL et Redis, et renvoie 503 dès
+// qu'une dépendance ne répond pas. Voir src/routes/health.js.
+app.use('/', healthRoutes);
 
 app.use(errorHandler);
 
