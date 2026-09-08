@@ -99,6 +99,10 @@ const SUPER_ADMIN_ONLY = [
   'purges.settings',
   'trips.purge',
   'settings.write',
+  // Rotation des clés de sauvegarde. Au niveau super-admin comme la
+  // suppression d'un compte : mal conduite, elle rend illisibles toutes les
+  // sauvegardes déjà déposées, sans recours et sans avertissement.
+  'backup.keys',
   'phones.reserve',
   'phones.release',
   'official.create',

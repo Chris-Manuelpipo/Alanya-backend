@@ -68,6 +68,13 @@ const ACTIONS = {
 
   // Réglages et annuaire
   'PUT /settings': { action: 'settings.write', targetType: 'settings' },
+
+  // Clés de sauvegarde. Les deux gestes les plus lourds de conséquence du
+  // système : ils décident de ce qui restera lisible.
+  'POST /backup/keys': { action: 'backup.keys.rotate', targetType: 'backup_key' },
+  'POST /backup/keys/:kid/retire': {
+    action: 'backup.keys.retire', targetType: 'backup_key', param: 'kid',
+  },
   'POST /reserved-alanya-phones': { action: 'phones.reserve', targetType: 'phone' },
   'DELETE /reserved-alanya-phones/:phone': { action: 'phones.release', targetType: 'phone', param: 'phone' },
   'POST /official-account': { action: 'official.create', targetType: 'user' },
