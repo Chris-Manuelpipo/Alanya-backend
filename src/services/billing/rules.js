@@ -90,6 +90,7 @@ function resolvePeriods(periods, now = new Date()) {
  * @param {string[]} [p.planFeatures]  codes inclus dans le plan de la période en cours
  * @param {boolean}  [p.exempt]        administrateur ou compte officiel
  * @param {boolean}  [p.autoRenew]
+ * @param {Date|string} [p.lastEnd]    fin de la dernière chaîne (subscriber.current_end)
  * @param {Date}     [p.now]
  */
 function decideEntitlements({
@@ -99,6 +100,7 @@ function decideEntitlements({
   planFeatures = [],
   exempt = false,
   autoRenew = false,
+  lastEnd = null,
   now = new Date(),
 }) {
   const phase = phaseAt(settings, now);
@@ -134,6 +136,11 @@ function decideEntitlements({
     upcoming: describe(upcoming),
     exempt: Boolean(exempt),
     features,
+    // L'abonnement a pris fin et rien n'a pris le relais : l'application dit
+    // « terminé le … » plutôt que de revendre l'offre comme à un inconnu.
+    lapsedAt: !current && !upcoming && toDate(lastEnd) && toDate(lastEnd) <= now
+      ? iso(lastEnd)
+      : null,
     // Au-delà, le téléphone doit redemander ses droits : la fin de
     // l'abonnement, la fin de la grâce, ou une semaine au plus.
     validUntil: iso(earliest(chainEnd, graceUntil, new Date(now.getTime() + OFFLINE_TRUST_DAYS * DAY_MS))),

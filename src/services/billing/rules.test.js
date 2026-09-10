@@ -128,6 +128,19 @@ assert.deepStrictEqual(resolvePeriods([], NOW), { current: null, upcoming: null,
   assert.strictEqual(e.features.style, false, 'même exempté, rien de non livré');
   assert.strictEqual(e.exempt, true);
 }
+{
+  // Abonnement terminé, rien à la suite : l'application dit « terminé le … ».
+  const e = decideEntitlements({ settings: PAID, catalog: CATALOG, lastEnd: day(-4), now: NOW });
+  assert.strictEqual(e.lapsedAt, day(-4).toISOString());
+  // Jamais abonné : rien de terminé.
+  assert.strictEqual(decideEntitlements({ settings: PAID, catalog: CATALOG, now: NOW }).lapsedAt, null);
+  // En cours ou à venir : pas terminé, même si `lastEnd` traîne.
+  const periods = [{ plan_code: 'plus_annuel', starts_at: day(5), ends_at: day(370), source: 0 }];
+  assert.strictEqual(
+    decideEntitlements({ settings: PAID, periods, catalog: CATALOG, lastEnd: day(-4), now: NOW }).lapsedAt,
+    null,
+  );
+}
 
 // ── Activation ─────────────────────────────────────────────────────────────
 assert.strictEqual(activationBlocker({ NODE_ENV: 'production' }), 'BILLING_PROVIDER_SIMULATED');
