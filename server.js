@@ -99,6 +99,7 @@ const { startVerificationScheduler, stopVerificationScheduler } = require('./src
 const { setBillingIo } = require('./src/services/billing/subscriptions');
 const { registerPaymentJobHandlers } = require('./src/services/payments/paymentService');
 const { startBillingSweep, stopBillingSweep } = require('./src/services/billing/billingSweep');
+const { registerBillingJobHandlers } = require('./src/services/billing/billingJobs');
 const { withLease } = require('./src/services/schedulerLease');
 const { runDataRetentionPurge } = require('./src/services/dataRetentionService');
 const { runPurgeIfEnabled } = require('./src/services/purgeRegistry');
@@ -370,6 +371,9 @@ async function start() {
     // confirmation prévient le téléphone par le socket.
     setBillingIo(io);
     registerPaymentJobHandlers();
+    // Échéances : relance, renouvellement automatique, expiration, purge,
+    // et les suites de l'interrupteur (annonce, compensation, fin de grâce).
+    registerBillingJobHandlers();
     // Péremption des trajets : un balayage unique remplace un minuteur par
     // trajet, sans quoi chaque position GPS coûterait une écriture en base.
     startTripStaleSweeper(io);

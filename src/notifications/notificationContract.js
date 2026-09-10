@@ -27,6 +27,12 @@ const NOTIFICATION_TYPES = Object.freeze([
   'trip_eta_soon',
   'trip_due',
   'trip_reminder',
+  // Abonnement Alanya Plus. Aucun ne passe outre « Ne pas déranger ».
+  'billing_reminder',
+  'billing_expired',
+  'billing_purge_warning',
+  'payment_succeeded',
+  'payment_failed',
 ]);
 
 /**
@@ -259,10 +265,27 @@ const buildTripPayload = (input = {}) => {
   });
 };
 
+/**
+ * Charge utile des notifications de l'abonnement : relance, échéance, purge,
+ * paiement. Même règle que les trajets — `title` et `body` composés côté
+ * serveur, faute de quoi le client, application tuée, n'afficherait rien —,
+ * et un lien vers « Mon abonnement ».
+ */
+const buildBillingPayload = ({ type, title = '', body = '', eventId = null } = {}) =>
+  stringifyData({
+    schemaVersion: SCHEMA_VERSION,
+    type,
+    eventId: eventId || generateEventId(),
+    title,
+    body,
+    deeplink: 'alanya://subscription',
+  });
+
 module.exports = {
   SCHEMA_VERSION,
   NOTIFICATION_TYPES,
   buildTripPayload,
+  buildBillingPayload,
   generateEventId,
   stringifyData,
   sanitizeAvatarUrl,

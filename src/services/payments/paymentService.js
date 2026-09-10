@@ -18,6 +18,8 @@ const { phaseAt, isBillingTester } = require('../billing/rules');
 const {
   appendPeriod, graceToPreserve, notifyEntitlementsChanged, emitToAccount,
 } = require('../billing/subscriptions');
+const { scheduleChainJobs } = require('../billing/billingSchedule');
+const { pushBilling, messages } = require('../billing/billingNotify');
 const providers = require('./providers');
 const simulated = require('./providers/simulated');
 const { PAYMENT_STATUS_NAME, normalizeMsisdn } = require('./paymentRules');
@@ -60,14 +62,9 @@ async function checkout({ alanyaID, planCode, channel, msisdn, autoRenew, now = 
 
   // Un seul paiement en attente à la fois : deux demandes simultanées
   // feraient composer deux codes au même utilisateur.
-  const [[pending]] = await pool.execute(
-    `SELECT id FROM payment
-      WHERE alanyaID = ? AND status IN (?, ?) AND created_at > ?
-      ORDER BY id DESC LIMIT 1`,
-    [alanyaID, P.CREATED, P.PENDING, new Date(now.getTime() - PENDING_TTL_MS)],
-  );
+  const pending = await pendingPaymentId(alanyaID, now);
   if (pending) {
-    throw new BillingError('PAYMENT_PENDING', 409, 'Un paiement est déjà en attente', { paymentId: pending.id });
+    throw new BillingError('PAYMENT_PENDING', 409, 'Un paiement est déjà en attente', { paymentId: pending });
   }
 
   if (typeof autoRenew === 'boolean') {
@@ -78,12 +75,57 @@ async function checkout({ alanyaID, planCode, channel, msisdn, autoRenew, now = 
     );
   }
 
+  return startPayment({
+    alanyaID, plan, provider, channel, number, purpose: PAYMENT_PURPOSE.SUBSCRIBE,
+  });
+}
+
+async function pendingPaymentId(alanyaID, now = new Date()) {
+  const [[pending]] = await pool.execute(
+    `SELECT id FROM payment
+      WHERE alanyaID = ? AND status IN (?, ?) AND created_at > ?
+      ORDER BY id DESC LIMIT 1`,
+    [alanyaID, P.CREATED, P.PENDING, new Date(now.getTime() - PENDING_TTL_MS)],
+  );
+  return pending?.id ?? null;
+}
+
+/**
+ * Renouvellement automatique, la veille de l'échéance (job
+ * `billing_autorenew`) : même demande qu'une souscription, sur le dernier
+ * moyen de paiement confirmé et la durée choisie pour la suite. L'opérateur
+ * demande son code à l'utilisateur ; rien n'est débité sans lui.
+ *
+ * @returns {Promise<object|null>} la demande, ou null s'il n'y a rien à faire
+ */
+async function initiateRenewal({ alanyaID, now = new Date() }) {
+  const [[sub]] = await pool.execute('SELECT * FROM subscriber WHERE alanyaID = ?', [alanyaID]);
+  if (!sub || Number(sub.auto_renew) !== 1 || !sub.renew_msisdn || !sub.renew_channel) return null;
+  const [[plan]] = await pool.execute(
+    `SELECT * FROM plan
+      WHERE is_active = 1 AND id = COALESCE(?, (
+        SELECT plan_id FROM subscription_period WHERE alanyaID = ? ORDER BY ends_at DESC LIMIT 1))`,
+    [sub.renew_plan_id, alanyaID],
+  );
+  if (!plan) return null;
+  const provider = providers.active();
+  if (!provider.channels.includes(sub.renew_channel)) return null;
+  if (await pendingPaymentId(alanyaID, now)) return null;
+  const started = await startPayment({
+    alanyaID, plan, provider, channel: sub.renew_channel, number: sub.renew_msisdn,
+    purpose: PAYMENT_PURPOSE.AUTO_RENEW,
+  });
+  return { ...started, channel: sub.renew_channel };
+}
+
+/** Enregistre la demande, puis la confie au fournisseur. */
+async function startPayment({ alanyaID, plan, provider, channel, number, purpose }) {
   const [ins] = await pool.execute(
     `INSERT INTO payment
        (alanyaID, plan_id, provider, channel, msisdn, amount, currency, purpose, status, idempotency_key)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [alanyaID, plan.id, provider.name, channel, number, plan.price_amount, plan.currency,
-      PAYMENT_PURPOSE.SUBSCRIBE, P.CREATED, crypto.randomUUID()],
+      purpose, P.CREATED, crypto.randomUUID()],
   );
   const paymentId = ins.insertId;
 
@@ -127,6 +169,9 @@ async function settlePayment(paymentId, { outcome, failureCode = null }, now = n
   let alanyaID = null;
   let status = null;
   let changed = false;
+  let plan = null;
+  let appended = null;
+  let finalFailure = null;
   try {
     await conn.beginTransaction();
     const [[p]] = await conn.execute('SELECT * FROM payment WHERE id = ? FOR UPDATE', [paymentId]);
@@ -136,8 +181,8 @@ async function settlePayment(paymentId, { outcome, failureCode = null }, now = n
 
     if (!FINAL.has(status)) {
       if (outcome === 'succeeded') {
-        const [[plan]] = await conn.execute('SELECT * FROM plan WHERE id = ?', [p.plan_id]);
-        await appendPeriod(conn, {
+        [[plan]] = await conn.execute('SELECT * FROM plan WHERE id = ?', [p.plan_id]);
+        appended = await appendPeriod(conn, {
           alanyaID, plan, now, graceUntil: await graceToPreserve(now),
           source: PERIOD_SOURCE.PAYMENT, paymentId: p.id,
         });
@@ -150,9 +195,10 @@ async function settlePayment(paymentId, { outcome, failureCode = null }, now = n
         changed = true;
       } else if (outcome === 'failed' || outcome === 'expired') {
         status = outcome === 'failed' ? P.FAILED : P.EXPIRED;
+        finalFailure = String(failureCode || (outcome === 'expired' ? 'TIMEOUT' : 'FAILED')).slice(0, 40);
         await conn.execute(
           'UPDATE payment SET status = ?, failure_code = ? WHERE id = ?',
-          [status, String(failureCode || (outcome === 'expired' ? 'TIMEOUT' : 'FAILED')).slice(0, 40), p.id],
+          [status, finalFailure, p.id],
         );
         changed = true;
       }
@@ -167,7 +213,21 @@ async function settlePayment(paymentId, { outcome, failureCode = null }, now = n
 
   if (changed) {
     emitPaymentUpdate(alanyaID, paymentId, status);
-    if (status === P.SUCCEEDED) notifyEntitlementsChanged(alanyaID);
+    if (status === P.SUCCEEDED) {
+      notifyEntitlementsChanged(alanyaID);
+      try {
+        await scheduleChainJobs(alanyaID, appended.end, Number(plan.reminder_days), now);
+      } catch (err) {
+        console.error(`[paiement] jobs d'échéance de ${alanyaID} :`, err.message);
+      }
+    }
+    // L'écran d'attente, s'il est ouvert, dit déjà la même chose : la
+    // notification sert à qui a quitté l'application (renouvellement
+    // automatique, code composé plus tard).
+    const message = status === P.SUCCEEDED
+      ? messages.paymentSucceeded({ until: appended.end })
+      : messages.paymentFailed({ failureCode: finalFailure });
+    await pushBilling(alanyaID, message, { skipIfDeviceOnline: true });
   }
   return { status: PAYMENT_STATUS_NAME[status], changed };
 }
@@ -260,6 +320,7 @@ function registerPaymentJobHandlers() {
 
 module.exports = {
   checkout,
+  initiateRenewal,
   settlePayment,
   handleWebhook,
   reconcilePending,

@@ -12,6 +12,7 @@ const { fail, failInternal } = require('../../utils/apiError');
 const { BillingError } = require('../../services/billing/errors');
 const settings = require('../../services/billing/settings');
 const catalog = require('../../services/billing/catalog');
+const { scheduleActivation, scheduleGraceJobs } = require('../../services/billing/billingSchedule');
 const {
   phaseAt,
   activationBlocker,
@@ -92,7 +93,10 @@ const activateBilling = async (req, res) => {
     if (!Number.isInteger(graceDays)) return fail(res, 400, 'INVALID_GRACE', 'graceDays doit être un entier');
   }
   try {
-    await settings.activate({ graceDays, adminId: req.user.alanyaID });
+    const s = await settings.activate({ graceDays, adminId: req.user.alanyaID });
+    // Annonce, compensation des abonnés au retour d'une phase gratuite, rappel
+    // et fin de grâce : posés en jobs, idempotents par leur clé.
+    await scheduleActivation(s).catch((err) => console.error('[admin/billing] jobs d\'activation :', err.message));
     res.json(await settingsPayload());
   } catch (err) {
     return sendError(res, err, 'activation');
@@ -115,7 +119,9 @@ const extendBillingGrace = async (req, res) => {
   if (!reason.ok) return reject(res, reason);
   if (!req.body?.graceUntil) return fail(res, 400, 'INVALID_GRACE', 'graceUntil requis');
   try {
-    await settings.extendGrace({ graceUntil: req.body.graceUntil, adminId: req.user.alanyaID });
+    const s = await settings.extendGrace({ graceUntil: req.body.graceUntil, adminId: req.user.alanyaID });
+    // Les jobs de l'ancienne date relisent la grâce et s'effacent d'eux-mêmes.
+    await scheduleGraceJobs(s.grace_until).catch((err) => console.error('[admin/billing] jobs de grâce :', err.message));
     res.json(await settingsPayload());
   } catch (err) {
     return sendError(res, err, 'prolongation de la grâce');

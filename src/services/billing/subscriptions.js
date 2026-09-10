@@ -12,14 +12,24 @@ const { PERIOD_SOURCE } = require('../../constants/billing');
 const { emitToUser } = require('../../utils/userSocketRegistry');
 const { BillingError } = require('./errors');
 const { getBillingSettings } = require('./settings');
-const { phaseAt } = require('./rules');
+const { DAY_MS, phaseAt } = require('./rules');
 const { addMonths, nextPeriodStart } = require('../payments/paymentRules');
+const { scheduleChainJobs } = require('./billingSchedule');
 
 let _io = null;
 
 /** Les jobs tournent hors requête : on leur donne `io` explicitement. */
 function setBillingIo(io) {
   _io = io;
+}
+
+function getBillingIo() {
+  return _io;
+}
+
+/** À tous les téléphones connectés (fin de grâce). */
+function emitToEveryone(event, payload) {
+  if (_io) _io.emit(event, payload);
 }
 
 /**
@@ -54,11 +64,15 @@ async function lockSubscriber(conn, alanyaID) {
  */
 async function appendPeriod(conn, {
   alanyaID, plan, now = new Date(), graceUntil = null, source,
-  paymentId = null, grantedBy = null, reason = null, months = null,
+  paymentId = null, grantedBy = null, reason = null, months = null, days = null,
 }) {
   const sub = await lockSubscriber(conn, alanyaID);
   const start = nextPeriodStart({ now, currentEnd: sub.current_end, graceUntil });
-  const end = addMonths(start, months ?? Number(plan.duration_months));
+  // En jours pour une compensation (la durée d'une phase gratuite), en mois
+  // sinon.
+  const end = days
+    ? new Date(start.getTime() + days * DAY_MS)
+    : addMonths(start, months ?? Number(plan.duration_months));
   await conn.execute(
     `INSERT INTO subscription_period
        (alanyaID, plan_id, starts_at, ends_at, source, payment_id, granted_by, reason)
@@ -84,6 +98,38 @@ async function graceToPreserve(now = new Date()) {
 }
 
 /**
+ * Une période hors paiement (offerte, compensation), dans sa propre
+ * transaction, puis ses jobs d'échéance et le signal au téléphone.
+ */
+async function grantPeriod({
+  alanyaID, plan, now = new Date(), source, grantedBy = null, reason = null, months = null, days = null,
+}) {
+  const graceUntil = await graceToPreserve(now);
+  const conn = await pool.getConnection();
+  let result;
+  try {
+    await conn.beginTransaction();
+    result = await appendPeriod(conn, {
+      alanyaID, plan, now, graceUntil, source, grantedBy, reason, months, days,
+    });
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+  try {
+    await scheduleChainJobs(alanyaID, result.end, Number(plan.reminder_days), now);
+  } catch (err) {
+    // Le balayage rattrapera l'échéance ; la période, elle, est acquise.
+    console.error(`[billing] jobs d'échéance de ${alanyaID} :`, err.message);
+  }
+  notifyEntitlementsChanged(alanyaID);
+  return result;
+}
+
+/**
  * Abonnement offert par l'administration : une période de plus, jamais un
  * faux paiement. Le plan retenu est celui mis en avant (il porte l'offre
  * complète) ; la durée est celle choisie par l'administrateur.
@@ -95,33 +141,20 @@ async function grantGift({ alanyaID, months, reason, adminId, now = new Date() }
     'SELECT * FROM plan WHERE is_active = 1 ORDER BY is_featured DESC, duration_months DESC, id ASC LIMIT 1',
   );
   if (!plan) throw new BillingError('PLAN_NOT_FOUND', 404, 'Aucun plan actif à offrir');
-
-  const graceUntil = await graceToPreserve(now);
-  const conn = await pool.getConnection();
-  let result;
-  try {
-    await conn.beginTransaction();
-    result = await appendPeriod(conn, {
-      alanyaID, plan, now, graceUntil, source: PERIOD_SOURCE.GIFT,
-      grantedBy: adminId, reason, months,
-    });
-    await conn.commit();
-  } catch (err) {
-    await conn.rollback();
-    throw err;
-  } finally {
-    conn.release();
-  }
-  notifyEntitlementsChanged(alanyaID);
-  return result;
+  return grantPeriod({
+    alanyaID, plan, now, source: PERIOD_SOURCE.GIFT, grantedBy: adminId, reason, months,
+  });
 }
 
 module.exports = {
   setBillingIo,
+  getBillingIo,
   notifyEntitlementsChanged,
   emitToAccount,
+  emitToEveryone,
   lockSubscriber,
   appendPeriod,
   graceToPreserve,
+  grantPeriod,
   grantGift,
 };
