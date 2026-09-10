@@ -44,6 +44,7 @@ const contactRoutes      = require('./src/routes/contacts');
 const contactListRoutes  = require('./src/routes/contactLists');
 const backupRoutes       = require('./src/routes/backup');
 const billingRoutes      = require('./src/routes/billing');
+const paymentsRoutes     = require('./src/routes/payments');
 const mediaAvailRoutes   = require('./src/routes/mediaAvailability');
 const tripRoutes         = require('./src/routes/trips');
 const qrRoutes           = require('./src/routes/qr');
@@ -95,6 +96,9 @@ const { registerWelcomeJobHandlers } = require('./src/services/welcomeWorkers');
 const { purgeExpiredWelcomeStatuses } = require('./src/services/welcomeService');
 const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
 const { startVerificationScheduler, stopVerificationScheduler } = require('./src/services/verificationScheduler');
+const { setBillingIo } = require('./src/services/billing/subscriptions');
+const { registerPaymentJobHandlers } = require('./src/services/payments/paymentService');
+const { startBillingSweep, stopBillingSweep } = require('./src/services/billing/billingSweep');
 const { withLease } = require('./src/services/schedulerLease');
 const { runDataRetentionPurge } = require('./src/services/dataRetentionService');
 const { runPurgeIfEnabled } = require('./src/services/purgeRegistry');
@@ -138,7 +142,13 @@ app.set('io', io);
 app.set('userSockets', userSockets);
 
 app.use(cors());
-app.use(express.json());
+// Le corps brut est gardé pour les webhooks de paiement : la signature d'un
+// fournisseur se vérifie sur les octets reçus, pas sur un JSON re-sérialisé.
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    if (req.originalUrl.startsWith('/api/payments/webhook/')) req.rawBody = Buffer.from(buf);
+  },
+}));
 app.use(generalLimiter);
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
@@ -180,6 +190,7 @@ app.use('/api/contacts',      contactRoutes);
 app.use('/api/contact-lists', contactListRoutes);
 app.use('/api/backup',        backupRoutes);
 app.use('/api/billing',       billingRoutes);
+app.use('/api/payments',      paymentsRoutes);
 app.use('/api/media',         mediaAvailRoutes);
 app.use('/api/trips', tripRoutes);
 app.use('/api/qr',            qrRoutes);
@@ -355,6 +366,10 @@ async function start() {
     setCallSessionsIo(io);
     setCallSessionsUserSockets(userSockets);
     registerCallSessionsJobHandlers();
+    // Paiements : le simulateur répond par la file de jobs, et chaque
+    // confirmation prévient le téléphone par le socket.
+    setBillingIo(io);
+    registerPaymentJobHandlers();
     // Péremption des trajets : un balayage unique remplace un minuteur par
     // trajet, sans quoi chaque position GPS coûterait une écriture en base.
     startTripStaleSweeper(io);
@@ -362,6 +377,7 @@ async function start() {
     startJobWorker();
     startMeetingScheduler();
     startVerificationScheduler();
+    startBillingSweep();
     stopAccountLifecycleSchedulers = startAccountLifecycleSchedulers();
 
     // Balayage de rétention. Chaque purge passe par le registre
@@ -476,6 +492,7 @@ async function arretPropre(code, cause) {
     //    du pool écrirait sur une connexion morte.
     stopMeetingScheduler();
     stopVerificationScheduler();
+    stopBillingSweep();
     stopJobWorker();
     stopTripStaleSweeper();
     stopAccountLifecycleSchedulers();
