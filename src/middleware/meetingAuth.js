@@ -42,11 +42,11 @@ const requireMeetingParticipant = async (req, res, next) => {
   try {
     const idMeeting = _idValide(req.params.id);
     if (!idMeeting) {
-      return res.status(400).json({ error: 'Identifiant de réunion invalide' });
+      return res.status(400).json({ error: 'Identifiant de réunion invalide', code: 'INVALID_MEETING' });
     }
     const acces = await loadMeetingAccess(idMeeting, req.user.alanyaID);
     if (verdictLecture(acces) !== 'ok') {
-      return res.status(404).json({ error: 'Meeting not found' });
+      return res.status(404).json({ error: 'Meeting not found', code: 'MEETING_NOT_FOUND' });
     }
     req.meetingAccess = acces;
     next();

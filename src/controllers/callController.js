@@ -64,7 +64,7 @@ const createCall = async (req, res) => {
     const idCaller = req.user.alanyaID;
 
     if (!idReceiver) {
-      return res.status(400).json({ error: 'idReceiver required' });
+      return res.status(400).json({ error: 'idReceiver required', code: 'ID_RECEIVER_REQUIRED' });
     }
 
     // Symétrique du garde posé sur `call_user` côté Socket.IO : les deux
@@ -148,7 +148,7 @@ const rejectCallHttp = async (req, res) => {
     const receiverID = req.user.alanyaID;
 
     if (!callerID || Number.isNaN(callerID)) {
-      return res.status(400).json({ error: 'callerId required' });
+      return res.status(400).json({ error: 'callerId required', code: 'CALLER_ID_REQUIRED' });
     }
 
     const io = req.app.get('io');

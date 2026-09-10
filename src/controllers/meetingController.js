@@ -40,7 +40,7 @@ const createMeeting = async (req, res) => {
     const idOrganiser = req.user.alanyaID;
 
     if (!start_time || !objet || !room) {
-      return res.status(400).json({ error: 'start_time, objet, room required' });
+      return res.status(400).json({ error: 'start_time, objet, room required', code: 'MEETING_FIELDS_REQUIRED' });
     }
 
     const [result] = await pool.execute(
@@ -93,7 +93,7 @@ const getMeetingById = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Meeting not found' });
+      return res.status(404).json({ error: 'Meeting not found', code: 'MEETING_NOT_FOUND' });
     }
 
     const [participants] = await pool.execute(
@@ -120,7 +120,7 @@ const getMeetingByRoom = async (req, res) => {
     // plus — `mtg-<millisecondes>` s'énumère.
     const acces = await loadMeetingAccessByRoom(room, req.user.alanyaID);
     if (verdictLecture(acces) !== 'ok') {
-      return res.status(404).json({ error: 'Meeting not found' });
+      return res.status(404).json({ error: 'Meeting not found', code: 'MEETING_NOT_FOUND' });
     }
 
     const [rows] = await pool.execute(
@@ -134,7 +134,7 @@ const getMeetingByRoom = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Meeting not found' });
+      return res.status(404).json({ error: 'Meeting not found', code: 'MEETING_NOT_FOUND' });
     }
 
     const [participants] = await pool.execute(
@@ -164,7 +164,7 @@ const updateMeeting = async (req, res) => {
     );
 
     if (existing.length === 0) {
-      return res.status(404).json({ error: 'Meeting not found or unauthorized' });
+      return res.status(404).json({ error: 'Meeting not found or unauthorized', code: 'MEETING_NOT_FOUND' });
     }
 
     const updates = [];
@@ -177,7 +177,7 @@ const updateMeeting = async (req, res) => {
     if (typeof isEnd === 'number') { updates.push('isEnd = ?'); values.push(isEnd); }
 
     if (updates.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
+      return res.status(400).json({ error: 'No fields to update', code: 'NO_FIELDS_TO_UPDATE' });
     }
 
     values.push(id);
@@ -261,7 +261,7 @@ const joinMeeting = async (req, res) => {
       const currentCount = countRows[0]?.total ?? 0;
       if (currentCount >= limit) {
         return res.status(403).json({
-          error: `Maximum ${limit} participants pour cette réunion`,
+          error: `Maximum ${limit} participants pour cette réunion`, code: 'LIMIT_REACHED',
         });
       }
 
@@ -306,7 +306,7 @@ const inviteParticipants = async (req, res) => {
     );
 
     if (meetings.length === 0) {
-      return res.status(403).json({ error: 'Non autorisé' });
+      return res.status(403).json({ error: 'Non autorisé', code: 'FORBIDDEN' });
     }
 
     const meeting = meetings[0];
@@ -363,7 +363,7 @@ const inviteParticipants = async (req, res) => {
 
     if (participant_ids.length > 0 && added === 0 && currentCount >= limit) {
       return res.status(403).json({
-        error: `Maximum ${limit} participants pour cette réunion`,
+        error: `Maximum ${limit} participants pour cette réunion`, code: 'LIMIT_REACHED',
       });
     }
 

@@ -146,7 +146,7 @@ const getMyQr = async (req, res) => {
 
     const qrPublicId = await _ensureQrPublicId(alanyaID);
     if (!qrPublicId) {
-      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' });
     }
 
     res.json({ qrPublicId, payload: identityPayload(qrPublicId) });
@@ -176,7 +176,7 @@ const regenerateQr = async (req, res) => {
           [qrPublicId, alanyaID]
         );
         if (result.affectedRows === 0) {
-          return res.status(404).json({ error: 'Utilisateur non trouvé' });
+          return res.status(404).json({ error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' });
         }
         return res.json({ qrPublicId, payload: identityPayload(qrPublicId) });
       } catch (error) {
@@ -199,7 +199,7 @@ const _resolveContact = async (req, res, alanyaID, qrPublicId) => {
   // Propriétaire non-business : son code permanent ne résout pas, même si la
   // colonne est renseignée (comptes d'essai antérieurs au verrouillage).
   if (rows.length === 0 || !_qrPermanentAutorise(rows[0].alanyaID)) {
-    return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
+    return res.status(404).json({ error: 'Code QR inconnu ou expiré', code: 'QR_UNKNOWN_OR_EXPIRED' });
   }
 
   const result = await addContactByFriendId(alanyaID, rows[0].alanyaID);
@@ -208,9 +208,9 @@ const _resolveContact = async (req, res, alanyaID, qrPublicId) => {
     case 'self':
       return res.json({ type: 'contact', self: true });
     case 'not_found':
-      return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
+      return res.status(404).json({ error: 'Code QR inconnu ou expiré', code: 'QR_UNKNOWN_OR_EXPIRED' });
     case 'blocked':
-      return res.status(403).json({ error: 'Impossible d\'ajouter cet utilisateur' });
+      return res.status(403).json({ error: 'Impossible d\'ajouter cet utilisateur', code: 'INVALID_USER' });
     case 'already':
       // Rescanner un contact déjà enregistré n'est pas une erreur pour qui scanne.
       return res.json({
@@ -291,7 +291,7 @@ const _resolveContactEphemere = async (req, res, alanyaID, token) => {
   // Lecture seule d'abord : un scan de son propre code ne doit rien consommer.
   const apercu = await qrContactTokens.get(token);
   if (!apercu) {
-    return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
+    return res.status(404).json({ error: 'Code QR inconnu ou expiré', code: 'QR_UNKNOWN_OR_EXPIRED' });
   }
   if (apercu.alanyaID === alanyaID) {
     return res.json({ type: 'contact', self: true });
@@ -308,7 +308,7 @@ const _resolveContactEphemere = async (req, res, alanyaID, token) => {
   const entry = await qrContactTokens.claim(token);
   if (!entry) {
     // Un autre scan a emporté le code entre-temps.
-    return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
+    return res.status(404).json({ error: 'Code QR inconnu ou expiré', code: 'QR_UNKNOWN_OR_EXPIRED' });
   }
 
   let result;
@@ -327,11 +327,11 @@ const _resolveContactEphemere = async (req, res, alanyaID, token) => {
       return res.json({ type: 'contact', self: true });
     case 'not_found':
       await qrContactTokens.release(token);
-      return res.status(404).json({ error: 'Code QR inconnu ou expiré' });
+      return res.status(404).json({ error: 'Code QR inconnu ou expiré', code: 'QR_UNKNOWN_OR_EXPIRED' });
     case 'blocked':
       // Un scan par un compte bloqué ne doit pas pouvoir tuer le code d'autrui.
       await qrContactTokens.release(token);
-      return res.status(403).json({ error: 'Impossible d\'ajouter cet utilisateur' });
+      return res.status(403).json({ error: 'Impossible d\'ajouter cet utilisateur', code: 'INVALID_USER' });
     case 'already':
     case 'added':
     default: {
@@ -357,7 +357,7 @@ const _resolveLogin = async (req, res, alanyaID, parsed) => {
   // Un secret invalide est indistinguable d'une session inconnue : pas de
   // signal exploitable pour énumérer les sessions en cours.
   if (!session || !secretMatches(session.scanSecret, parsed.scanSecret)) {
-    return res.status(404).json({ error: 'Session de connexion inconnue ou expirée' });
+    return res.status(404).json({ error: 'Session de connexion inconnue ou expirée', code: 'SESSION_NOT_FOUND' });
   }
 
   await qrLoginSessions.markScanned(parsed.sessionId, alanyaID);
@@ -385,7 +385,7 @@ const resolveQr = async (req, res) => {
 
     const parsed = _parsePayload(req.body?.payload);
     if (!parsed) {
-      return res.status(400).json({ error: 'Code QR illisible' });
+      return res.status(400).json({ error: 'Code QR illisible', code: 'INVALID_QR' });
     }
 
     if (parsed.type === 'contact_ephemere') {

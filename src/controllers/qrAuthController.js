@@ -26,7 +26,7 @@ const createQrSession = async (req, res) => {
   try {
     const deviceId = _trimmed(req.body.deviceId || req.body.device_ID || req.body.device_id, 128);
     if (!deviceId || deviceId === 'INDEFINI') {
-      return res.status(400).json({ error: 'deviceId requis' });
+      return res.status(400).json({ error: 'deviceId requis', code: 'DEVICE_ID_REQUIRED' });
     }
 
     // `deviceName` et `platform` viennent d'un appelant NON authentifié : ils
@@ -87,7 +87,7 @@ const getQrSessionStatus = async (req, res) => {
     // dans un journal d'accès.
     const pollToken = req.get('X-Poll-Token');
     if (!pollToken) {
-      return res.status(400).json({ error: 'pollToken requis' });
+      return res.status(400).json({ error: 'pollToken requis', code: 'POLL_TOKEN_REQUIRED' });
     }
 
     const entry = await qrLoginSessions.get(sessionId);
@@ -135,18 +135,18 @@ const _loadScannedSession = async (req, res) => {
   const sessionId = String(req.params.sessionId || '');
   const scanSecret = req.body?.scanSecret;
   if (!scanSecret) {
-    res.status(400).json({ error: 'scanSecret requis' });
+    res.status(400).json({ error: 'scanSecret requis', code: 'SCAN_SECRET_REQUIRED' });
     return null;
   }
 
   const entry = await qrLoginSessions.get(sessionId);
   if (!entry || !secretMatches(scanSecret, entry.scanSecret)) {
-    res.status(404).json({ error: 'Session inconnue ou expirée' });
+    res.status(404).json({ error: 'Session inconnue ou expirée', code: 'SESSION_NOT_FOUND' });
     return null;
   }
 
   if (entry.status !== 'pending' && entry.status !== 'scanned') {
-    res.status(409).json({ error: 'Session déjà traitée' });
+    res.status(409).json({ error: 'Session déjà traitée', code: 'SESSION_ALREADY_HANDLED' });
     return null;
   }
 
@@ -167,7 +167,7 @@ const approveQrSession = async (req, res) => {
     // le compte du second.
     reserved = await qrLoginSessions.beginApproval(entry.sessionId);
     if (!reserved) {
-      return res.status(409).json({ error: 'Session déjà traitée' });
+      return res.status(409).json({ error: 'Session déjà traitée', code: 'SESSION_ALREADY_HANDLED' });
     }
 
     const alanyaID = req.user.alanyaID;
@@ -182,7 +182,7 @@ const approveQrSession = async (req, res) => {
     );
     if (rows.length === 0) {
       await qrLoginSessions.abortApproval(entry.sessionId);
-      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' });
     }
     const user = rows[0];
 
@@ -200,7 +200,7 @@ const approveQrSession = async (req, res) => {
     if (!appareilId) {
       await qrLoginSessions.abortApproval(entry.sessionId);
       console.error('[QrAuth] recordLogin a échoué — approbation refusée (session serait irrévocable)');
-      return res.status(503).json({ error: 'Service temporairement indisponible' });
+      return res.status(503).json({ error: 'Service temporairement indisponible', code: 'SERVICE_UNAVAILABLE' });
     }
 
     const tokenPayload = { alanyaID, email: user.email, appareilId };
@@ -262,7 +262,7 @@ const denyQrSession = async (req, res) => {
     // lecture ci-dessus et ce refus.
     const refusee = await qrLoginSessions.deny(entry.sessionId);
     if (!refusee) {
-      return res.status(409).json({ error: 'Session déjà traitée' });
+      return res.status(409).json({ error: 'Session déjà traitée', code: 'SESSION_ALREADY_HANDLED' });
     }
 
     const io = req.app.get('io');
@@ -314,7 +314,7 @@ const revokeDeviceSession = async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
-      return res.status(400).json({ error: 'Identifiant d\'appareil invalide' });
+      return res.status(400).json({ error: 'Identifiant d\'appareil invalide', code: 'INVALID_DEVICE' });
     }
 
     // 404 et non 403 quand la ligne appartient à quelqu'un d'autre : répondre
@@ -324,7 +324,7 @@ const revokeDeviceSession = async (req, res) => {
       [id, req.user.alanyaID]
     );
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Appareil introuvable' });
+      return res.status(404).json({ error: 'Appareil introuvable', code: 'DEVICE_NOT_FOUND' });
     }
 
     await pool.execute(
