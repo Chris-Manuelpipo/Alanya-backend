@@ -33,6 +33,8 @@ const NOTIFICATION_TYPES = Object.freeze([
   'billing_purge_warning',
   'payment_succeeded',
   'payment_failed',
+  // Vérification d'identité : décision sur le dossier.
+  'verification_update',
 ]);
 
 /**
@@ -271,14 +273,16 @@ const buildTripPayload = (input = {}) => {
  * serveur, faute de quoi le client, application tuée, n'afficherait rien —,
  * et un lien vers « Mon abonnement ».
  */
-const buildBillingPayload = ({ type, title = '', body = '', eventId = null } = {}) =>
+const buildBillingPayload = ({
+  type, title = '', body = '', eventId = null, deeplink = 'alanya://subscription',
+} = {}) =>
   stringifyData({
     schemaVersion: SCHEMA_VERSION,
     type,
     eventId: eventId || generateEventId(),
     title,
     body,
-    deeplink: 'alanya://subscription',
+    deeplink,
   });
 
 module.exports = {

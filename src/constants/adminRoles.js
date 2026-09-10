@@ -84,6 +84,11 @@ const ADMIN_PERMISSIONS = [
   // Abonnement : consulter l'état de l'offre et les plans. Voir n'est pas
   // décider — les réglages et les prix restent au super-admin.
   'billing.read',
+
+  // Dossiers d'identité : tout administrateur instruit et décide (volet 5).
+  // L'auteur de chaque décision est tracé, chaque ouverture de pièce aussi.
+  'verifications.read',
+  'verifications.decide',
 ];
 
 /**

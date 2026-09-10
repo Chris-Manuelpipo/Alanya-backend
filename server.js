@@ -45,6 +45,7 @@ const contactListRoutes  = require('./src/routes/contactLists');
 const backupRoutes       = require('./src/routes/backup');
 const billingRoutes      = require('./src/routes/billing');
 const paymentsRoutes     = require('./src/routes/payments');
+const verificationRoutes = require('./src/routes/verification');
 const mediaAvailRoutes   = require('./src/routes/mediaAvailability');
 const tripRoutes         = require('./src/routes/trips');
 const qrRoutes           = require('./src/routes/qr');
@@ -95,7 +96,6 @@ const { registerBroadcastJobHandlers } = require('./src/services/broadcastWorker
 const { registerWelcomeJobHandlers } = require('./src/services/welcomeWorkers');
 const { purgeExpiredWelcomeStatuses } = require('./src/services/welcomeService');
 const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
-const { startVerificationScheduler, stopVerificationScheduler } = require('./src/services/verificationScheduler');
 const { setBillingIo } = require('./src/services/billing/subscriptions');
 const { registerPaymentJobHandlers } = require('./src/services/payments/paymentService');
 const { startBillingSweep, stopBillingSweep } = require('./src/services/billing/billingSweep');
@@ -192,6 +192,7 @@ app.use('/api/contact-lists', contactListRoutes);
 app.use('/api/backup',        backupRoutes);
 app.use('/api/billing',       billingRoutes);
 app.use('/api/payments',      paymentsRoutes);
+app.use('/api/verification',  verificationRoutes);
 app.use('/api/media',         mediaAvailRoutes);
 app.use('/api/trips', tripRoutes);
 app.use('/api/qr',            qrRoutes);
@@ -380,7 +381,9 @@ async function start() {
     initBroadcastCache().catch((e) => console.error('[Broadcast] init cache:', e.message));
     startJobWorker();
     startMeetingScheduler();
-    startVerificationScheduler();
+    // Le verificationScheduler (relance des vérifications business) a cédé la
+    // place au balayage de l'abonnement : la coche suit désormais l'abonnement,
+    // et ses relances sont celles de l'échéance (billingJobs.js).
     startBillingSweep();
     stopAccountLifecycleSchedulers = startAccountLifecycleSchedulers();
 
@@ -495,7 +498,6 @@ async function arretPropre(code, cause) {
     // 1. Les ordonnanceurs d'abord : un job qui démarrerait après la fermeture
     //    du pool écrirait sur une connexion morte.
     stopMeetingScheduler();
-    stopVerificationScheduler();
     stopBillingSweep();
     stopJobWorker();
     stopTripStaleSweeper();

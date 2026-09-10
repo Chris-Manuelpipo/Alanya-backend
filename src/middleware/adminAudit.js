@@ -104,6 +104,17 @@ const ACTIONS = {
   'PUT /billing/features/:code': { action: 'billing.features.update', targetType: 'feature', param: 'code' },
   'POST /users/:id/billing/gift': { action: 'billing.gift', targetType: 'user', param: 'id' },
 
+  // Vérification d'identité. Refus, pièce demandée et révocation portent un
+  // motif (`body.reason`), recopié ici. Les ouvertures de pièces ont leur
+  // propre journal (verification_document_access).
+  'POST /verifications/:id/approve': { action: 'verifications.approve', targetType: 'verification', param: 'id' },
+  'POST /verifications/:id/refuse': { action: 'verifications.refuse', targetType: 'verification', param: 'id' },
+  'POST /verifications/:id/request-document': {
+    action: 'verifications.request_document', targetType: 'verification', param: 'id',
+  },
+  'POST /verifications/:id/revoke': { action: 'verifications.revoke', targetType: 'verification', param: 'id' },
+  'POST /verifications/:id/reconfirm': { action: 'verifications.reconfirm', targetType: 'verification', param: 'id' },
+
   // Compte de l'administrateur lui-même
   'PUT /me': { action: 'profile.update', targetType: 'self' },
   'PUT /me/password': { action: 'profile.password', targetType: 'self' },

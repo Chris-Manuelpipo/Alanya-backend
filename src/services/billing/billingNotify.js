@@ -26,9 +26,9 @@ function fmtDay(d, locale = 'fr-FR') {
  * @param {{ skipIfDeviceOnline?: boolean }} [options]  vrai quand l'écran
  *   ouvert dit déjà la même chose (l'attente d'un paiement, par ex.)
  */
-async function pushBilling(alanyaID, { type, title, body }, { skipIfDeviceOnline = false } = {}) {
+async function pushBilling(alanyaID, { type, title, body, deeplink }, { skipIfDeviceOnline = false } = {}) {
   try {
-    await sendToUser(alanyaID, buildBillingPayload({ type, title, body }), {
+    await sendToUser(alanyaID, buildBillingPayload({ type, title, body, deeplink }), {
       io: getBillingIo(),
       skipIfDeviceOnline,
     });
@@ -75,6 +75,32 @@ const messages = {
     type: 'payment_failed',
     title: 'Paiement non abouti',
     body: FAILURE_TEXT[failureCode] || 'Le paiement n\'a pas pu aboutir. Vous pouvez réessayer.',
+  }),
+
+  // Vérification d'identité : un seul type, le texte dit la décision.
+  verificationApproved: () => ({
+    type: 'verification_update',
+    deeplink: 'alanya://verification',
+    title: 'Identité vérifiée',
+    body: 'Votre coche s\'affiche désormais à côté de votre nom.',
+  }),
+  verificationRefused: ({ reason }) => ({
+    type: 'verification_update',
+    deeplink: 'alanya://verification',
+    title: 'Vérification refusée',
+    body: `Motif : ${reason}`,
+  }),
+  verificationDocumentRequested: ({ reason }) => ({
+    type: 'verification_update',
+    deeplink: 'alanya://verification',
+    title: 'Une pièce manque à votre dossier',
+    body: reason,
+  }),
+  verificationRevoked: ({ reason }) => ({
+    type: 'verification_update',
+    deeplink: 'alanya://verification',
+    title: 'Votre coche a été retirée',
+    body: `Motif : ${reason}`,
   }),
 };
 

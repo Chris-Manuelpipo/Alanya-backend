@@ -880,4 +880,29 @@ router.get('/billing/subscribers',        adminAuth, requirePermission('billing.
 router.get('/users/:id/billing',          adminAuth, requirePermission('billing.read'), getUserBilling);
 router.post('/users/:id/billing/gift',    adminAuth, requirePermission('billing.gift'), giftSubscription);
 
+const {
+  listVerifications,
+  countVerifications,
+  getVerification,
+  getVerificationDocument,
+  approveVerification,
+  refuseVerification,
+  requestVerificationDocument,
+  revokeVerification,
+  reconfirmVerification,
+} = require('../controllers/admin/verification');
+
+// Dossiers de vérification d'identité. Tout administrateur instruit (volet 5),
+// l'auteur de chaque décision est tracé ; chaque ouverture de pièce est
+// journalisée dans sa propre table.
+router.get('/verifications',                        adminAuth, requirePermission('verifications.read'), listVerifications);
+router.get('/verifications/count',                  adminAuth, requirePermission('verifications.read'), countVerifications);
+router.get('/verifications/documents/:docId',       adminAuth, requirePermission('verifications.read'), getVerificationDocument);
+router.get('/verifications/:id',                    adminAuth, requirePermission('verifications.read'), getVerification);
+router.post('/verifications/:id/approve',           adminAuth, requirePermission('verifications.decide'), approveVerification);
+router.post('/verifications/:id/refuse',            adminAuth, requirePermission('verifications.decide'), refuseVerification);
+router.post('/verifications/:id/request-document',  adminAuth, requirePermission('verifications.decide'), requestVerificationDocument);
+router.post('/verifications/:id/revoke',            adminAuth, requirePermission('verifications.decide'), revokeVerification);
+router.post('/verifications/:id/reconfirm',         adminAuth, requirePermission('verifications.decide'), reconfirmVerification);
+
 module.exports = router;
