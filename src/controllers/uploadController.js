@@ -27,7 +27,7 @@ const publicPathFor = (file) => {
 const uploadAvatar = async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+      return res.status(400).json({ error: 'No file uploaded', code: 'FILE_REQUIRED' });
     }
 
     const filename = req.file.filename;
@@ -36,7 +36,7 @@ const uploadAvatar = async (req, res) => {
 
     if (applyToProfile) {
       if (!req.user?.alanyaID) {
-        return res.status(401).json({ error: 'Authentification requise pour applyToProfile' });
+        return res.status(401).json({ error: 'Authentification requise pour applyToProfile', code: 'MEDIA_REQUIRED' });
       }
       await pool.execute(
         'UPDATE users SET avatar_url = ? WHERE alanyaID = ?',
@@ -61,7 +61,7 @@ const uploadAvatar = async (req, res) => {
 const uploadMedia = async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+      return res.status(400).json({ error: 'No file uploaded', code: 'FILE_REQUIRED' });
     }
 
     const file     = req.file;

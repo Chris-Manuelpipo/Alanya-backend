@@ -54,10 +54,10 @@ const _diskPath = (mediaUrl) => {
 exports.checkAvailability = async (req, res) => {
   const raw = req.body?.msgIDs;
   if (!Array.isArray(raw) || raw.length === 0) {
-    return res.status(400).json({ error: 'msgIDs requis' });
+    return res.status(400).json({ error: 'msgIDs requis', code: 'MSG_IDS_REQUIRED' });
   }
   if (raw.length > MAX_IDS) {
-    return res.status(400).json({ error: `Maximum ${MAX_IDS} identifiants` });
+    return res.status(400).json({ error: `Maximum ${MAX_IDS} identifiants`, code: 'LIMIT_REACHED' });
   }
 
   const ids = [...new Set(
@@ -96,7 +96,7 @@ exports.checkAvailability = async (req, res) => {
     return res.json({ available, bytes });
   } catch (e) {
     console.error('[MediaAvailability] ERROR:', e);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

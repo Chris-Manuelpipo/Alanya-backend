@@ -229,7 +229,7 @@ const createTrip = async (req, res) => {
     return res.status(201).json({ trip: body, policy: policy.publicPolicy() });
   } catch (error) {
     console.error('[Trip] createTrip:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -258,7 +258,7 @@ const getActiveTrips = async (req, res) => {
     });
   } catch (error) {
     console.error('[Trip] getActiveTrips:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -270,15 +270,15 @@ const getTrip = async (req, res) => {
   try {
     const alanyaID = req.user.alanyaID;
     const tripId = parseTripId(req.params.tripId);
-    if (!tripId) return res.status(400).json({ error: 'tripId invalide' });
+    if (!tripId) return res.status(400).json({ error: 'tripId invalide', code: 'INVALID_TRIP_ID' });
 
     const trip = await findTripById(tripId);
     // 404 indifférencié : on ne révèle pas l'existence du trajet d'un autre.
-    if (!trip) return res.status(404).json({ error: 'Trajet introuvable' });
+    if (!trip) return res.status(404).json({ error: 'Trajet introuvable', code: 'TRIP_NOT_FOUND' });
 
     const isOwner = Number(trip.owner_id) === Number(alanyaID);
     if (!isOwner && !(await isActiveWatcher(tripId, alanyaID))) {
-      return res.status(404).json({ error: 'Trajet introuvable' });
+      return res.status(404).json({ error: 'Trajet introuvable', code: 'TRIP_NOT_FOUND' });
     }
 
     // Le propriétaire voit qui suit ; un destinataire ne voit que le nombre —
@@ -303,7 +303,7 @@ const getTrip = async (req, res) => {
     });
   } catch (error) {
     console.error('[Trip] getTrip:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -317,12 +317,12 @@ const getTrip = async (req, res) => {
 const monTrajetOuvert = async (req, res) => {
   const tripId = parseTripId(req.params.tripId);
   if (!tripId) {
-    res.status(400).json({ error: 'tripId invalide' });
+    res.status(400).json({ error: 'tripId invalide', code: 'INVALID_TRIP_ID' });
     return null;
   }
   const trip = await findTripById(tripId);
   if (!trip || Number(trip.owner_id) !== Number(req.user.alanyaID)) {
-    res.status(404).json({ error: 'Trajet introuvable' });
+    res.status(404).json({ error: 'Trajet introuvable', code: 'TRIP_NOT_FOUND' });
     return null;
   }
   if (!policy.OPEN_STATES.has(trip.state)) {
@@ -346,7 +346,7 @@ const confirmTrip = async (req, res) => {
     return res.json({ trip: tripRow(await findTripById(trip.id), { isOwner: true }) });
   } catch (error) {
     console.error('[Trip] confirmTrip:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -400,7 +400,7 @@ const extendTrip = async (req, res) => {
     return res.json({ trip: tripRow(await findTripById(trip.id), { isOwner: true }) });
   } catch (error) {
     console.error('[Trip] extendTrip:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -434,7 +434,7 @@ const cancelTrip = async (req, res) => {
     return res.json({ trip: tripRow(await findTripById(trip.id), { isOwner: true }) });
   } catch (error) {
     console.error('[Trip] cancelTrip:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -444,13 +444,13 @@ const revokeWatcher = async (req, res) => {
   try {
     const moi = Number(req.user.alanyaID);
     const cible = parseTripId(req.params.alanyaID);
-    if (!cible) return res.status(400).json({ error: 'alanyaID invalide' });
+    if (!cible) return res.status(400).json({ error: 'alanyaID invalide', code: 'INVALID_ALANYA_ID' });
 
     const tripId = parseTripId(req.params.tripId);
-    if (!tripId) return res.status(400).json({ error: 'tripId invalide' });
+    if (!tripId) return res.status(400).json({ error: 'tripId invalide', code: 'INVALID_TRIP_ID' });
     const trip = await findTripById(tripId);
     // 404 indifférencié : on ne révèle pas l'existence du trajet d'un autre.
-    if (!trip) return res.status(404).json({ error: 'Trajet introuvable' });
+    if (!trip) return res.status(404).json({ error: 'Trajet introuvable', code: 'TRIP_NOT_FOUND' });
     if (!policy.OPEN_STATES.has(trip.state)) {
       return res.status(409).json({ error: 'Trajet déjà clos', code: 'TRIP_TERMINAL' });
     }
@@ -469,7 +469,7 @@ const revokeWatcher = async (req, res) => {
     const estPorteur = Number(trip.owner_id) === moi;
     const seRetire = cible === moi;
     if (!estPorteur && !seRetire) {
-      return res.status(404).json({ error: 'Trajet introuvable' });
+      return res.status(404).json({ error: 'Trajet introuvable', code: 'TRIP_NOT_FOUND' });
     }
 
     const [r] = await pool.execute(
@@ -479,7 +479,7 @@ const revokeWatcher = async (req, res) => {
       [seRetire ? 'left' : 'removed', trip.id, cible],
     );
     if (r.affectedRows === 0) {
-      return res.status(404).json({ error: 'Destinataire introuvable' });
+      return res.status(404).json({ error: 'Destinataire introuvable', code: 'RECIPIENT_NOT_FOUND' });
     }
     await logEvent(trip.id, seRetire ? 'watcher_left' : 'watcher_revoked',
       { actorId: moi });
@@ -497,7 +497,7 @@ const revokeWatcher = async (req, res) => {
     return res.json(estPorteur ? { watchers: restants } : { left: true });
   } catch (error) {
     console.error('[Trip] revokeWatcher:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -669,7 +669,7 @@ const createSosTrip = async (req, res) => {
     });
   } catch (error) {
     console.error('[Trip] createSosTrip:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -692,7 +692,7 @@ const triggerSos = async (req, res) => {
     return res.json({ trip: tripRow(await findTripById(trip.id), { isOwner: true }) });
   } catch (error) {
     console.error('[Trip] triggerSos:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -736,7 +736,7 @@ const getHistory = async (req, res) => {
     });
   } catch (error) {
     console.error('[Trip] getHistory:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -745,13 +745,13 @@ const getHistory = async (req, res) => {
 const getPoints = async (req, res) => {
   try {
     const tripId = parseTripId(req.params.tripId);
-    if (!tripId) return res.status(400).json({ error: 'tripId invalide' });
+    if (!tripId) return res.status(400).json({ error: 'tripId invalide', code: 'INVALID_TRIP_ID' });
 
     const trip = await findTripById(tripId);
-    if (!trip) return res.status(404).json({ error: 'Trajet introuvable' });
+    if (!trip) return res.status(404).json({ error: 'Trajet introuvable', code: 'TRIP_NOT_FOUND' });
     const isOwner = Number(trip.owner_id) === Number(req.user.alanyaID);
     if (!isOwner && !(await isActiveWatcher(tripId, req.user.alanyaID))) {
-      return res.status(404).json({ error: 'Trajet introuvable' });
+      return res.status(404).json({ error: 'Trajet introuvable', code: 'TRIP_NOT_FOUND' });
     }
 
     const [rows] = await pool.execute(
@@ -775,7 +775,7 @@ const getPoints = async (req, res) => {
     });
   } catch (error) {
     console.error('[Trip] getPoints:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -790,11 +790,11 @@ const getPoints = async (req, res) => {
 const deleteTrip = async (req, res) => {
   try {
     const tripId = parseTripId(req.params.tripId);
-    if (!tripId) return res.status(400).json({ error: 'tripId invalide' });
+    if (!tripId) return res.status(400).json({ error: 'tripId invalide', code: 'INVALID_TRIP_ID' });
 
     const trip = await findTripById(tripId);
     if (!trip || Number(trip.owner_id) !== Number(req.user.alanyaID)) {
-      return res.status(404).json({ error: 'Trajet introuvable' });
+      return res.status(404).json({ error: 'Trajet introuvable', code: 'TRIP_NOT_FOUND' });
     }
     if (policy.OPEN_STATES.has(trip.state)) {
       return res.status(409).json({
@@ -820,7 +820,7 @@ const deleteTrip = async (req, res) => {
     return res.json({ deleted: true });
   } catch (error) {
     console.error('[Trip] deleteTrip:', error.message);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

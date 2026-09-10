@@ -46,7 +46,7 @@ const _sendKey = async (req, res, loader, requestedKid) => {
     }
     _auditKeyAccess(req, requestedKid ?? null, 'refusee', 'erreur serveur');
     console.error('[BackupKey] ERROR:', e);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -63,7 +63,7 @@ exports.getCurrentKey = (req, res) =>
 exports.getKeyByKid = (req, res) => {
   const kid = Number.parseInt(req.params.kid, 10);
   if (!Number.isInteger(kid) || kid <= 0) {
-    return res.status(400).json({ error: 'kid invalide' });
+    return res.status(400).json({ error: 'kid invalide', code: 'INVALID_KID' });
   }
   return _sendKey(req, res, () => keyByKid(req.user.alanyaID, kid), kid);
 };
@@ -104,7 +104,7 @@ exports.putMeta = async (req, res) => {
   const size = Number.parseInt(bytes, 10);
   const keyId = Number.parseInt(kid, 10);
   if (!Number.isInteger(size) || size <= 0 || !Number.isInteger(keyId)) {
-    return res.status(400).json({ error: 'Métadonnée incomplète' });
+    return res.status(400).json({ error: 'Métadonnée incomplète', code: 'METADATA_INCOMPLETE' });
   }
 
   try {
@@ -129,7 +129,7 @@ exports.putMeta = async (req, res) => {
     return res.json({ ok: true });
   } catch (e) {
     console.error('[BackupMeta] ERROR:', e);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -162,7 +162,7 @@ exports.getMeta = async (req, res) => {
     });
   } catch (e) {
     console.error('[BackupMeta] ERROR:', e);
-    return res.status(500).json({ error: 'Erreur serveur' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

@@ -166,7 +166,7 @@ const getStatusViews = async (req, res) => {
       'SELECT alanyaID FROM statut WHERE ID = ?', [id]
     );
     if (owner.length === 0 || owner[0].alanyaID !== alanyaID) {
-      return res.status(403).json({ error: 'Non autorisé' });
+      return res.status(403).json({ error: 'Non autorisé', code: 'FORBIDDEN' });
     }
 
     // LIMIT en dur : audience naturellement bornée (contacts réciproques
@@ -202,7 +202,7 @@ const createStatus = async (req, res) => {
     const alanyaID = req.user.alanyaID;
 
     if (!text && !mediaUrl) {
-      return res.status(400).json({ error: 'text ou mediaUrl requis' });
+      return res.status(400).json({ error: 'text ou mediaUrl requis', code: 'TEXT_REQUIRED' });
     }
 
     const [result] = await pool.execute(
@@ -276,7 +276,7 @@ const viewStatus = async (req, res) => {
       [id]
     );
     if (statut.length === 0) {
-      return res.status(404).json({ error: 'Statut introuvable ou expiré' });
+      return res.status(404).json({ error: 'Statut introuvable ou expiré', code: 'STATUS_NOT_FOUND' });
     }
 
     // Tente l'INSERT — la contrainte UNIQUE empêche les doublons
@@ -342,7 +342,7 @@ const likeStatus = async (req, res) => {
       [id]
     );
     if (statut.length === 0) {
-      return res.status(404).json({ error: 'Statut introuvable ou expiré' });
+      return res.status(404).json({ error: 'Statut introuvable ou expiré', code: 'STATUS_NOT_FOUND' });
     }
     const ownerID = statut[0].alanyaID;
 
@@ -413,7 +413,7 @@ const unlikeStatus = async (req, res) => {
       [id]
     );
     if (statut.length === 0) {
-      return res.status(404).json({ error: 'Statut introuvable' });
+      return res.status(404).json({ error: 'Statut introuvable', code: 'STATUS_NOT_FOUND' });
     }
     const ownerID = statut[0].alanyaID;
 

@@ -212,7 +212,7 @@ const deleteAccount = async (req, res) => {
   try {
     const { password } = req.body || {};
     if (!password) {
-      return res.status(400).json({ error: 'Mot de passe requis' });
+      return res.status(400).json({ error: 'Mot de passe requis', code: 'PASSWORD_REQUIRED' });
     }
 
     const alanyaID = req.user.alanyaID;
@@ -221,12 +221,12 @@ const deleteAccount = async (req, res) => {
       [alanyaID],
     );
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Utilisateur introuvable' });
+      return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     }
 
     const valid = await bcrypt.compare(password, rows[0].password);
     if (!valid) {
-      return res.status(401).json({ error: 'Mot de passe incorrect' });
+      return res.status(401).json({ error: 'Mot de passe incorrect', code: 'PASSWORD_INCORRECT' });
     }
 
     const io = req.app.get('io');
@@ -270,7 +270,7 @@ const cancelAccountDeletionHandler = async (req, res) => {
   try {
     const ok = await cancelAccountDeletion(req.user.alanyaID);
     if (!ok) {
-      return res.status(400).json({ error: 'Aucune suppression en cours à annuler' });
+      return res.status(400).json({ error: 'Aucune suppression en cours à annuler', code: 'NO_DELETION_PENDING' });
     }
     const io = req.app.get('io');
     emitToUser(io, req.user.alanyaID, 'account:deletion_cancelled', {});
@@ -341,7 +341,7 @@ const exportAccountData = async (req, res) => {
     if (!includeMessages) {
       const payload = await _buildSyncExport(alanyaID);
       if (!payload) {
-        return res.status(404).json({ error: 'Utilisateur introuvable' });
+        return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
       }
       return res.json(payload);
     }
@@ -367,7 +367,7 @@ const exportAccountData = async (req, res) => {
     });
   } catch (error) {
     if (error.code === 'ER_NO_SUCH_TABLE') {
-      return res.status(503).json({ error: 'Export async non disponible (migration 034 requise)' });
+      return res.status(503).json({ error: 'Export async non disponible (migration 034 requise)', code: 'INTERNAL' });
     }
     console.error('[ExportAccount] ERROR:', error);
     res.status(500).json({ error: 'Échec de l\'export', code: 'INTERNAL' });
@@ -378,7 +378,7 @@ const downloadExportJob = async (req, res) => {
   try {
     const jobId = Number(req.params.jobId);
     if (!Number.isFinite(jobId) || jobId <= 0) {
-      return res.status(400).json({ error: 'Identifiant de job invalide' });
+      return res.status(400).json({ error: 'Identifiant de job invalide', code: 'INVALID_JOB' });
     }
 
     const [rows] = await pool.execute(
@@ -386,7 +386,7 @@ const downloadExportJob = async (req, res) => {
       [jobId, req.user.alanyaID],
     );
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Export introuvable' });
+      return res.status(404).json({ error: 'Export introuvable', code: 'EXPORT_NOT_FOUND' });
     }
 
     const job = { ...rows[0], status: exportStatusFromDb(rows[0].status) };
@@ -394,30 +394,34 @@ const downloadExportJob = async (req, res) => {
       return res.status(202).json({ jobId, status: job.status });
     }
     if (job.status === 'failed') {
+      // `errorMessage` est écrit par le worker et peut contenir une erreur de
+      // driver : il reste en base pour le diagnostic, il ne sort pas d'ici.
+      console.error('[Export] job %s en échec: %s', jobId, job.errorMessage);
       return res.status(500).json({
         jobId,
         status: 'failed',
-        error: job.errorMessage || 'export_failed',
+        error: 'Export impossible',
+        code: 'EXPORT_FAILED',
       });
     }
     if (job.expiresAt && new Date(job.expiresAt).getTime() < Date.now()) {
-      return res.status(410).json({ error: 'Export expiré' });
+      return res.status(410).json({ error: 'Export expiré', code: 'EXPORT_EXPIRED' });
     }
     if (!job.filePath) {
-      return res.status(500).json({ error: 'Fichier d\'export manquant' });
+      return res.status(500).json({ error: 'Fichier d\'export manquant', code: 'INTERNAL' });
     }
 
     const absPath = path.join(EXPORT_DIR, path.basename(job.filePath));
     try {
       await fs.access(absPath);
     } catch {
-      return res.status(404).json({ error: 'Fichier d\'export introuvable' });
+      return res.status(404).json({ error: 'Fichier d\'export introuvable', code: 'MEDIA_NOT_FOUND' });
     }
 
     res.download(absPath, `alanya-export-${jobId}.json`);
   } catch (error) {
     if (error.code === 'ER_NO_SUCH_TABLE') {
-      return res.status(503).json({ error: 'Export async non disponible (migration 034 requise)' });
+      return res.status(503).json({ error: 'Export async non disponible (migration 034 requise)', code: 'INTERNAL' });
     }
     console.error('[DownloadExport] ERROR:', error);
     res.status(500).json({ error: 'Échec du téléchargement', code: 'INTERNAL' });

@@ -55,7 +55,7 @@ const getUserById = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
     }
 
     const pair = await getBlockPair(viewerId, targetId);
@@ -90,7 +90,7 @@ const getUserByPhone = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
     }
 
     res.json(rows.map(u => ({ ...u, avatar_url: sanitizeUrl(u.avatar_url) })));
@@ -103,7 +103,7 @@ const searchUsers = async (req, res) => {
   try {
     const { q } = req.query;
     if (!q) {
-      return res.status(400).json({ error: 'Search query required' });
+      return res.status(400).json({ error: 'Search query required', code: 'SEARCH_QUERY_REQUIRED' });
     }
 
     const trimmed = String(q).trim();
@@ -167,7 +167,7 @@ const blockUser = async (req, res) => {
     );
 
     if (existing.length > 0) {
-      return res.status(409).json({ error: 'User already blocked' });
+      return res.status(409).json({ error: 'User already blocked', code: 'USER_ALREADY_EXISTS' });
     }
 
     await pool.execute(
