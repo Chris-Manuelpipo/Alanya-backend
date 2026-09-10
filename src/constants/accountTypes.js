@@ -4,13 +4,16 @@ const ACCOUNT_TYPE = Object.freeze({
   OFFICIEL: 2,
 });
 
+// Ordre fixé par la conception (volet 1) et repris par l'administration
+// (lib/account-labels.ts) et l'app : 4 = révoqué, 5 = expiré. Ne jamais
+// renuméroter : ces valeurs sont stockées dans users.verification_status.
 const VERIFICATION = Object.freeze({
   NON_DEMANDE: 0,
   EN_COURS: 1,
   VERIFIE: 2,
   REFUSE: 3,
-  EXPIRE: 4,
-  REVOQUE: 5,
+  REVOQUE: 4,
+  EXPIRE: 5,
 });
 
 /**
