@@ -837,4 +837,32 @@ router.get('/ai/status', adminAuth, requirePermission('ai.editorial'), getAiStat
 router.post('/ai/translate', adminAuth, requirePermission('ai.editorial'), aiEditorialLimiter, postTranslate);
 router.post('/ai/review', adminAuth, requirePermission('ai.editorial'), aiEditorialLimiter, postReview);
 
+const {
+  getBillingSettings,
+  updateBillingSettings,
+  activateBilling,
+  deactivateBilling,
+  extendBillingGrace,
+  listBillingPlans,
+  createBillingPlan,
+  updateBillingPlan,
+  listBillingFeatures,
+  updateBillingFeature,
+} = require('../controllers/admin/billing');
+
+// Abonnement Alanya Plus. Lecture au niveau admin ; l'interrupteur, ses
+// réglages et le catalogue au super-admin. Une route par transition — activer,
+// désactiver, prolonger — et non un PUT générique : chacune a ses
+// préconditions, et le journal enregistre un verbe explicite avec le motif.
+router.get('/billing/settings',           adminAuth, requirePermission('billing.read'), getBillingSettings);
+router.put('/billing/settings',           adminAuth, requirePermission('billing.settings'), updateBillingSettings);
+router.post('/billing/activate',          adminAuth, requirePermission('billing.settings'), activateBilling);
+router.post('/billing/deactivate',        adminAuth, requirePermission('billing.settings'), deactivateBilling);
+router.post('/billing/extend-grace',      adminAuth, requirePermission('billing.settings'), extendBillingGrace);
+router.get('/billing/plans',              adminAuth, requirePermission('billing.read'), listBillingPlans);
+router.post('/billing/plans',             adminAuth, requirePermission('billing.plans'), createBillingPlan);
+router.put('/billing/plans/:id',          adminAuth, requirePermission('billing.plans'), updateBillingPlan);
+router.get('/billing/features',           adminAuth, requirePermission('billing.read'), listBillingFeatures);
+router.put('/billing/features/:code',     adminAuth, requirePermission('billing.plans'), updateBillingFeature);
+
 module.exports = router;

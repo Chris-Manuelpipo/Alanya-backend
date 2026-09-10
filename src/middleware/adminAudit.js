@@ -93,6 +93,16 @@ const ACTIONS = {
   'POST /welcome/backfill': { action: 'welcome.backfill', targetType: 'welcome' },
   'PUT /welcome/status': { action: 'welcome.status', targetType: 'welcome' },
 
+  // Abonnement. Les transitions de l'interrupteur exigent un motif : il est
+  // recopié ici (`body.reason`).
+  'PUT /billing/settings': { action: 'billing.settings', targetType: 'billing' },
+  'POST /billing/activate': { action: 'billing.activate', targetType: 'billing' },
+  'POST /billing/deactivate': { action: 'billing.deactivate', targetType: 'billing' },
+  'POST /billing/extend-grace': { action: 'billing.grace', targetType: 'billing' },
+  'POST /billing/plans': { action: 'billing.plans.create', targetType: 'plan' },
+  'PUT /billing/plans/:id': { action: 'billing.plans.update', targetType: 'plan', param: 'id' },
+  'PUT /billing/features/:code': { action: 'billing.features.update', targetType: 'feature', param: 'code' },
+
   // Compte de l'administrateur lui-même
   'PUT /me': { action: 'profile.update', targetType: 'self' },
   'PUT /me/password': { action: 'profile.password', targetType: 'self' },

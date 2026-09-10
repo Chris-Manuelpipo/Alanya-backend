@@ -80,6 +80,10 @@ const ADMIN_PERMISSIONS = [
   // remplit des champs que les permissions `welcome.*` et `broadcasts.send`
   // gardent déjà. Un administrateur qui peut rédiger peut se faire aider.
   'ai.editorial',
+
+  // Abonnement : consulter l'état de l'offre et les plans. Voir n'est pas
+  // décider — les réglages et les prix restent au super-admin.
+  'billing.read',
 ];
 
 /**
@@ -111,6 +115,11 @@ const SUPER_ADMIN_ONLY = [
   'welcome.publish',
   'welcome.backfill',
   'welcome.status',
+  // L'interrupteur du payant et le catalogue : ils décident de qui paie et
+  // combien. Au niveau des purges et des clés, pour la même raison — une
+  // erreur touche tous les comptes à la fois.
+  'billing.settings',
+  'billing.plans',
 ];
 
 const ROLE_USER = 0;
