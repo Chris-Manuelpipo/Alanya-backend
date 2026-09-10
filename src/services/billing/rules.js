@@ -330,8 +330,28 @@ function parseReason(body) {
   return { ok: true, value: reason.slice(0, 500) };
 }
 
+/**
+ * Comptes testeurs (BILLING_TEST_USERS=12,34) : ils voient la phase payante
+ * même interrupteur éteint, et peuvent acheter. C'est ainsi qu'on éprouve le
+ * parcours complet en production sans toucher personne d'autre.
+ */
+function billingTesterIds(env = process.env) {
+  return new Set(
+    String(env.BILLING_TEST_USERS || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0),
+  );
+}
+
+function isBillingTester(alanyaID, env = process.env) {
+  return billingTesterIds(env).has(Number(alanyaID));
+}
+
 module.exports = {
   DAY_MS,
+  billingTesterIds,
+  isBillingTester,
   earliest,
   phaseAt,
   resolvePeriods,

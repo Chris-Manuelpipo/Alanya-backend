@@ -9,7 +9,7 @@ const pool = require('../../config/db');
 const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
 const { getBillingSettings } = require('./settings');
 const { listFeatures, featuresOfPlan } = require('./catalog');
-const { decideEntitlements } = require('./rules');
+const { decideEntitlements, isBillingTester } = require('./rules');
 
 /**
  * @param {number} alanyaID
@@ -18,6 +18,9 @@ const { decideEntitlements } = require('./rules');
  */
 async function entitlementsFor(alanyaID, now = new Date()) {
   const [settings, catalog] = await Promise.all([getBillingSettings(), listFeatures()]);
+  // Un compte testeur voit la phase payante même interrupteur éteint.
+  const tester = isBillingTester(alanyaID);
+  const effective = tester ? { ...settings, paid_enabled: 1, grace_until: null } : settings;
 
   const [[user]] = await pool.execute(
     'SELECT type_compte, account_type FROM users WHERE alanyaID = ?',
@@ -46,8 +49,8 @@ async function entitlementsFor(alanyaID, now = new Date()) {
     [alanyaID],
   );
 
-  return decideEntitlements({
-    settings,
+  const decided = decideEntitlements({
+    settings: effective,
     periods,
     catalog,
     planFeatures,
@@ -55,6 +58,7 @@ async function entitlementsFor(alanyaID, now = new Date()) {
     autoRenew: Number(sub?.auto_renew) === 1,
     now,
   });
+  return { ...decided, tester };
 }
 
 /**
