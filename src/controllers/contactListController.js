@@ -1,4 +1,16 @@
 const pool = require('../config/db');
+const { entitlementsOrNull } = require('../services/billing/entitlements');
+const { FEATURE } = require('../constants/billing');
+
+const SOUND_KEYS = [
+  'messageSoundType', 'messageSoundId', 'messageSoundName',
+  'callSoundType', 'callSoundId', 'callSoundName',
+];
+
+/** Poser une sonnerie de liste relève d'Alanya Plus ; en retirer une, jamais. */
+const setsListSound = (body) => SOUND_KEYS.some((k) => (
+  Object.prototype.hasOwnProperty.call(body || {}, k) && body[k] != null && body[k] !== ''
+));
 const { maskPresenceIfBlocked } = require('../utils/blockUtils');
 const { sanitizeUrl } = require('../services/contactService');
 const { ensureDefaultContactLists, KIND_ORDER_SQL, isSystemListKind } = require('../utils/defaultContactLists');
@@ -207,6 +219,15 @@ const updateList = async (req, res) => {
     const existing = await findOwnedList(idList, alanyaID);
     if (!existing) {
       return res.status(404).json({ error: 'List not found', code: 'LIST_NOT_FOUND' });
+    }
+
+    if (setsListSound(req.body)) {
+      const entitlements = await entitlementsOrNull(alanyaID);
+      if (entitlements && entitlements.features[FEATURE.LIST_RINGTONES] === false) {
+        return res.status(403).json({
+          error: 'Réservé à Alanya Plus', code: 'SUBSCRIPTION_REQUIRED', feature: FEATURE.LIST_RINGTONES,
+        });
+      }
     }
 
     const hasName  = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');

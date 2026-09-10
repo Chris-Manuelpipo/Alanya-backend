@@ -124,8 +124,8 @@ et c'est normal.
 
 ## Tous les codes HTTP émis
 
-Le backend émet **242 codes** en réponse HTTP. 36 d'entre eux ont
-une phrase dédiée dans l'application ; les 206 suivants sont valides et rendus par
+Le backend émet **243 codes** en réponse HTTP. 36 d'entre eux ont
+une phrase dédiée dans l'application ; les 207 suivants sont valides et rendus par
 le repli lié au statut. Leur donner une phrase est une amélioration, pas un
 correctif — un code non traduit ne fait rien afficher de brut.
 
@@ -192,9 +192,9 @@ correctif — un code non traduit ne fait rien afficher de brut.
 - `SEARCH_QUERY_REQUIRED` · `SENDER_ID_REQUIRED` · `SERVER_ERROR`
 - `SERVICE_UNAVAILABLE` · `SESSION_ALREADY_HANDLED` · `SESSION_NOT_FOUND`
 - `SESSION_REJECTED` · `SOURCE_MSG_IDS_REQUIRED` · `STATUS_NOT_FOUND`
-- `TARGET_CONVERSATION_IDS_REQUIRED` · `TEXT_REQUIRED` · `TOKEN_TYPE_INVALID`
-- `TRIP_INCIDENT_LOCKED` · `TRIP_NOT_FOUND` · `UNAUTHENTICATED`
-- `UNMUTE_REQUIRED` · `UNSUPPORTED_FORMAT` · `UPLOAD_REJECTED`
-- `USER_ALREADY_EXISTS` · `USER_ID_MISMATCH` · `USER_NOT_FOUND`
-- `USE_GROUP_ENDPOINT` · `USE_LEAVE_ENDPOINT` · `USE_SOS_ENDPOINT`
-- `VALIDATION_FAILED` · `VERSION_NOT_FOUND`
+- `SUBSCRIPTION_REQUIRED` · `TARGET_CONVERSATION_IDS_REQUIRED` · `TEXT_REQUIRED`
+- `TOKEN_TYPE_INVALID` · `TRIP_INCIDENT_LOCKED` · `TRIP_NOT_FOUND`
+- `UNAUTHENTICATED` · `UNMUTE_REQUIRED` · `UNSUPPORTED_FORMAT`
+- `UPLOAD_REJECTED` · `USER_ALREADY_EXISTS` · `USER_ID_MISMATCH`
+- `USER_NOT_FOUND` · `USE_GROUP_ENDPOINT` · `USE_LEAVE_ENDPOINT`
+- `USE_SOS_ENDPOINT` · `VALIDATION_FAILED` · `VERSION_NOT_FOUND`

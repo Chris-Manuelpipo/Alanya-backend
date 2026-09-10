@@ -1,6 +1,8 @@
 const express = require('express');
 const router  = express.Router();
 const auth    = require('../middleware/auth');
+const requireFeature = require('../middleware/requireFeature');
+const { FEATURE } = require('../constants/billing');
 const {
   createTrip,
   getActiveTrips,
@@ -83,7 +85,10 @@ const {
  *       501:
  *         description: "`SOS_NOT_AVAILABLE` — le SOS n'est pas dans ce lot"
  */
-router.post('/', auth, createTrip);
+// Lancer un trajet, et le SOS sans trajet, sont réservés à Alanya Plus. Tout
+// le reste — suivre, confirmer, prolonger, annuler, le SOS d'un trajet déjà
+// lancé — reste libre : on ne coupe pas une protection en cours de route.
+router.post('/', auth, requireFeature(FEATURE.TRUSTED_TRIPS), createTrip);
 
 /**
  * @swagger
@@ -153,7 +158,7 @@ router.get('/history', auth, getHistory);
  *       409: { description: "`TRUST_LIST_EMPTY`" }
  *       429: { description: "`SOS_RATE_LIMITED` — plafond `TRIP_SOS_MAX_24H` / 24 h" }
  */
-router.post('/sos', auth, createSosTrip);
+router.post('/sos', auth, requireFeature(FEATURE.TRUSTED_TRIPS), createSosTrip);
 
 /**
  * @swagger

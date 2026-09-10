@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const requireFeature = require('../middleware/requireFeature');
+const { FEATURE } = require('../constants/billing');
 const rateLimit = require('express-rate-limit');
 const {
   getCurrentKey,
@@ -39,7 +41,10 @@ const keyLimiter = rateLimit({
  *       503:
  *         description: Secret non configuré sur le serveur
  */
-router.get('/key', auth, keyLimiter, getCurrentKey);
+// Faire une NOUVELLE sauvegarde est réservé à Alanya Plus ; relire la sienne
+// (`/key/:kid`, ci-dessous) ne l'est jamais — les archives appartiennent à
+// l'utilisateur, pas à son abonnement.
+router.get('/key', auth, requireFeature(FEATURE.BACKUP), keyLimiter, getCurrentKey);
 
 /**
  * @swagger
@@ -83,6 +88,6 @@ router.get('/key/:kid', auth, keyLimiter, getKeyByKid);
  *         description: "{ ok: true }"
  */
 router.get('/meta', auth, getMeta);
-router.put('/meta', auth, putMeta);
+router.put('/meta', auth, requireFeature(FEATURE.BACKUP), putMeta);
 
 module.exports = router;
