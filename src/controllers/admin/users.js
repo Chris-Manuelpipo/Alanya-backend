@@ -2,6 +2,7 @@ const pool = require('../../config/db');
 const { ensureGroupOwner } = require('../../utils/groupOwnership');
 const { _notifyUserAccountAction } = require('./helpers');
 const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
+const { parseSoclePayload } = require('../../utils/soclePayload');
 const { invalidateOfficialAccountCache } = require('../../utils/officialAccountGuard');
 const { guardDisplayNames } = require('../../utils/displayNameGuard');
 const { buildUsersWhere, fetchUsersForExport } = require('./usersQuery');
@@ -272,7 +273,9 @@ const deleteUser = async (req, res) => {
 const setUserSocle = async (req, res) => {
   try {
     const { id } = req.params;
-    const { account_type, verification_status, verified_until } = req.body || {};
+    const parsed = parseSoclePayload(req.body);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error, code: parsed.code });
+    const { accountType, verificationStatus, verifiedUntil } = parsed.value;
     const [users] = await pool.execute(
       'SELECT type_compte, account_type, nom, pseudo FROM users WHERE alanyaID = ?',
       [id],
@@ -282,11 +285,8 @@ const setUserSocle = async (req, res) => {
     const updates = [];
     const values = [];
 
-    if (account_type != null) {
-      const at = Number(account_type);
-      if (![0, 1, 2].includes(at)) {
-        return res.status(400).json({ error: 'account_type invalide', code: 'INVALID_ACCOUNT_TYPE' });
-      }
+    if (accountType !== undefined) {
+      const at = accountType;
       // Un compte officiel se crée, il ne se promeut pas. Sans cette règle, un
       // compte personnel — dont le propriétaire connaît l'e-mail, le mot de
       // passe et le code de récupération — pourrait devenir la voix de
@@ -307,13 +307,13 @@ const setUserSocle = async (req, res) => {
       values.push(at);
     }
 
-    if (verification_status != null) {
+    if (verificationStatus !== undefined) {
       updates.push('verification_status = ?');
-      values.push(Number(verification_status));
+      values.push(verificationStatus);
     }
-    if (verified_until !== undefined) {
+    if (verifiedUntil !== undefined) {
       updates.push('verified_until = ?');
-      values.push(verified_until || null);
+      values.push(verifiedUntil);
     }
 
     // Révocation : le compte cesse d'être la voix de l'application, il ne doit
@@ -321,9 +321,9 @@ const setUserSocle = async (req, res) => {
     // continuerait de s'afficher avec l'avatar Alanya — une usurpation par
     // simple oubli.
     if (
-      account_type != null
+      accountType !== undefined
       && Number(users[0].account_type ?? 0) === ACCOUNT_TYPE.OFFICIEL
-      && Number(account_type) !== ACCOUNT_TYPE.OFFICIEL
+      && accountType !== ACCOUNT_TYPE.OFFICIEL
     ) {
       updates.push('avatar_url = ?');
       values.push(process.env.AVATAR_DEFAULT_MALE || 'NON DEFINI');
@@ -335,7 +335,7 @@ const setUserSocle = async (req, res) => {
     await pool.execute(`UPDATE users SET ${updates.join(', ')} WHERE alanyaID = ?`, values);
     // Une révocation change l'identité du compte officiel : les gardes mis en
     // cache doivent la voir immédiatement.
-    if (account_type != null) invalidateOfficialAccountCache();
+    if (accountType !== undefined) invalidateOfficialAccountCache();
     res.json({ message: 'Socle de compte mis à jour' });
   } catch (error) {
     console.error('[Admin] setUserSocle error:', error.message);
