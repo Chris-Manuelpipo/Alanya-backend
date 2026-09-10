@@ -48,6 +48,8 @@ const SYSTEM_MESSAGES_ENABLED = process.env.GROUP_SYSTEM_MESSAGES !== '0';
 /** Même projection que MSG_SELECT (socket/handlers/chat/messageSend.js). */
 const MSG_SELECT = `
   SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
+         u.account_type AS sender_account_type,
+         u.verification_status AS sender_verification_status,
          p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
   FROM message m
   JOIN users u ON m.senderID = u.alanyaID

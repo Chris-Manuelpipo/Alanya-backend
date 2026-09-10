@@ -80,7 +80,8 @@ const getUserByPhone = async (req, res) => {
     const canonical = normalize(phone);
     const [rows] = await pool.execute(
       `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
-              u.avatar_url, up.is_online AS is_online,
+              u.avatar_url, u.account_type, u.verification_status,
+              up.is_online AS is_online,
               p.libelle AS pays_libelle, p.prefix AS pays_prefix
          FROM users u
          LEFT JOIN pays p ON u.idPays = p.idPays
@@ -115,7 +116,8 @@ const searchUsers = async (req, res) => {
       const canonical = normalize(trimmed);
       [rows] = await pool.execute(
         `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
-                u.avatar_url, up.is_online AS is_online,
+                u.avatar_url, u.account_type, u.verification_status,
+                up.is_online AS is_online,
                 p.libelle AS pays_libelle, p.prefix AS pays_prefix
            FROM users u
            LEFT JOIN pays p ON u.idPays = p.idPays
@@ -127,7 +129,8 @@ const searchUsers = async (req, res) => {
     } else {
       [rows] = await pool.execute(
         `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.idPays,
-                u.avatar_url, up.is_online AS is_online,
+                u.avatar_url, u.account_type, u.verification_status,
+                up.is_online AS is_online,
                 p.libelle AS pays_libelle, p.prefix AS pays_prefix
            FROM users u
            LEFT JOIN pays p ON u.idPays = p.idPays

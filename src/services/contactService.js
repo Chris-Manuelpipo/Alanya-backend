@@ -26,6 +26,8 @@ const _contactBody = (idPrefContact, user, addedVia, addedAt, addedNote = null) 
   pseudo:      user.pseudo,
   alanyaPhone: user.alanyaPhone,
   avatar_url:  sanitizeUrl(user.avatar_url),
+  account_type:        Number(user.account_type) || 0,
+  verification_status: Number(user.verification_status) || 0,
   is_online:   user.is_online,
   addedVia,
   addedAt,
@@ -46,7 +48,8 @@ const addContactByFriendId = async (alanyaID, friendID, { addedVia = 'search' } 
 
   // Vérifier que l'ami existe
   const [userCheck] = await pool.execute(
-    `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.avatar_url, up.is_online AS is_online
+    `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.avatar_url,
+            u.account_type, u.verification_status, up.is_online AS is_online
      FROM users u
      LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
      WHERE u.alanyaID = ? AND u.exclus = 0`,

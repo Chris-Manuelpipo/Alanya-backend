@@ -21,6 +21,8 @@ const getPreferredContacts = async (req, res) => {
          u.alanyaPhone,
          u.idPays,
          u.avatar_url,
+         u.account_type,
+         u.verification_status,
          up.is_online AS is_online,
          up.last_seen AS last_seen,
          p.libelle AS pays_libelle,
@@ -64,6 +66,8 @@ const getPreferredContacts = async (req, res) => {
         pays_libelle:  r.pays_libelle,
         pays_prefix:   r.pays_prefix,
         avatar_url:    sanitizeUrl(r.avatar_url),
+        account_type:        Number(r.account_type) || 0,
+        verification_status: Number(r.verification_status) || 0,
         is_online:     blockedMe ? 0 : r.is_online,
         last_seen:     blockedMe ? null : r.last_seen,
       };

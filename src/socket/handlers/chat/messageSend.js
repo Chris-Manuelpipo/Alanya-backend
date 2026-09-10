@@ -22,6 +22,8 @@ const { MEDIA_THUMB_SELECT } = require('../../../utils/messageThumbSql');
 // (audit scalabilité 06/08/2026 §2.2, migration 060).
 const MSG_SELECT = `
   SELECT m.*, u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
+         u.account_type AS sender_account_type,
+         u.verification_status AS sender_verification_status,
          p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset,
          ${MEDIA_THUMB_SELECT}
   FROM message m

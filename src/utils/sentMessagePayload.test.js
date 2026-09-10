@@ -21,6 +21,7 @@ const MSG_SELECT_KEYS = [
   'has_reactions', 'reactions', 'isForwarded', 'isPinned', 'pinnedAt', 'pinnedBy',
   'isViewOnce', 'viewedAt', 'mentions',
   'sender_nom', 'sender_pseudo', 'sender_avatar', 'messageTz', 'messageTzOffset',
+  'sender_account_type', 'sender_verification_status',
   'clientId',
 ];
 

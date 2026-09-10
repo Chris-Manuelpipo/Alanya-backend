@@ -22,6 +22,8 @@ const _cache = new Map();
 
 const SENDER_IDENTITY_SQL = `
   SELECT u.nom AS sender_nom, u.pseudo AS sender_pseudo, u.avatar_url AS sender_avatar,
+         u.account_type AS sender_account_type,
+         u.verification_status AS sender_verification_status,
          p.timeZone AS messageTz, p.decalageHoraire AS messageTzOffset
     FROM users u
     LEFT JOIN pays p ON u.idPays = p.idPays
@@ -34,6 +36,8 @@ const EMPTY_IDENTITY = Object.freeze({
   sender_nom: null,
   sender_pseudo: null,
   sender_avatar: null,
+  sender_account_type: 0,
+  sender_verification_status: 0,
   messageTz: null,
   messageTzOffset: null,
 });
@@ -50,6 +54,10 @@ async function getSenderIdentity(senderID) {
         sender_nom: row.sender_nom ?? null,
         sender_pseudo: row.sender_pseudo ?? null,
         sender_avatar: row.sender_avatar ?? null,
+        // Le badge de l'expéditeur, pour la bulle d'un groupe. Une coche
+        // obtenue ou perdue met au pire une minute (TTL) à s'y refléter.
+        sender_account_type: Number(row.sender_account_type) || 0,
+        sender_verification_status: Number(row.sender_verification_status) || 0,
         messageTz: row.messageTz ?? null,
         messageTzOffset: row.messageTzOffset ?? null,
       }

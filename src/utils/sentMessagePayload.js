@@ -112,6 +112,8 @@ function buildSentPayload({
     sender_nom: senderIdentity?.sender_nom ?? null,
     sender_pseudo: senderIdentity?.sender_pseudo ?? null,
     sender_avatar: senderIdentity?.sender_avatar ?? null,
+    sender_account_type: _int(senderIdentity?.sender_account_type, 0),
+    sender_verification_status: _int(senderIdentity?.sender_verification_status, 0),
     messageTz: senderIdentity?.messageTz ?? null,
     messageTzOffset: senderIdentity?.messageTzOffset ?? null,
   };
