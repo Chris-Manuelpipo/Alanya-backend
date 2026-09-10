@@ -3,6 +3,14 @@ const {
   phaseAt,
   resolvePeriods,
   decideEntitlements,
+  dueSchedule,
+  reminderApplies,
+  autoRenewApplies,
+  expiryDecision,
+  purgeDecision,
+  purgeWarningApplies,
+  compensationDays,
+  effectivePhase,
   activationBlocker,
   parseSettingsPatch,
   parsePlanPayload,
@@ -186,5 +194,89 @@ assert.strictEqual(parseFeaturePatch({}).code, 'NO_FIELDS_TO_UPDATE');
 assert.strictEqual(parseReason({ reason: '  Lancement de l\'offre  ' }).value, 'Lancement de l\'offre');
 assert.strictEqual(parseReason({ reason: '' }).code, 'REASON_REQUIRED');
 assert.strictEqual(parseReason({}).code, 'REASON_REQUIRED');
+
+// ── Échéances (lot D) ──────────────────────────────────────────────────────
+{
+  // Jobs d'une fin : relance à fin − 7 j, veille, fin. Relance passée : omise.
+  const jobs = dueSchedule({ end: day(30), reminderDays: 7, now: NOW });
+  assert.deepStrictEqual(jobs.map((j) => j.kind), ['billing_reminder', 'billing_autorenew', 'billing_expire']);
+  assert.strictEqual(jobs[0].at.toISOString(), day(23).toISOString());
+  assert.strictEqual(jobs[1].at.toISOString(), day(29).toISOString());
+  assert.strictEqual(jobs[2].at.toISOString(), day(30).toISOString());
+  const late = dueSchedule({ end: day(3), reminderDays: 7, now: NOW });
+  assert.deepStrictEqual(late.map((j) => j.kind), ['billing_autorenew', 'billing_expire'], 'relance passée omise');
+}
+{
+  // Relance : pas en phase gratuite, pas si la fin a bougé depuis.
+  const end = day(7);
+  assert.strictEqual(reminderApplies({ phase: 'paid', currentEnd: end, jobEnd: end.toISOString(), now: NOW }), true);
+  assert.strictEqual(reminderApplies({ phase: 'free', currentEnd: end, jobEnd: end, now: NOW }), false);
+  assert.strictEqual(reminderApplies({ phase: 'paid', currentEnd: day(37), jobEnd: end, now: NOW }), false, 'renouvelé');
+  const sub = { current_end: end, auto_renew: 1, renew_msisdn: '237699123400', renew_channel: 'orange_money' };
+  assert.strictEqual(autoRenewApplies({ phase: 'grace', sub, jobEnd: end, now: NOW }), true);
+  assert.strictEqual(autoRenewApplies({ phase: 'paid', sub: { ...sub, auto_renew: 0 }, jobEnd: end, now: NOW }), false);
+  assert.strictEqual(autoRenewApplies({ phase: 'paid', sub: { ...sub, renew_msisdn: null }, jobEnd: end, now: NOW }), false);
+  assert.strictEqual(autoRenewApplies({ phase: 'free', sub, jobEnd: end, now: NOW }), false, 'suspendu en phase gratuite');
+}
+{
+  // Échéance : purge à fin + rétention, notifiée en phase payante seulement, une fois.
+  const sub = { current_end: day(-1), purge_after: null, purged_at: null };
+  const d = expiryDecision({ phase: 'paid', sub, now: NOW, retentionDays: 30 });
+  assert.strictEqual(d.action, 'expire');
+  assert.strictEqual(d.purgeAfter.toISOString(), day(29).toISOString());
+  assert.strictEqual(d.notify, true);
+  assert.strictEqual(expiryDecision({ phase: 'free', sub, now: NOW }).notify, false);
+  assert.strictEqual(expiryDecision({ phase: 'paid', sub: { ...sub, purge_after: day(29) }, now: NOW }).action, 'none', 'déjà traitée');
+  assert.strictEqual(expiryDecision({ phase: 'paid', sub: { ...sub, current_end: day(5) }, now: NOW }).action, 'none', 'pas échue');
+  // Traitée en retard : le dernier avertissement garde ses sept jours.
+  const late = expiryDecision({ phase: 'paid', sub: { ...sub, current_end: day(-40) }, now: NOW, retentionDays: 30 });
+  assert.strictEqual(late.purgeAfter.toISOString(), day(7).toISOString());
+}
+{
+  // Purge : en phase payante seulement, reportée sinon ; jamais après un renouvellement.
+  const sub = { current_end: day(-31), purge_after: day(-1), purged_at: null };
+  assert.strictEqual(purgeDecision({ phase: 'paid', sub, now: NOW }).action, 'purge');
+  const p = purgeDecision({ phase: 'grace', sub, now: NOW, retentionDays: 30 });
+  assert.strictEqual(p.action, 'postpone');
+  assert.strictEqual(p.purgeAfter.toISOString(), day(30).toISOString());
+  assert.strictEqual(purgeDecision({ phase: 'paid', sub: { ...sub, current_end: day(20) }, now: NOW }).action, 'none');
+  assert.strictEqual(purgeDecision({ phase: 'paid', sub: { ...sub, purged_at: day(-1) }, now: NOW }).action, 'none');
+  assert.strictEqual(purgeDecision({ phase: 'paid', sub: { ...sub, purge_after: day(3) }, now: NOW }).action, 'none', 'pas encore');
+  assert.strictEqual(
+    purgeDecision({ phase: 'free', sub, now: NOW, retentionDays: 0 }).purgeAfter.toISOString(),
+    day(1).toISOString(),
+    'jamais de report nul',
+  );
+}
+{
+  // Dernier avertissement : la purge annoncée tient toujours.
+  const sub = { current_end: day(-23), purge_after: day(7), purged_at: null };
+  assert.strictEqual(purgeWarningApplies({ phase: 'paid', sub, jobPurgeAfter: day(7).toISOString(), now: NOW }), true);
+  assert.strictEqual(purgeWarningApplies({ phase: 'paid', sub, jobPurgeAfter: day(9), now: NOW }), false, 'reportée depuis');
+  assert.strictEqual(purgeWarningApplies({ phase: 'grace', sub, jobPurgeAfter: day(7), now: NOW }), false);
+}
+{
+  // Compensation : la durée de la phase gratuite, en jours arrondis au-dessus.
+  assert.strictEqual(compensationDays({ deactivatedAt: day(-10), activatedAt: NOW }), 10);
+  assert.strictEqual(compensationDays({ deactivatedAt: new Date(NOW.getTime() - 3_600_000), activatedAt: NOW }), 1);
+  assert.strictEqual(compensationDays({ deactivatedAt: null, activatedAt: NOW }), 0);
+  assert.strictEqual(compensationDays({ deactivatedAt: NOW, activatedAt: day(-1) }), 0);
+}
+{
+  // Données conservées puis effacées : dites seulement quand rien ne court.
+  const e = decideEntitlements({ settings: PAID, catalog: CATALOG, lastEnd: day(-4), purgeAfter: day(26), now: NOW });
+  assert.strictEqual(e.purgeAfter, day(26).toISOString());
+  assert.strictEqual(e.purgedAt, null);
+  const periods = [{ plan_code: 'plus_mensuel', starts_at: day(-3), ends_at: day(27), source: 0 }];
+  assert.strictEqual(
+    decideEntitlements({ settings: PAID, periods, catalog: CATALOG, purgeAfter: day(26), now: NOW }).purgeAfter,
+    null,
+  );
+}
+{
+  // Un compte testeur est toujours en phase payante.
+  assert.strictEqual(effectivePhase(OFF, 12, NOW, { BILLING_TEST_USERS: '12' }), 'paid');
+  assert.strictEqual(effectivePhase(OFF, 13, NOW, { BILLING_TEST_USERS: '12' }), 'free');
+}
 
 console.log('billing rules.test.js OK');

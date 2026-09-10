@@ -91,6 +91,8 @@ function resolvePeriods(periods, now = new Date()) {
  * @param {boolean}  [p.exempt]        administrateur ou compte officiel
  * @param {boolean}  [p.autoRenew]
  * @param {Date|string} [p.lastEnd]    fin de la dernière chaîne (subscriber.current_end)
+ * @param {Date|string} [p.purgeAfter] données payantes conservées jusque-là
+ * @param {Date|string} [p.purgedAt]   … puis effacées à cette date
  * @param {Date}     [p.now]
  */
 function decideEntitlements({
@@ -101,6 +103,8 @@ function decideEntitlements({
   exempt = false,
   autoRenew = false,
   lastEnd = null,
+  purgeAfter = null,
+  purgedAt = null,
   now = new Date(),
 }) {
   const phase = phaseAt(settings, now);
@@ -141,6 +145,11 @@ function decideEntitlements({
     lapsedAt: !current && !upcoming && toDate(lastEnd) && toDate(lastEnd) <= now
       ? iso(lastEnd)
       : null,
+    // Données payantes conservées jusqu'à `purgeAfter`, puis effacées
+    // (`purgedAt`) : le téléphone affiche la date, puis efface à son tour ce
+    // qu'il garde localement. Sans objet tant qu'une période court.
+    purgeAfter: !current && !upcoming ? iso(purgeAfter) : null,
+    purgedAt: !current && !upcoming ? iso(purgedAt) : null,
     // Au-delà, le téléphone doit redemander ses droits : la fin de
     // l'abonnement, la fin de la grâce, ou une semaine au plus.
     validUntil: iso(earliest(chainEnd, graceUntil, new Date(now.getTime() + OFFLINE_TRUST_DAYS * DAY_MS))),
@@ -337,6 +346,112 @@ function parseReason(body) {
   return { ok: true, value: reason.slice(0, 500) };
 }
 
+// ── Échéances (lot D) ────────────────────────────────────────────────────
+//
+// Les jobs sont posés à l'heure dite et relisent l'état au moment de
+// s'exécuter : un renouvellement survenu entre-temps les rend inopérants
+// sans qu'il faille les annuler. Ces fonctions tranchent, billingJobs.js agit.
+
+/** Dernier avertissement avant la purge. */
+const PURGE_WARNING_DAYS = 7;
+
+const sameInstant = (a, b) => {
+  const x = toDate(a);
+  const y = toDate(b);
+  return Boolean(x && y && x.getTime() === y.getTime());
+};
+
+/**
+ * Jobs d'une fin de chaîne : relance (fin − reminderDays), renouvellement
+ * automatique (veille), expiration (fin). Une relance déjà passée n'est pas
+ * posée — elle partirait sur-le-champ, à contretemps.
+ */
+function dueSchedule({ end, reminderDays = 0, now = new Date() }) {
+  const e = toDate(end);
+  if (!e) return [];
+  const jobs = [];
+  const remindAt = new Date(e.getTime() - Number(reminderDays) * DAY_MS);
+  if (Number(reminderDays) > 0 && remindAt > now) jobs.push({ kind: 'billing_reminder', at: remindAt });
+  const renewAt = new Date(e.getTime() - DAY_MS);
+  if (renewAt > now) jobs.push({ kind: 'billing_autorenew', at: renewAt });
+  jobs.push({ kind: 'billing_expire', at: e });
+  return jobs;
+}
+
+/**
+ * Relance : seulement si la fin annoncée par le job est toujours celle de la
+ * chaîne (pas de renouvellement depuis), qu'elle est à venir, et hors phase
+ * gratuite — rien à renouveler quand tout est offert.
+ */
+function reminderApplies({ phase, currentEnd, jobEnd, now = new Date() }) {
+  return phase !== PHASE.FREE && sameInstant(currentEnd, jobEnd) && toDate(currentEnd) > now;
+}
+
+/** Renouvellement automatique : même règle, et un moyen de paiement mémorisé. */
+function autoRenewApplies({ phase, sub, jobEnd, now = new Date() }) {
+  return reminderApplies({ phase, currentEnd: sub?.current_end, jobEnd, now })
+    && Number(sub?.auto_renew) === 1
+    && Boolean(sub?.renew_msisdn)
+    && Boolean(sub?.renew_channel);
+}
+
+/**
+ * Échéance : pose la date de purge, une seule fois. Au moins sept jours
+ * après aujourd'hui, pour que l'avertissement ait sa chance même si
+ * l'expiration est traitée en retard. Notifiée seulement en phase payante :
+ * ailleurs, la fin d'un abonnement ne retire rien.
+ */
+function expiryDecision({ phase, sub, now = new Date(), retentionDays = 30 }) {
+  const end = toDate(sub?.current_end);
+  if (!end || end > now || sub.purge_after || sub.purged_at) return { action: 'none' };
+  const purgeAfter = new Date(Math.max(
+    end.getTime() + Number(retentionDays) * DAY_MS,
+    now.getTime() + PURGE_WARNING_DAYS * DAY_MS,
+  ));
+  return { action: 'expire', purgeAfter, notify: phase === PHASE.PAID };
+}
+
+/**
+ * Purge : jamais hors phase payante — tant que tout est gratuit, ces données
+ * servent. Elle est alors reportée d'une rétention, et retentée plus tard.
+ */
+function purgeDecision({ phase, sub, now = new Date(), retentionDays = 30 }) {
+  if (!sub || sub.purged_at) return { action: 'none' };
+  const due = toDate(sub.purge_after);
+  if (!due || due > now) return { action: 'none' };
+  const end = toDate(sub.current_end);
+  if (end && end > now) return { action: 'none' };
+  if (phase !== PHASE.PAID) {
+    return {
+      action: 'postpone',
+      purgeAfter: new Date(now.getTime() + Math.max(1, Number(retentionDays)) * DAY_MS),
+    };
+  }
+  return { action: 'purge' };
+}
+
+/** Dernier avertissement : la purge annoncée tient toujours, en phase payante. */
+function purgeWarningApplies({ phase, sub, jobPurgeAfter, now = new Date() }) {
+  const end = toDate(sub?.current_end);
+  return phase === PHASE.PAID
+    && Boolean(sub)
+    && !sub.purged_at
+    && sameInstant(sub.purge_after, jobPurgeAfter)
+    && toDate(sub.purge_after) > now
+    && !(end && end > now);
+}
+
+/**
+ * Compensation au retour au payant : la durée de la phase gratuite, en jours
+ * entiers arrondis au-dessus. Zéro si les dates ne décrivent pas un retour.
+ */
+function compensationDays({ deactivatedAt, activatedAt }) {
+  const d = toDate(deactivatedAt);
+  const a = toDate(activatedAt);
+  if (!d || !a || a <= d) return 0;
+  return Math.ceil((a.getTime() - d.getTime()) / DAY_MS);
+}
+
 /**
  * Comptes testeurs (BILLING_TEST_USERS=12,34) : ils voient la phase payante
  * même interrupteur éteint, et peuvent acheter. C'est ainsi qu'on éprouve le
@@ -355,8 +470,24 @@ function isBillingTester(alanyaID, env = process.env) {
   return billingTesterIds(env).has(Number(alanyaID));
 }
 
+/** Phase vue par un compte : un testeur est toujours en phase payante. */
+function effectivePhase(settings, alanyaID, now = new Date(), env = process.env) {
+  if (isBillingTester(alanyaID, env)) return PHASE.PAID;
+  return phaseAt(settings, now);
+}
+
 module.exports = {
   DAY_MS,
+  PURGE_WARNING_DAYS,
+  sameInstant,
+  dueSchedule,
+  reminderApplies,
+  autoRenewApplies,
+  expiryDecision,
+  purgeDecision,
+  purgeWarningApplies,
+  compensationDays,
+  effectivePhase,
   billingTesterIds,
   isBillingTester,
   earliest,

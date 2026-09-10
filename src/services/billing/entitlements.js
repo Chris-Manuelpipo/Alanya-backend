@@ -45,7 +45,7 @@ async function entitlementsFor(alanyaID, now = new Date()) {
   const planFeatures = current ? await featuresOfPlan(current.plan_id) : [];
 
   const [[sub]] = await pool.execute(
-    'SELECT auto_renew, current_end FROM subscriber WHERE alanyaID = ?',
+    'SELECT auto_renew, current_end, purge_after, purged_at FROM subscriber WHERE alanyaID = ?',
     [alanyaID],
   );
 
@@ -57,6 +57,8 @@ async function entitlementsFor(alanyaID, now = new Date()) {
     exempt,
     autoRenew: Number(sub?.auto_renew) === 1,
     lastEnd: sub?.current_end ?? null,
+    purgeAfter: sub?.purge_after ?? null,
+    purgedAt: sub?.purged_at ?? null,
     now,
   });
   return { ...decided, tester };
