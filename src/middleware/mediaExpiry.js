@@ -68,7 +68,11 @@ function repondreExpire(res, partition, retentionDays) {
   res.status(410)
     .set('Cache-Control', `public, max-age=${GONE_MAX_AGE}`)
     .json({
+      // `error` porte le code par exception ici : des clients déployés le
+      // lisent à cette place. `code` s'y ajoute pour rejoindre le contrat
+      // commun, sans casser ceux qui n'ont pas encore été mis à jour.
       error: 'MEDIA_EXPIRED',
+      code: 'MEDIA_EXPIRED',
       partition,
       // La rétention RÉELLEMENT appliquée à cette décision, pas celle de la
       // politique globale. Les deux divergent dès qu'un appelant en injecte

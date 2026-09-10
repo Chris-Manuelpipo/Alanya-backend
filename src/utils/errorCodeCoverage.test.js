@@ -43,7 +43,11 @@ function sources() {
   return out.sort();
 }
 
-const APPEL = /res\s*\.\s*status\(\s*(\d{3})\s*\)\s*\.\s*json\(/g;
+// `.set()`, `.type()` ou `.header()` peuvent s'intercaler entre `status` et
+// `json` — parfois sur plusieurs lignes. Sans cette tolérance, la réponse
+// « média expiré » échappait au garde, et c'est ainsi qu'elle est restée sans
+// code jusqu'au recoupement avec le catalogue de l'application.
+const APPEL = /res\s*\.\s*status\(\s*(\d{3})\s*\)\s*(?:\.\s*(?:set|type|header|append|links|vary|cookie)\([^;]*?\)\s*)*?\.\s*json\(/g;
 
 /**
  * Isole le bloc `res.status(N).json({ … })` en équilibrant les parenthèses.
