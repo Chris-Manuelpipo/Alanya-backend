@@ -3,6 +3,7 @@ const router  = express.Router();
 const auth    = require('../middleware/auth');
 const requireFeature = require('../middleware/requireFeature');
 const { FEATURE } = require('../constants/billing');
+const { findOpenTripByOwner } = require('../services/tripService');
 const {
   createTrip,
   getActiveTrips,
@@ -158,7 +159,11 @@ router.get('/history', auth, getHistory);
  *       409: { description: "`TRUST_LIST_EMPTY`" }
  *       429: { description: "`SOS_RATE_LIMITED` — plafond `TRIP_SOS_MAX_24H` / 24 h" }
  */
-router.post('/sos', auth, requireFeature(FEATURE.TRUSTED_TRIPS), createSosTrip);
+// Le SOS d'un trajet déjà ouvert l'escalade : il reste libre jusqu'à la fin du
+// trajet, abonnement échu ou non. Seul le SOS isolé demande Alanya Plus.
+router.post('/sos', auth, requireFeature(FEATURE.TRUSTED_TRIPS, {
+  unless: async (req) => Boolean(await findOpenTripByOwner(req.user.alanyaID)),
+}), createSosTrip);
 
 /**
  * @swagger

@@ -12,11 +12,15 @@ const { entitlementsOrNull } = require('../services/billing/entitlements');
  * n'est pas verrouillée non plus.
  *
  * @param {string} featureCode  code du catalogue (constants/billing.js FEATURE)
+ * @param {object} [options]
+ * @param {(req) => Promise<boolean>} [options.unless]  exception : la requête
+ *   passe quand elle renvoie vrai (le SOS d'un trajet déjà ouvert, par ex.)
  */
-function requireFeature(featureCode) {
+function requireFeature(featureCode, { unless } = {}) {
   return async (req, res, next) => {
     const entitlements = await entitlementsOrNull(req.user.alanyaID);
     if (entitlements && entitlements.features[featureCode] === false) {
+      if (unless && await unless(req).catch(() => false)) return next();
       return fail(res, 403, 'SUBSCRIPTION_REQUIRED', 'Fonctionnalité réservée à Alanya Plus', {
         feature: featureCode,
       });
