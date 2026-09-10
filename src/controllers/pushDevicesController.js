@@ -86,7 +86,7 @@ const registerPushDevice = async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('[PushDevice] register error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -144,7 +144,7 @@ const updatePushDeviceState = async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('[PushDevice] state error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -169,7 +169,7 @@ const deletePushDevice = async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('[PushDevice] delete error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 

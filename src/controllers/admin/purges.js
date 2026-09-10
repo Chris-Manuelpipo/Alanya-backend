@@ -66,7 +66,7 @@ const runPurgeNow = async (req, res) => {
     res.json({ ok: true, result, runs });
   } catch (error) {
     console.error('[Admin] runPurgeNow error:', error.message);
-    res.status(500).json({ error: error.message || 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

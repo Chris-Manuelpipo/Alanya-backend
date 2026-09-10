@@ -53,7 +53,7 @@ const uploadAvatar = async (req, res) => {
     });
   } catch (error) {
     console.error('[Upload avatar] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -96,7 +96,7 @@ const uploadMedia = async (req, res) => {
     });
   } catch (error) {
     console.error('[Upload media] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 

@@ -78,11 +78,16 @@ const getBroadcast = async (req, res) => {
 const estimateBroadcast = async (req, res) => {
   try {
     const { criteria } = req.body || {};
-    if (!criteria) return res.status(400).json({ error: 'criteria requis' });
+    if (!criteria) {
+      return res.status(400).json({ error: 'criteria requis', code: 'CRITERIA_REQUIRED' });
+    }
     const result = await estimateAudience(criteria);
     res.json(result);
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    // Sans ce journal, le détail disparaissait des deux côtés : il ne partait
+    // plus au client, et n'était écrit nulle part.
+    console.error('[Broadcast] estimation échouée:', e);
+    res.status(400).json({ error: 'Critères invalides', code: 'INVALID_CRITERIA' });
   }
 };
 

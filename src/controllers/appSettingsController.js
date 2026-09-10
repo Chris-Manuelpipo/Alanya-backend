@@ -52,7 +52,7 @@ const getAppSettings = async (req, res) => {
     res.json(_formatSettings(settings));
   } catch (error) {
     console.error('[AppSettings] get error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -66,7 +66,7 @@ const patchAppSettings = async (req, res) => {
     res.json(_formatSettings(next));
   } catch (error) {
     console.error('[AppSettings] patch error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 

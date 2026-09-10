@@ -150,7 +150,7 @@ const getLists = async (req, res) => {
     res.json(rows.map((r) => listRow(r, r.member_count)));
   } catch (error) {
     console.error('[getLists] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -186,7 +186,7 @@ const createList = async (req, res) => {
     );
   } catch (error) {
     console.error('[createList] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -279,7 +279,7 @@ const updateList = async (req, res) => {
     }, counted.member_count));
   } catch (error) {
     console.error('[updateList] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -323,7 +323,7 @@ const deleteList = async (req, res) => {
     res.json({ message: 'List deleted' });
   } catch (error) {
     console.error('[deleteList] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -396,7 +396,7 @@ const getListMembers = async (req, res) => {
     res.json(members);
   } catch (error) {
     console.error('[getListMembers] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -460,7 +460,7 @@ const addMember = async (req, res) => {
     res.status(201).json({ idList, idFriend: friendID });
   } catch (error) {
     console.error('[addMember] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -510,7 +510,7 @@ const updateSoundOrder = async (req, res) => {
   } catch (error) {
     try { await conn.rollback(); } catch (_) { /* connexion déjà perdue */ }
     console.error('[updateSoundOrder] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   } finally {
     conn.release();
   }
@@ -546,7 +546,7 @@ const removeMember = async (req, res) => {
     res.json({ message: 'Member removed' });
   } catch (error) {
     console.error('[removeMember] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 

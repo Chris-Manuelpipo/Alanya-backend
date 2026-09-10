@@ -143,7 +143,7 @@ const getMyMedia = async (req, res) => {
     });
   } catch (error) {
     console.error('[ProfileMedia] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec chargement médias' });
+    res.status(500).json({ error: 'Échec chargement médias', code: 'INTERNAL' });
   }
 };
 

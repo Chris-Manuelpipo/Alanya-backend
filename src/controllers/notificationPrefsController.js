@@ -47,7 +47,7 @@ const getNotificationPrefs = async (req, res) => {
     res.json(_formatPrefs(prefs));
   } catch (error) {
     console.error('[NotificationPrefs] get error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -61,7 +61,7 @@ const patchNotificationPrefs = async (req, res) => {
     res.json(_formatPrefs(next));
   } catch (error) {
     console.error('[NotificationPrefs] patch error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 

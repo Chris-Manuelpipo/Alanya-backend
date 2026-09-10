@@ -72,7 +72,7 @@ const getPreferredContacts = async (req, res) => {
     res.json(contacts);
   } catch (error) {
     console.error('[getPreferredContacts] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -108,7 +108,7 @@ const addPreferredContact = async (req, res) => {
     }
   } catch (error) {
     console.error('[addPreferredContact] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -137,7 +137,7 @@ const setContactNote = async (req, res) => {
     res.json({ ok: true, addedNote: note === '' ? null : note });
   } catch (error) {
     console.error('[setContactNote] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -175,7 +175,7 @@ const removePreferredContact = async (req, res) => {
     res.json({ message: 'Contact removed' });
   } catch (error) {
     console.error('[removePreferredContact] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -193,7 +193,7 @@ const checkIsContact = async (req, res) => {
     res.json({ isContact: rows.length > 0 });
   } catch (error) {
     console.error('[checkIsContact] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 

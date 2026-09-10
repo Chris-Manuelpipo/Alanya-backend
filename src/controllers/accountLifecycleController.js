@@ -262,7 +262,7 @@ const deleteAccount = async (req, res) => {
     });
   } catch (error) {
     console.error('[DeleteAccount] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec de la suppression du compte' });
+    res.status(500).json({ error: 'Échec de la suppression du compte', code: 'INTERNAL' });
   }
 };
 
@@ -277,7 +277,7 @@ const cancelAccountDeletionHandler = async (req, res) => {
     res.json({ message: 'Suppression annulée' });
   } catch (error) {
     console.error('[CancelDeletion] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec annulation suppression' });
+    res.status(500).json({ error: 'Échec annulation suppression', code: 'INTERNAL' });
   }
 };
 
@@ -370,7 +370,7 @@ const exportAccountData = async (req, res) => {
       return res.status(503).json({ error: 'Export async non disponible (migration 034 requise)' });
     }
     console.error('[ExportAccount] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec de l\'export' });
+    res.status(500).json({ error: 'Échec de l\'export', code: 'INTERNAL' });
   }
 };
 
@@ -420,7 +420,7 @@ const downloadExportJob = async (req, res) => {
       return res.status(503).json({ error: 'Export async non disponible (migration 034 requise)' });
     }
     console.error('[DownloadExport] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec du téléchargement' });
+    res.status(500).json({ error: 'Échec du téléchargement', code: 'INTERNAL' });
   }
 };
 

@@ -127,12 +127,17 @@ const uploadMedia = multer({
 const handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ error: 'Fichier trop volumineux' });
+      return res.status(413).json({ error: 'Fichier trop volumineux', code: 'FILE_TOO_LARGE' });
     }
-    return res.status(400).json({ error: err.message });
+    // Les messages de Multer sont en anglais et parlent de champs de formulaire
+    // (« Unexpected field ») : ils n'apprennent rien à l'utilisateur.
+    console.error('[Upload] MulterError:', err.code, err.message);
+    return res.status(400).json({ error: 'Envoi refusé', code: 'UPLOAD_REJECTED' });
   }
   if (err) {
-    return res.status(400).json({ error: err.message });
+    // Seul `mediaFilter` / `avatarFilter` lève ici, et toujours pour un type de
+    // fichier refusé : la prose reste, le code la rend traduisible.
+    return res.status(400).json({ error: err.message, code: 'INVALID_EXTENSION' });
   }
   next();
 };

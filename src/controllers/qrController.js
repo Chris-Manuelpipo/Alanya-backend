@@ -128,7 +128,7 @@ const createContactToken = async (req, res) => {
     });
   } catch (error) {
     console.error('[createContactToken] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -152,7 +152,7 @@ const getMyQr = async (req, res) => {
     res.json({ qrPublicId, payload: identityPayload(qrPublicId) });
   } catch (error) {
     console.error('[getMyQr] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -187,7 +187,7 @@ const regenerateQr = async (req, res) => {
     throw new Error('Impossible de générer un qr_public_id unique');
   } catch (error) {
     console.error('[regenerateQr] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -397,7 +397,7 @@ const resolveQr = async (req, res) => {
     return await _resolveLogin(req, res, alanyaID, parsed);
   } catch (error) {
     console.error('[resolveQr] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 

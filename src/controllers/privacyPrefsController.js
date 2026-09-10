@@ -46,7 +46,7 @@ const getPrivacyPrefs = async (req, res) => {
     res.json(_formatPrefs(prefs));
   } catch (error) {
     console.error('[PrivacyPrefs] get error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -60,7 +60,7 @@ const patchPrivacyPrefs = async (req, res) => {
     res.json(_formatPrefs(next));
   } catch (error) {
     console.error('[PrivacyPrefs] patch error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 

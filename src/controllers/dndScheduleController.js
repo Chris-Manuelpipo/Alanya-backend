@@ -30,7 +30,7 @@ const getDndSchedule = async (req, res) => {
     res.json(_formatSchedule(schedule));
   } catch (error) {
     console.error('[DndSchedule] get error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 

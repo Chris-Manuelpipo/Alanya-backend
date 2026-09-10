@@ -72,7 +72,7 @@ const createQrSession = async (req, res) => {
     });
   } catch (error) {
     console.error('[QrAuth] createQrSession ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec de la création de la session' });
+    res.status(500).json({ error: 'Échec de la création de la session', code: 'INTERNAL' });
   }
 };
 
@@ -125,7 +125,7 @@ const getQrSessionStatus = async (req, res) => {
     res.json({ status: entry.status });
   } catch (error) {
     console.error('[QrAuth] getQrSessionStatus ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec de la lecture de la session' });
+    res.status(500).json({ error: 'Échec de la lecture de la session', code: 'INTERNAL' });
   }
 };
 
@@ -247,7 +247,7 @@ const approveQrSession = async (req, res) => {
   } catch (error) {
     if (reserved) await qrLoginSessions.abortApproval(reserved.sessionId);
     console.error('[QrAuth] approveQrSession ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec de l\'approbation' });
+    res.status(500).json({ error: 'Échec de l\'approbation', code: 'INTERNAL' });
   }
 };
 
@@ -277,7 +277,7 @@ const denyQrSession = async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('[QrAuth] denyQrSession ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec du refus' });
+    res.status(500).json({ error: 'Échec du refus', code: 'INTERNAL' });
   }
 };
 
@@ -306,7 +306,7 @@ const listDeviceSessions = async (req, res) => {
     })));
   } catch (error) {
     console.error('[QrAuth] listDeviceSessions ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec de la lecture des appareils' });
+    res.status(500).json({ error: 'Échec de la lecture des appareils', code: 'INTERNAL' });
   }
 };
 
@@ -350,7 +350,7 @@ const revokeDeviceSession = async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('[QrAuth] revokeDeviceSession ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec de la révocation' });
+    res.status(500).json({ error: 'Échec de la révocation', code: 'INTERNAL' });
   }
 };
 

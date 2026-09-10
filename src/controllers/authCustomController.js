@@ -241,7 +241,7 @@ const register = async (req, res) => {
     res.status(201).json({ user: rows[0], accessToken, refreshToken, recoveryCode: recoveryPlain });
   } catch (error) {
     console.error('[Register] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Registration failed' });
+    res.status(500).json({ error: 'Registration failed', code: 'INTERNAL' });
   }
 };
 
@@ -370,7 +370,7 @@ const login = async (req, res) => {
     res.json({ user, accessToken, refreshToken });
   } catch (error) {
     console.error('[Login] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Echec de la connexion' });
+    res.status(500).json({ error: 'Echec de la connexion', code: 'INTERNAL' });
   }
 };
 
@@ -551,7 +551,7 @@ const requestPasswordReset = async (req, res) => {
     res.json({ message: 'Vérifiez votre email pour le code de réinitialisation' });
   } catch (error) {
     console.error('[RequestPasswordReset] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Request failed' });
+    res.status(500).json({ error: 'Request failed', code: 'INTERNAL' });
   }
 };
  
@@ -598,7 +598,7 @@ const validateOTP = async (req, res) => {
     res.json({ resetToken, message: 'OTP validated. Use resetToken to change password' });
   } catch (error) {
     console.error('[ValidateOTP] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Validation failed' });
+    res.status(500).json({ error: 'Validation failed', code: 'INTERNAL' });
   }
 };
   
@@ -642,7 +642,7 @@ const completePasswordReset = async (req, res) => {
     res.json({ message: 'Password updated successfully' });
   } catch (error) {
     console.error('[CompletePasswordReset] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Reset failed' });
+    res.status(500).json({ error: 'Reset failed', code: 'INTERNAL' });
   }
 };
 
@@ -666,7 +666,7 @@ const getMe = async (req, res) => {
     res.json(rows[0]);
   } catch (error) {
     console.error('[GetMe] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -694,7 +694,7 @@ const updateFcmToken = async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('[UpdateFcmToken] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -831,7 +831,7 @@ const updateMe = async (req, res) => {
     res.json(rows[0]);
   } catch (error) {
     console.error('[UpdateMe] ERROR:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
   }
 };
 
@@ -882,7 +882,7 @@ const requestEmailChangeOtp = async (req, res) => {
     res.json({ message: 'Vérifiez votre email pour le code de confirmation' });
   } catch (error) {
     console.error('[RequestEmailChangeOtp] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Request failed' });
+    res.status(500).json({ error: 'Request failed', code: 'INTERNAL' });
   }
 };
 
@@ -945,7 +945,7 @@ const confirmEmailChange = async (req, res) => {
     res.json({ message: 'Email mis à jour', user: updated[0] });
   } catch (error) {
     console.error('[ConfirmEmailChange] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Confirmation failed' });
+    res.status(500).json({ error: 'Confirmation failed', code: 'INTERNAL' });
   }
 };
 
@@ -994,7 +994,7 @@ const changePassword = async (req, res) => {
     res.json({ message: 'Mot de passe modifié avec succès' });
   } catch (error) {
     console.error('[ChangePassword] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Échec du changement de mot de passe' });
+    res.status(500).json({ error: 'Échec du changement de mot de passe', code: 'INTERNAL' });
   }
 };
 
@@ -1062,7 +1062,7 @@ const validateRecoveryCode = async (req, res) => {
     res.json({ resetToken, message: 'Code validé. Utilisez resetToken pour changer le mot de passe' });
   } catch (error) {
     console.error('[ValidateRecoveryCode] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Validation échouée' });
+    res.status(500).json({ error: 'Validation échouée', code: 'INTERNAL' });
   }
 };
 
@@ -1108,7 +1108,7 @@ const revealRecoveryCode = async (req, res) => {
     res.json({ recoveryCode: recoveryCode.format(code) });
   } catch (error) {
     console.error('[RevealRecoveryCode] ERROR:', error);
-    res.status(500).json({ error: error.message || 'Lecture du code échouée' });
+    res.status(500).json({ error: 'Lecture du code échouée', code: 'INTERNAL' });
   }
 };
 
