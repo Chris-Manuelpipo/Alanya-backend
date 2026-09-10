@@ -83,7 +83,7 @@ const addPreferredContact = async (req, res) => {
     const friendID = parseInt(req.params.id, 10);
 
     if (!friendID || isNaN(friendID)) {
-      return res.status(400).json({ error: 'Invalid user ID' });
+      return res.status(400).json({ error: 'Invalid user ID', code: 'INVALID_USER' });
     }
 
     // Liste blanche : 'qr' sert à l'ajout EN RETOUR après un scan (les deux
@@ -96,13 +96,13 @@ const addPreferredContact = async (req, res) => {
 
     switch (result.reason) {
       case 'self':
-        return res.status(400).json({ error: 'Cannot add yourself as contact' });
+        return res.status(400).json({ error: 'Cannot add yourself as contact', code: 'INVALID_CONTACT' });
       case 'not_found':
-        return res.status(404).json({ error: 'User not found' });
+        return res.status(404).json({ error: 'User not found', code: 'USER_NOT_FOUND' });
       case 'blocked':
-        return res.status(403).json({ error: 'Cannot add blocked user' });
+        return res.status(403).json({ error: 'Cannot add blocked user', code: 'INVALID_USER' });
       case 'already':
-        return res.status(409).json({ error: 'Already a preferred contact' });
+        return res.status(409).json({ error: 'Already a preferred contact', code: 'CONTACT_ALREADY_EXISTS' });
       default:
         return res.status(201).json(result.contact);
     }
@@ -120,7 +120,7 @@ const setContactNote = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const friendID = parseInt(req.params.id, 10);
     if (!friendID || isNaN(friendID)) {
-      return res.status(400).json({ error: 'Invalid user ID' });
+      return res.status(400).json({ error: 'Invalid user ID', code: 'INVALID_USER' });
     }
 
     const brute = req.body?.note;
@@ -131,7 +131,7 @@ const setContactNote = async (req, res) => {
       [note === '' ? null : note, alanyaID, friendID]
     );
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Not a preferred contact' });
+      return res.status(404).json({ error: 'Not a preferred contact', code: 'INVALID_CONTACT' });
     }
 
     res.json({ ok: true, addedNote: note === '' ? null : note });
@@ -148,7 +148,7 @@ const removePreferredContact = async (req, res) => {
     const friendID = parseInt(req.params.id, 10);
 
     if (!friendID || isNaN(friendID)) {
-      return res.status(400).json({ error: 'Invalid user ID' });
+      return res.status(400).json({ error: 'Invalid user ID', code: 'INVALID_USER' });
     }
 
     const [result] = await pool.execute(
@@ -157,7 +157,7 @@ const removePreferredContact = async (req, res) => {
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Contact not found' });
+      return res.status(404).json({ error: 'Contact not found', code: 'CONTACT_NOT_FOUND' });
     }
 
     // Être un contact préféré est le PRÉREQUIS pour appartenir à une liste

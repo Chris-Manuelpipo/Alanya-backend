@@ -199,7 +199,7 @@ const getConversationById = async (req, res) => {
       [id, alanyaID]
     );
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Conversation not found' });
+      return res.status(404).json({ error: 'Conversation not found', code: 'CONVERSATION_NOT_FOUND' });
     }
     const enriched = await attachParticipants(rows[0], alanyaID);
     res.json(enriched);
@@ -216,7 +216,7 @@ const createConversation = async (req, res) => {
     const peerID = parseInt(req.body.participantID, 10);
 
     if (!Number.isInteger(peerID) || peerID <= 0) {
-      return res.status(400).json({ error: 'participantID invalide' });
+      return res.status(400).json({ error: 'participantID invalide', code: 'INVALID_PARTICIPANT_ID' });
     }
 
     // Conversation « avec soi-même » : un seul participant, marquée par
@@ -305,7 +305,7 @@ const createGroup = async (req, res, next) => {
     const alanyaID = req.user.alanyaID;
 
     if (!participantIDs || !Array.isArray(participantIDs) || participantIDs.length === 0) {
-      return res.status(400).json({ error: 'participantIDs required as array' });
+      return res.status(400).json({ error: 'participantIDs required as array', code: 'PARTICIPANT_IDS_REQUIRED' });
     }
 
     const cleanDescription =
@@ -581,7 +581,7 @@ const addParticipants = async (req, res, next) => {
     const alanyaID = req.user.alanyaID;
 
     if (!participantIDs || !Array.isArray(participantIDs) || participantIDs.length === 0) {
-      return res.status(400).json({ error: 'participantIDs required as array' });
+      return res.status(400).json({ error: 'participantIDs required as array', code: 'PARTICIPANT_IDS_REQUIRED' });
     }
 
     // Verrou dédié (découplé de onlyAdminsCanEditInfo) : un membre peut
@@ -601,10 +601,10 @@ const addParticipants = async (req, res, next) => {
       [alanyaID, id]
     );
     if (convRows.length === 0) {
-      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée' });
+      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée', code: 'CONVERSATION_NOT_FOUND' });
     }
     if (!convRows[0].isGroup) {
-      return res.status(400).json({ error: 'Pas un groupe' });
+      return res.status(400).json({ error: 'Pas un groupe', code: 'NOT_A_GROUP' });
     }
 
     // Override optionnel (tests) ; l'app n'expose pas le paramètre — le défaut
@@ -783,7 +783,7 @@ const updateGroupInfo = async (req, res, next) => {
     if (GroupName !== undefined) {
       const name = String(GroupName).trim();
       if (name === '' || name.length > 255) {
-        return res.status(400).json({ error: 'Nom de groupe invalide (1 à 255 caractères)' });
+        return res.status(400).json({ error: 'Nom de groupe invalide (1 à 255 caractères)', code: 'INVALID_GROUP' });
       }
       updates.push('GroupName = ?');
       values.push(name);
@@ -808,7 +808,7 @@ const updateGroupInfo = async (req, res, next) => {
     }
 
     if (updates.length === 0) {
-      return res.status(400).json({ error: 'Aucun champ à modifier' });
+      return res.status(400).json({ error: 'Aucun champ à modifier', code: 'NO_FIELDS_TO_UPDATE' });
     }
 
     values.push(conversID);
@@ -949,7 +949,7 @@ const ackGroupJoin = async (req, res, next) => {
       [conversID, alanyaID],
     );
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée' });
+      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée', code: 'CONVERSATION_NOT_FOUND' });
     }
 
     const pending = rows[0].pendingJoinMsgID != null
@@ -1026,7 +1026,7 @@ const removeParticipant = async (req, res, next) => {
     const targetId = parseInt(req.params.userId, 10);
 
     if (!Number.isInteger(targetId) || targetId < 1) {
-      return res.status(400).json({ error: 'Identifiant de membre invalide' });
+      return res.status(400).json({ error: 'Identifiant de membre invalide', code: 'INVALID_MEMBER' });
     }
     if (targetId === Number(alanyaID)) {
       return res.status(400).json({
@@ -1132,12 +1132,12 @@ const setParticipantRole = async (req, res, next) => {
     const role = parseInt(req.body?.role, 10);
 
     if (!Number.isInteger(targetId) || targetId < 1) {
-      return res.status(400).json({ error: 'Identifiant de membre invalide' });
+      return res.status(400).json({ error: 'Identifiant de membre invalide', code: 'INVALID_MEMBER' });
     }
     // 2 exclu : le transfert de propriété n'est pas au périmètre, et la
     // succession automatique du départ suffit à garantir un propriétaire.
     if (role !== 0 && role !== 1) {
-      return res.status(400).json({ error: 'role doit valoir 0 ou 1' });
+      return res.status(400).json({ error: 'role doit valoir 0 ou 1', code: 'INVALID_ROLE' });
     }
     if (targetId === Number(alanyaID)) {
       return res.status(400).json({
@@ -1151,7 +1151,7 @@ const setParticipantRole = async (req, res, next) => {
       [conversID, targetId],
     );
     if (targetRows.length === 0) {
-      return res.status(404).json({ error: 'Membre introuvable dans ce groupe' });
+      return res.status(404).json({ error: 'Membre introuvable dans ce groupe', code: 'GROUP_NOT_FOUND' });
     }
 
     const currentRole = Number(targetRows[0].role) || 0;
@@ -1207,7 +1207,7 @@ const leaveGroup = async (req, res, next) => {
     );
     const me = before.find((r) => Number(r.alanyaID) === Number(alanyaID));
     if (!me) {
-      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée' });
+      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée', code: 'CONVERSATION_NOT_FOUND' });
     }
     const isGroup = !!me.isGroup;
     const membersBefore = before.map((r) => Number(r.alanyaID));
@@ -1287,16 +1287,16 @@ const batchUpdateConversations = async (req, res) => {
     const ids = _normalizeConversationIDs(conversationIDs);
 
     if (ids.length === 0) {
-      return res.status(400).json({ error: 'conversationIDs invalides ou dupliqués' });
+      return res.status(400).json({ error: 'conversationIDs invalides ou dupliqués', code: 'INVALID_CONVERSATION_IDS' });
     }
     if (ids.length > MAX_BATCH_CONVERSATIONS) {
-      return res.status(400).json({ error: `Maximum ${MAX_BATCH_CONVERSATIONS} conversations` });
+      return res.status(400).json({ error: `Maximum ${MAX_BATCH_CONVERSATIONS} conversations`, code: 'LIMIT_REACHED' });
     }
 
     const hasPinned = typeof isPinned === 'number' || typeof isPinned === 'boolean';
     const hasArchived = typeof isArchived === 'number' || typeof isArchived === 'boolean';
     if (!hasPinned && !hasArchived) {
-      return res.status(400).json({ error: 'Aucune mise à jour fournie (isPinned/isArchived)' });
+      return res.status(400).json({ error: 'Aucune mise à jour fournie (isPinned/isArchived)', code: 'NO_FIELDS_TO_UPDATE' });
     }
 
     const placeholders = ids.map(() => '?').join(',');
@@ -1309,7 +1309,7 @@ const batchUpdateConversations = async (req, res) => {
     );
     if (members.length !== ids.length) {
       await conn.rollback();
-      return res.status(403).json({ error: 'Non autorisé pour une ou plusieurs conversations' });
+      return res.status(403).json({ error: 'Non autorisé pour une ou plusieurs conversations', code: 'FORBIDDEN' });
     }
 
     if (hasPinned) {
@@ -1349,10 +1349,10 @@ const batchDeleteConversations = async (req, res) => {
     const ids = _normalizeConversationIDs(conversationIDs);
 
     if (ids.length === 0) {
-      return res.status(400).json({ error: 'conversationIDs invalides ou dupliqués' });
+      return res.status(400).json({ error: 'conversationIDs invalides ou dupliqués', code: 'INVALID_CONVERSATION_IDS' });
     }
     if (ids.length > MAX_BATCH_CONVERSATIONS) {
-      return res.status(400).json({ error: `Maximum ${MAX_BATCH_CONVERSATIONS} conversations` });
+      return res.status(400).json({ error: `Maximum ${MAX_BATCH_CONVERSATIONS} conversations`, code: 'LIMIT_REACHED' });
     }
 
     const placeholders = ids.map(() => '?').join(',');
@@ -1365,7 +1365,7 @@ const batchDeleteConversations = async (req, res) => {
     );
     if (members.length !== ids.length) {
       await conn.rollback();
-      return res.status(403).json({ error: 'Non autorisé pour une ou plusieurs conversations' });
+      return res.status(403).json({ error: 'Non autorisé pour une ou plusieurs conversations', code: 'FORBIDDEN' });
     }
 
     await conn.execute(
@@ -1428,7 +1428,7 @@ const updateConversationMute = async (req, res) => {
       [id, alanyaID],
     );
     if (member.length === 0) {
-      return res.status(404).json({ error: 'Conversation introuvable' });
+      return res.status(404).json({ error: 'Conversation introuvable', code: 'CONVERSATION_NOT_FOUND' });
     }
 
     if (unmute === true || unmute === 1 || unmute === '1') {
@@ -1444,14 +1444,14 @@ const updateConversationMute = async (req, res) => {
     } else if (mutedUntil) {
       const until = new Date(mutedUntil);
       if (Number.isNaN(until.getTime())) {
-        return res.status(400).json({ error: 'mutedUntil invalide' });
+        return res.status(400).json({ error: 'mutedUntil invalide', code: 'INVALID_MUTED_UNTIL' });
       }
       await pool.execute(
         'UPDATE conv_participants SET mutedUntil = ?, muteForever = 0 WHERE conversID = ? AND alanyaID = ?',
         [until, id, alanyaID],
       );
     } else {
-      return res.status(400).json({ error: 'unmute, muteForever ou mutedUntil requis' });
+      return res.status(400).json({ error: 'unmute, muteForever ou mutedUntil requis', code: 'UNMUTE_REQUIRED' });
     }
 
     if (mentionsOnly !== undefined) {
@@ -1485,7 +1485,7 @@ const updateConversationMute = async (req, res) => {
     });
   } catch (error) {
     if (error.code === 'ER_BAD_FIELD_ERROR') {
-      return res.status(503).json({ error: 'Migration mute non appliquée' });
+      return res.status(503).json({ error: 'Migration mute non appliquée', code: 'INTERNAL' });
     }
     throw error;
   }

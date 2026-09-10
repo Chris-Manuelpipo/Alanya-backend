@@ -162,7 +162,7 @@ const createList = async (req, res) => {
     const color = cleanColor(req.body?.color);
 
     if (!name) {
-      return res.status(400).json({ error: 'List name is required' });
+      return res.status(400).json({ error: 'List name is required', code: 'LIST_REQUIRED' });
     }
 
     let result;
@@ -173,7 +173,7 @@ const createList = async (req, res) => {
       );
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') {
-        return res.status(409).json({ error: 'A list with this name already exists' });
+        return res.status(409).json({ error: 'A list with this name already exists', code: 'LIST_ALREADY_EXISTS' });
       }
       throw e;
     }
@@ -201,12 +201,12 @@ const updateList = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const idList = parseListId(req.params.idList);
     if (!idList) {
-      return res.status(400).json({ error: 'Invalid list ID' });
+      return res.status(400).json({ error: 'Invalid list ID', code: 'INVALID_LIST' });
     }
 
     const existing = await findOwnedList(idList, alanyaID);
     if (!existing) {
-      return res.status(404).json({ error: 'List not found' });
+      return res.status(404).json({ error: 'List not found', code: 'LIST_NOT_FOUND' });
     }
 
     const hasName  = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
@@ -226,7 +226,7 @@ const updateList = async (req, res) => {
     const color = hasColor ? cleanColor(req.body.color) : existing.color;
 
     if (!name) {
-      return res.status(400).json({ error: 'List name is required' });
+      return res.status(400).json({ error: 'List name is required', code: 'LIST_REQUIRED' });
     }
 
     const msg = mergeSoundPatch(req.body, 'message', {
@@ -256,7 +256,7 @@ const updateList = async (req, res) => {
       );
     } catch (e) {
       if (e.code === 'ER_DUP_ENTRY') {
-        return res.status(409).json({ error: 'A list with this name already exists' });
+        return res.status(409).json({ error: 'A list with this name already exists', code: 'LIST_ALREADY_EXISTS' });
       }
       throw e;
     }
@@ -290,7 +290,7 @@ const deleteList = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const idList = parseListId(req.params.idList);
     if (!idList) {
-      return res.status(400).json({ error: 'Invalid list ID' });
+      return res.status(400).json({ error: 'Invalid list ID', code: 'INVALID_LIST' });
     }
 
     // Les listes système ne se suppriment pas. `updateList` protégeait déjà leur
@@ -302,7 +302,7 @@ const deleteList = async (req, res) => {
     // par un appui malheureux.
     const existing = await findOwnedList(idList, alanyaID);
     if (!existing) {
-      return res.status(404).json({ error: 'List not found' });
+      return res.status(404).json({ error: 'List not found', code: 'LIST_NOT_FOUND' });
     }
     if (isSystemListKind(existing.kind)) {
       return res.status(403).json({
@@ -317,7 +317,7 @@ const deleteList = async (req, res) => {
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'List not found' });
+      return res.status(404).json({ error: 'List not found', code: 'LIST_NOT_FOUND' });
     }
 
     res.json({ message: 'List deleted' });
@@ -334,12 +334,12 @@ const getListMembers = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const idList = parseListId(req.params.idList);
     if (!idList) {
-      return res.status(400).json({ error: 'Invalid list ID' });
+      return res.status(400).json({ error: 'Invalid list ID', code: 'INVALID_LIST' });
     }
 
     const owned = await findOwnedList(idList, alanyaID);
     if (!owned) {
-      return res.status(404).json({ error: 'List not found' });
+      return res.status(404).json({ error: 'List not found', code: 'LIST_NOT_FOUND' });
     }
 
     const [rows] = await pool.execute(
@@ -409,15 +409,15 @@ const addMember = async (req, res) => {
     const friendID = parseInt(req.params.friendID, 10);
 
     if (!idList) {
-      return res.status(400).json({ error: 'Invalid list ID' });
+      return res.status(400).json({ error: 'Invalid list ID', code: 'INVALID_LIST' });
     }
     if (!friendID || Number.isNaN(friendID)) {
-      return res.status(400).json({ error: 'Invalid user ID' });
+      return res.status(400).json({ error: 'Invalid user ID', code: 'INVALID_USER' });
     }
 
     const owned = await findOwnedList(idList, alanyaID);
     if (!owned) {
-      return res.status(404).json({ error: 'List not found' });
+      return res.status(404).json({ error: 'List not found', code: 'LIST_NOT_FOUND' });
     }
 
     const [pref] = await pool.execute(
@@ -428,7 +428,7 @@ const addMember = async (req, res) => {
     // « un membre est d'abord un favori » qui l'interdit (cf. dossier de
     // conception §4.1 et recette §7.1).
     if (pref.length === 0) {
-      return res.status(403).json({ error: 'User is not a preferred contact' });
+      return res.status(403).json({ error: 'User is not a preferred contact', code: 'INVALID_USER' });
     }
 
     if (owned.member_limit != null) {
@@ -479,7 +479,7 @@ const updateSoundOrder = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const raw = req.body?.order;
     if (!Array.isArray(raw)) {
-      return res.status(400).json({ error: 'order must be an array of list IDs' });
+      return res.status(400).json({ error: 'order must be an array of list IDs', code: 'INVALID_LIST' });
     }
 
     // Dédoublonnage en conservant la première occurrence : un id répété ne doit
@@ -523,15 +523,15 @@ const removeMember = async (req, res) => {
     const friendID = parseInt(req.params.friendID, 10);
 
     if (!idList) {
-      return res.status(400).json({ error: 'Invalid list ID' });
+      return res.status(400).json({ error: 'Invalid list ID', code: 'INVALID_LIST' });
     }
     if (!friendID || Number.isNaN(friendID)) {
-      return res.status(400).json({ error: 'Invalid user ID' });
+      return res.status(400).json({ error: 'Invalid user ID', code: 'INVALID_USER' });
     }
 
     const owned = await findOwnedList(idList, alanyaID);
     if (!owned) {
-      return res.status(404).json({ error: 'List not found' });
+      return res.status(404).json({ error: 'List not found', code: 'LIST_NOT_FOUND' });
     }
 
     const [result] = await pool.execute(
@@ -540,7 +540,7 @@ const removeMember = async (req, res) => {
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Member not found' });
+      return res.status(404).json({ error: 'Member not found', code: 'MEMBER_NOT_FOUND' });
     }
 
     res.json({ message: 'Member removed' });

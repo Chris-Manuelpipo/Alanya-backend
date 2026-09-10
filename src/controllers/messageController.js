@@ -38,7 +38,7 @@ const getMessages = async (req, res) => {
       [id, alanyaID],
     );
     if (membership.length === 0) {
-      return res.status(404).json({ error: 'Conversation not found' });
+      return res.status(404).json({ error: 'Conversation not found', code: 'CONVERSATION_NOT_FOUND' });
     }
 
     // Jointure cp : filtre historyCutoffAt (migration 028). Sans elle, un
@@ -386,7 +386,7 @@ const sendMessage = async (req, res, next) => {
     const senderID = req.user.alanyaID;
 
     if (!content && !mediaUrl) {
-      return res.status(400).json({ error: 'content ou mediaUrl requis' });
+      return res.status(400).json({ error: 'content ou mediaUrl requis', code: 'CONTENT_REQUIRED' });
     }
 
     const { msg } = await _persistAndDeliverMessage(req, id, senderID, {
@@ -414,7 +414,7 @@ const updateMessage = async (req, res) => {
     const senderID = req.user.alanyaID;
 
     if (!content) {
-      return res.status(400).json({ error: 'content requis' });
+      return res.status(400).json({ error: 'content requis', code: 'CONTENT_REQUIRED' });
     }
 
     // Être l'auteur ne suffit pas : il faut être ENCORE membre. Sans ça, un
@@ -432,14 +432,14 @@ const updateMessage = async (req, res) => {
     );
 
     if (existing.length === 0) {
-      return res.status(404).json({ error: 'Message introuvable ou non autorisé' });
+      return res.status(404).json({ error: 'Message introuvable ou non autorisé', code: 'MESSAGE_NOT_FOUND' });
     }
 
     const sentAt = new Date(existing[0].sendAt);
     const ageMinutes = (Date.now() - sentAt.getTime()) / 60000;
     if (ageMinutes > MESSAGE_EDIT_WINDOW_MINUTES) {
       return res.status(403).json({
-        error: `La modification n'est possible que dans les ${MESSAGE_EDIT_WINDOW_MINUTES} minutes suivant l'envoi`,
+        error: `La modification n'est possible que dans les ${MESSAGE_EDIT_WINDOW_MINUTES} minutes suivant l'envoi`, code: 'EDIT_WINDOW_EXPIRED',
       });
     }
 
@@ -480,7 +480,7 @@ const deleteMessage = async (req, res) => {
     );
 
     if (existing.length === 0) {
-      return res.status(404).json({ error: 'Message introuvable ou non autorisé' });
+      return res.status(404).json({ error: 'Message introuvable ou non autorisé', code: 'MESSAGE_NOT_FOUND' });
     }
 
     if (all === 'true') {
@@ -583,7 +583,7 @@ const setReaction = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const emoji = (req.body.emoji ?? '').toString().trim();
     if (!emoji) {
-      return res.status(400).json({ error: 'emoji requis' });
+      return res.status(400).json({ error: 'emoji requis', code: 'EMOJI_REQUIRED' });
     }
 
     const ctx = await _messageReactionContext(id, alanyaID);
@@ -601,7 +601,7 @@ const setReaction = async (req, res) => {
       );
       if (rows.length === 0) {
         await conn.rollback();
-        return res.status(404).json({ error: 'Message introuvable' });
+        return res.status(404).json({ error: 'Message introuvable', code: 'MESSAGE_NOT_FOUND' });
       }
       const reactions = _upsertUserReaction(_parseReactionsColumn(rows[0].reactions), alanyaID, emoji);
       await conn.execute(
@@ -651,7 +651,7 @@ const removeReaction = async (req, res) => {
       );
       if (rows.length === 0) {
         await conn.rollback();
-        return res.status(404).json({ error: 'Message introuvable' });
+        return res.status(404).json({ error: 'Message introuvable', code: 'MESSAGE_NOT_FOUND' });
       }
       const reactions = _removeUserReaction(_parseReactionsColumn(rows[0].reactions), alanyaID);
       await conn.execute(
@@ -690,7 +690,7 @@ const getConversationReactions = async (req, res) => {
       [id, alanyaID],
     );
     if (member.length === 0) {
-      return res.status(404).json({ error: 'Conversation not found' });
+      return res.status(404).json({ error: 'Conversation not found', code: 'CONVERSATION_NOT_FOUND' });
     }
 
     // `has_reactions` (migration 059) est une colonne générée STORED et
@@ -750,7 +750,7 @@ const pinMessage = async (req, res) => {
       [id]
     );
     if (existing.length === 0) {
-      return res.status(404).json({ error: 'Message introuvable' });
+      return res.status(404).json({ error: 'Message introuvable', code: 'MESSAGE_NOT_FOUND' });
     }
     const conversationID = existing[0].conversationID;
 
@@ -760,7 +760,7 @@ const pinMessage = async (req, res) => {
       [conversationID, alanyaID]
     );
     if (member.length === 0) {
-      return res.status(403).json({ error: 'Non autorisé' });
+      return res.status(403).json({ error: 'Non autorisé', code: 'FORBIDDEN' });
     }
 
     if (pinned) {
@@ -803,7 +803,7 @@ const markMessageViewed = async (req, res) => {
       [id]
     );
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Média à vue unique introuvable' });
+      return res.status(404).json({ error: 'Média à vue unique introuvable', code: 'MEDIA_NOT_FOUND' });
     }
     const msg = rows[0];
     const conversationID = msg.conversationID;
@@ -819,7 +819,7 @@ const markMessageViewed = async (req, res) => {
       [conversationID, alanyaID]
     );
     if (member.length === 0) {
-      return res.status(403).json({ error: 'Non autorisé' });
+      return res.status(403).json({ error: 'Non autorisé', code: 'FORBIDDEN' });
     }
 
     // Vue unique en 1-1 : un seul destinataire ⇒ dès qu'il a vu, on marque
@@ -850,15 +850,15 @@ const batchDeleteMessages = async (req, res) => {
     const forAll = all === true || all === 1 || all === '1' || all === 'true';
 
     if (!Array.isArray(msgIDs) || msgIDs.length === 0) {
-      return res.status(400).json({ error: 'msgIDs requis (tableau non vide)' });
+      return res.status(400).json({ error: 'msgIDs requis (tableau non vide)', code: 'MSG_IDS_REQUIRED' });
     }
     if (msgIDs.length > MAX_BATCH_DELETE) {
-      return res.status(400).json({ error: `Maximum ${MAX_BATCH_DELETE} messages par requête` });
+      return res.status(400).json({ error: `Maximum ${MAX_BATCH_DELETE} messages par requête`, code: 'LIMIT_REACHED' });
     }
 
     const ids = [...new Set(msgIDs.map((id) => parseInt(id, 10)).filter((id) => id > 0))];
     if (ids.length !== msgIDs.length) {
-      return res.status(400).json({ error: 'msgIDs invalides ou dupliqués' });
+      return res.status(400).json({ error: 'msgIDs invalides ou dupliqués', code: 'INVALID_MSG_IDS' });
     }
 
     await conn.beginTransaction();
@@ -871,13 +871,13 @@ const batchDeleteMessages = async (req, res) => {
 
     if (existing.length !== ids.length) {
       await conn.rollback();
-      return res.status(404).json({ error: 'Un ou plusieurs messages introuvables' });
+      return res.status(404).json({ error: 'Un ou plusieurs messages introuvables', code: 'MESSAGE_NOT_FOUND' });
     }
 
     const unauthorized = existing.some((row) => row.senderID !== senderID);
     if (unauthorized) {
       await conn.rollback();
-      return res.status(403).json({ error: 'Non autorisé pour un ou plusieurs messages' });
+      return res.status(403).json({ error: 'Non autorisé pour un ou plusieurs messages', code: 'FORBIDDEN' });
     }
 
     if (forAll) {
@@ -935,22 +935,22 @@ const batchForwardMessages = async (req, res) => {
     const senderID = req.user.alanyaID;
 
     if (!Array.isArray(sourceMsgIDs) || sourceMsgIDs.length === 0) {
-      return res.status(400).json({ error: 'sourceMsgIDs requis (tableau non vide)' });
+      return res.status(400).json({ error: 'sourceMsgIDs requis (tableau non vide)', code: 'SOURCE_MSG_IDS_REQUIRED' });
     }
     if (!Array.isArray(targetConversationIDs) || targetConversationIDs.length === 0) {
-      return res.status(400).json({ error: 'targetConversationIDs requis (tableau non vide)' });
+      return res.status(400).json({ error: 'targetConversationIDs requis (tableau non vide)', code: 'TARGET_CONVERSATION_IDS_REQUIRED' });
     }
     if (sourceMsgIDs.length > MAX_BATCH_FORWARD_SOURCES) {
-      return res.status(400).json({ error: `Maximum ${MAX_BATCH_FORWARD_SOURCES} messages source` });
+      return res.status(400).json({ error: `Maximum ${MAX_BATCH_FORWARD_SOURCES} messages source`, code: 'LIMIT_REACHED' });
     }
     if (targetConversationIDs.length > MAX_BATCH_FORWARD_TARGETS) {
-      return res.status(400).json({ error: `Maximum ${MAX_BATCH_FORWARD_TARGETS} conversations cibles` });
+      return res.status(400).json({ error: `Maximum ${MAX_BATCH_FORWARD_TARGETS} conversations cibles`, code: 'LIMIT_REACHED' });
     }
 
     const sourceIds = [...new Set(sourceMsgIDs.map((id) => parseInt(id, 10)).filter((id) => id > 0))];
     const targetIds = [...new Set(targetConversationIDs.map((id) => parseInt(id, 10)).filter((id) => id > 0))];
     if (sourceIds.length !== sourceMsgIDs.length || targetIds.length !== targetConversationIDs.length) {
-      return res.status(400).json({ error: 'IDs invalides ou dupliqués' });
+      return res.status(400).json({ error: 'IDs invalides ou dupliqués', code: 'INVALID_IDS' });
     }
 
     const sourcePlaceholders = sourceIds.map(() => '?').join(',');
@@ -960,12 +960,12 @@ const batchForwardMessages = async (req, res) => {
     );
 
     if (sources.length !== sourceIds.length) {
-      return res.status(404).json({ error: 'Un ou plusieurs messages source introuvables' });
+      return res.status(404).json({ error: 'Un ou plusieurs messages source introuvables', code: 'MESSAGE_NOT_FOUND' });
     }
 
     const sourceConversationID = sources[0].conversationID;
     if (!sources.every((m) => m.conversationID === sourceConversationID)) {
-      return res.status(400).json({ error: 'Tous les messages source doivent être dans la même conversation' });
+      return res.status(400).json({ error: 'Tous les messages source doivent être dans la même conversation', code: 'INVALID_CONVERSATION' });
     }
 
     const [sourceMember] = await pool.execute(
@@ -973,18 +973,18 @@ const batchForwardMessages = async (req, res) => {
       [sourceConversationID, senderID]
     );
     if (sourceMember.length === 0) {
-      return res.status(403).json({ error: 'Non autorisé à lire les messages source' });
+      return res.status(403).json({ error: 'Non autorisé à lire les messages source', code: 'FORBIDDEN' });
     }
 
     for (const m of sources) {
       if (m.isDeleted) {
-        return res.status(400).json({ error: 'Message supprimé non transférable' });
+        return res.status(400).json({ error: 'Message supprimé non transférable', code: 'INVALID_MESSAGE' });
       }
       if (m.isViewOnce) {
-        return res.status(400).json({ error: 'Média à vue unique non transférable' });
+        return res.status(400).json({ error: 'Média à vue unique non transférable', code: 'INVALID_MEDIA' });
       }
       if (m.type !== 0 && m.type !== 5 && !m.mediaUrl) {
-        return res.status(400).json({ error: 'Média sans URL serveur non transférable via batch' });
+        return res.status(400).json({ error: 'Média sans URL serveur non transférable via batch', code: 'INVALID_MEDIA' });
       }
     }
 
@@ -994,7 +994,7 @@ const batchForwardMessages = async (req, res) => {
         [targetId, senderID]
       );
       if (member.length === 0) {
-        return res.status(403).json({ error: `Non autorisé pour la conversation ${targetId}` });
+        return res.status(403).json({ error: `Non autorisé pour la conversation ${targetId}`, code: 'CONVERSATION_FORBIDDEN' });
       }
     }
 
@@ -1200,7 +1200,7 @@ const getMessageStatusByClientId = async (req, res, next) => {
     const clientId =
       typeof req.query.clientId === 'string' ? req.query.clientId.trim() : '';
     if (!clientId) {
-      return res.status(400).json({ error: 'clientId required' });
+      return res.status(400).json({ error: 'clientId required', code: 'CLIENT_ID_REQUIRED' });
     }
 
     const alanyaID = req.user.alanyaID;
@@ -1268,7 +1268,7 @@ const markMessagesDelivered = async (req, res, next) => {
       req.body?.conversationId ?? req.body?.conversationID,
     );
     if (!conversationID) {
-      return res.status(400).json({ error: 'conversationId required' });
+      return res.status(400).json({ error: 'conversationId required', code: 'CONVERSATION_ID_REQUIRED' });
     }
 
     const [membership] = await pool.execute(
@@ -1276,7 +1276,7 @@ const markMessagesDelivered = async (req, res, next) => {
       [conversationID, alanyaID],
     );
     if (membership.length === 0) {
-      return res.status(404).json({ error: 'Conversation not found' });
+      return res.status(404).json({ error: 'Conversation not found', code: 'CONVERSATION_NOT_FOUND' });
     }
 
     const result = await markConversationDeliveredBy({
