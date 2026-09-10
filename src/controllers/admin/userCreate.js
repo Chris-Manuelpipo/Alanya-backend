@@ -158,7 +158,7 @@ const createUser = async (req, res) => {
         error: resolvedAccountType === ACCOUNT_TYPE.OFFICIEL
           ? 'Le compte officiel se crée via POST /admin/official-account'
           : 'account_type invalide',
-        code: resolvedAccountType === ACCOUNT_TYPE.OFFICIEL ? 'OFFICIAL_WRONG_ENDPOINT' : undefined,
+        code: resolvedAccountType === ACCOUNT_TYPE.OFFICIEL ? 'OFFICIAL_WRONG_ENDPOINT' : 'INVALID_ACCOUNT_TYPE',
       });
     }
 
