@@ -30,7 +30,7 @@ router.get('/q/u/:token', showIdentityLanding);
 /** Android App Links. */
 router.get('/.well-known/assetlinks.json', (_req, res) => {
   if (ANDROID_SHA256.length === 0) {
-    return res.status(404).json({ error: 'Association Android non configurée' });
+    return res.status(404).json({ error: 'Association Android non configurée', code: 'APP_LINK_NOT_CONFIGURED' });
   }
   res.json([
     {
@@ -47,7 +47,7 @@ router.get('/.well-known/assetlinks.json', (_req, res) => {
 /** iOS Universal Links. Doit être servi en application/json, sans extension. */
 router.get('/.well-known/apple-app-site-association', (_req, res) => {
   if (!IOS_TEAM_ID) {
-    return res.status(404).json({ error: 'Association iOS non configurée' });
+    return res.status(404).json({ error: 'Association iOS non configurée', code: 'APP_LINK_NOT_CONFIGURED' });
   }
   res.type('application/json').json({
     applinks: {

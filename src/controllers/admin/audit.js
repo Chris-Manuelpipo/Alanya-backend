@@ -64,7 +64,7 @@ const getAudit = async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error('[Admin] getAudit error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -83,7 +83,7 @@ const getAuditActions = async (_req, res) => {
     res.json(rows);
   } catch (error) {
     console.error('[Admin] getAuditActions error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

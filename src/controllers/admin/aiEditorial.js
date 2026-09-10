@@ -33,7 +33,7 @@ const getAiStatus = async (req, res) => {
     res.json({ enabled, model: enabled ? currentModel() : null });
   } catch (e) {
     console.error('[Admin] getAiStatus:', e.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

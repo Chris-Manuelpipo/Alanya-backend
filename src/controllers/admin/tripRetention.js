@@ -48,7 +48,7 @@ const getTripRetention = async (req, res) => {
     res.json({ ...stats, runs });
   } catch (error) {
     console.error('[Admin] getTripRetention error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -84,7 +84,7 @@ const runTripPurge = async (req, res) => {
     res.json({ ...stats, runs, lastRun: entry });
   } catch (error) {
     console.error('[Admin] runTripPurge error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

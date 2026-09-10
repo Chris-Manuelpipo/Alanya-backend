@@ -74,7 +74,7 @@ const getKeys = async (_req, res) => {
     });
   } catch (error) {
     console.error('[Admin] getKeys error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -121,7 +121,7 @@ const rotateKey = async (req, res) => {
   } catch (error) {
     await conn.rollback();
     console.error('[Admin] rotateKey error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   } finally {
     conn.release();
   }
@@ -135,7 +135,7 @@ const rotateKey = async (req, res) => {
 const retireKey = async (req, res) => {
   const kid = Number.parseInt(req.params.kid, 10);
   if (!Number.isInteger(kid) || kid <= 0) {
-    return res.status(400).json({ error: 'Version invalide' });
+    return res.status(400).json({ error: 'Version invalide', code: 'INVALID_VERSION' });
   }
 
   const conn = await pool.getConnection();
@@ -148,7 +148,7 @@ const retireKey = async (req, res) => {
     const restantes = actives.filter((r) => Number(r.kid) !== kid);
     if (!actives.some((r) => Number(r.kid) === kid)) {
       await conn.rollback();
-      return res.status(404).json({ error: 'Version inconnue ou déjà retirée' });
+      return res.status(404).json({ error: 'Version inconnue ou déjà retirée', code: 'VERSION_NOT_FOUND' });
     }
     if (restantes.length === 0) {
       await conn.rollback();
@@ -173,7 +173,7 @@ const retireKey = async (req, res) => {
   } catch (error) {
     await conn.rollback();
     console.error('[Admin] retireKey error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   } finally {
     conn.release();
   }

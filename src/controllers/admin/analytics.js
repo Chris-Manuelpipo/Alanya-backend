@@ -6,7 +6,7 @@ const getAnalytics = async (req, res) => {
     res.json(data);
   } catch (error) {
     console.error('[Admin] getAnalytics error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

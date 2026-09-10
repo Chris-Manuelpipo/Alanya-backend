@@ -32,7 +32,7 @@ router.get('/credentials', authCustom, (req, res) => {
     res.json({ iceServers, ttlSec });
   } catch (error) {
     console.error('[TURN] credentials error:', error.message);
-    res.status(500).json({ error: 'Failed to build iceServers' });
+    res.status(500).json({ error: 'Failed to build iceServers', code: 'INTERNAL' });
   }
 });
 

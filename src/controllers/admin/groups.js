@@ -32,7 +32,7 @@ const getAllGroups = async (req, res) => {
     res.json(items);
   } catch (error) {
     console.error('[Admin] getAllGroups error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
  
@@ -47,7 +47,7 @@ const getGroupById = async (req, res) => {
        FROM conversation WHERE conversID = ?`,
       [id]
     );
-    if (rows.length === 0) return res.status(404).json({ error: 'Groupe introuvable' });
+    if (rows.length === 0) return res.status(404).json({ error: 'Groupe introuvable', code: 'GROUP_NOT_FOUND' });
     const g = rows[0];
 
     const [members] = await pool.execute(
@@ -97,7 +97,7 @@ const getGroupById = async (req, res) => {
     });
   } catch (error) {
     console.error('[Admin] getGroupById error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
  
@@ -113,14 +113,14 @@ const deleteGroup = async (req, res) => {
       'SELECT conversID FROM conversation WHERE conversID = ? AND isGroup = 1',
       [id],
     );
-    if (rows.length === 0) return res.status(404).json({ error: 'Groupe introuvable' });
+    if (rows.length === 0) return res.status(404).json({ error: 'Groupe introuvable', code: 'GROUP_NOT_FOUND' });
     await pool.execute('DELETE FROM message WHERE conversationID = ?', [id]);
     await pool.execute('DELETE FROM conv_participants WHERE conversID = ?', [id]);
     await pool.execute('DELETE FROM conversation WHERE conversID = ?', [id]);
     res.json({ message: 'Groupe supprimé' });
   } catch (error) {
     console.error('[Admin] deleteGroup error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

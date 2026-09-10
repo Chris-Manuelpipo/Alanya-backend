@@ -56,7 +56,7 @@ const listBroadcasts = async (req, res) => {
     });
   } catch (e) {
     console.error('[Admin] listBroadcasts:', e.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -68,10 +68,10 @@ const getBroadcast = async (req, res) => {
        WHERE b.id = ?`,
       [req.params.id],
     );
-    if (!rows.length) return res.status(404).json({ error: 'Diffusion introuvable' });
+    if (!rows.length) return res.status(404).json({ error: 'Diffusion introuvable', code: 'BROADCAST_NOT_FOUND' });
     res.json(mapBroadcastRow(rows[0]));
   } catch (e) {
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -131,7 +131,7 @@ const createBroadcast = async (req, res) => {
       : Number(kindRaw);
 
     if (!senderId || !criteria || !clientId) {
-      return res.status(400).json({ error: 'senderId, criteria et clientId requis' });
+      return res.status(400).json({ error: 'senderId, criteria et clientId requis', code: 'SENDER_ID_REQUIRED' });
     }
     // Normalise les deux formes acceptées vers un seul objet par locale.
     const translations = {};
@@ -155,7 +155,7 @@ const createBroadcast = async (req, res) => {
       if (!translations[loc]) {
         return res
           .status(400)
-          .json({ error: `content (${loc.toUpperCase()}) requis` });
+          .json({ error: `content (${loc.toUpperCase()}) requis`, code: 'CONTENT_REQUIRED' });
       }
     }
 
@@ -180,7 +180,7 @@ const createBroadcast = async (req, res) => {
 
     const { count, criteria: resolved } = await estimateAudience(criteria);
     if (confirmedEstimate != null && Number(confirmedEstimate) !== count) {
-      return res.status(409).json({ error: 'Estimation obsolète', count, estimate: count, criteria: resolved });
+      return res.status(409).json({ error: 'Estimation obsolète', code: 'ESTIMATE_STALE', count, estimate: count, criteria: resolved });
     }
 
     const result = await publishBroadcast({
@@ -202,7 +202,7 @@ const createBroadcast = async (req, res) => {
     });
 
     if (result.duplicate) {
-      return res.status(409).json({ error: 'clientId déjà utilisé', id: result.id });
+      return res.status(409).json({ error: 'clientId déjà utilisé', code: 'ALREADY_EXISTS', id: result.id });
     }
     if (result.scheduled) {
       return res.status(201).json(result);
@@ -223,11 +223,11 @@ const cancelScheduled = async (req, res) => {
       `SELECT id FROM job_queue WHERE id = ? AND kind = 'broadcast_send' AND failed_at IS NULL`,
       [jobId],
     );
-    if (!rows.length) return res.status(404).json({ error: 'Job introuvable' });
+    if (!rows.length) return res.status(404).json({ error: 'Job introuvable', code: 'JOB_NOT_FOUND' });
     await pool.execute('DELETE FROM job_queue WHERE id = ?', [jobId]);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

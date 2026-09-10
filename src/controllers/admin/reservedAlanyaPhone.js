@@ -72,7 +72,7 @@ const checkAssignablePhone = async (req, res) => {
     const canonical = normalize(req.query.phone || '');
     const v = validate(canonical);
     if (!v.ok) {
-      return res.status(400).json({ error: v.error });
+      return res.status(400).json({ error: v.error, code: v.code });
     }
 
     const taken = await phoneExists(canonical);
@@ -105,7 +105,7 @@ const checkAssignablePhone = async (req, res) => {
     });
   } catch (error) {
     console.error('[Admin] checkAssignablePhone error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -157,7 +157,7 @@ const listReservedPhones = async (req, res) => {
     });
   } catch (error) {
     console.error('[Admin] listReservedPhones error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -167,13 +167,13 @@ const addReservedPhone = async (req, res) => {
     const canonical = normalize(phone);
     const v = validateReservedCandidate(canonical);
     if (!v.ok) {
-      return res.status(400).json({ error: v.error });
+      return res.status(400).json({ error: v.error, code: v.code });
     }
     if (!label || !String(label).trim()) {
-      return res.status(400).json({ error: 'label requis' });
+      return res.status(400).json({ error: 'label requis', code: 'LABEL_REQUIRED' });
     }
     if (await phoneExists(canonical)) {
-      return res.status(409).json({ error: 'Ce numéro est déjà assigné à un utilisateur' });
+      return res.status(409).json({ error: 'Ce numéro est déjà assigné à un utilisateur', code: 'USER_ALREADY_EXISTS' });
     }
 
     await pool.execute(
@@ -185,10 +185,10 @@ const addReservedPhone = async (req, res) => {
     res.status(201).json({ message: 'Numéro réservé ajouté', phone_canonical: canonical });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ error: 'Ce numéro est déjà dans la liste réservée' });
+      return res.status(409).json({ error: 'Ce numéro est déjà dans la liste réservée', code: 'LIST_ALREADY_EXISTS' });
     }
     console.error('[Admin] addReservedPhone error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -200,12 +200,12 @@ const removeReservedPhone = async (req, res) => {
       [canonical]
     );
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Numéro réservé introuvable' });
+      return res.status(404).json({ error: 'Numéro réservé introuvable', code: 'PHONE_NOT_FOUND' });
     }
     res.json({ message: 'Numéro retiré de la liste réservée' });
   } catch (error) {
     console.error('[Admin] removeReservedPhone error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

@@ -54,7 +54,7 @@ const patchPrivacyPrefs = async (req, res) => {
   try {
     const patch = _normalizePatch(req.body);
     if (Object.keys(patch).length === 0) {
-      return res.status(400).json({ error: 'Aucune préférence valide fournie' });
+      return res.status(400).json({ error: 'Aucune préférence valide fournie', code: 'NO_FIELDS_TO_UPDATE' });
     }
     const next = await upsertUserPrivacyPrefs(req.user.alanyaID, patch);
     res.json(_formatPrefs(next));

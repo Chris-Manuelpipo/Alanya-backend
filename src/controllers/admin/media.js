@@ -60,7 +60,7 @@ const getAllMedia = async (req, res) => {
     res.json(items);
   } catch (error) {
     console.error('[Admin] getAllMedia error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
  
@@ -74,12 +74,12 @@ const deleteMedia = async (req, res) => {
       'SELECT msgID FROM message WHERE msgID = ? AND type IN (1, 2, 3, 4)',
       [id]
     );
-    if (rows.length === 0) return res.status(404).json({ error: 'Média introuvable' });
+    if (rows.length === 0) return res.status(404).json({ error: 'Média introuvable', code: 'MEDIA_NOT_FOUND' });
     await pool.execute('UPDATE message SET isDeleted = 1 WHERE msgID = ?', [id]);
     res.json({ message: 'Média supprimé' });
   } catch (error) {
     console.error('[Admin] deleteMedia error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

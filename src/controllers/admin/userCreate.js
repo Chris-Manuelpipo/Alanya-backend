@@ -146,7 +146,7 @@ const createUser = async (req, res) => {
     } = req.body || {};
 
     if (!nom || !pseudo || !password) {
-      return res.status(400).json({ error: 'nom, pseudo et password requis' });
+      return res.status(400).json({ error: 'nom, pseudo et password requis', code: 'NOM_REQUIRED' });
     }
 
     const resolvedAccountType = bodyAccountType != null ? Number(bodyAccountType) : 0;
@@ -171,7 +171,7 @@ const createUser = async (req, res) => {
       return res.status(400).json({ error: nameGuard.message, code: nameGuard.code });
     }
     if (password.length < 6) {
-      return res.status(400).json({ error: 'Le mot de passe doit faire au moins 6 caractères' });
+      return res.status(400).json({ error: 'Le mot de passe doit faire au moins 6 caractères', code: 'INVALID_PASSWORD' });
     }
 
     const phoneResult = await _resolvePhoneForCreate(req, req.body);
@@ -185,7 +185,7 @@ const createUser = async (req, res) => {
     if (isSuper && type_compte != null) {
       const t = Number(type_compte);
       if (![0, 1, 2].includes(t)) {
-        return res.status(400).json({ error: 'type_compte doit être 0, 1 ou 2' });
+        return res.status(400).json({ error: 'type_compte doit être 0, 1 ou 2', code: 'INVALID_ACCOUNT_TYPE' });
       }
       resolvedType = t;
     }
@@ -193,31 +193,31 @@ const createUser = async (req, res) => {
     // le back-office. Les deux axes sont mutuellement exclusifs.
     if (resolvedAccountType !== ACCOUNT_TYPE.PERSONNEL && resolvedType >= 1) {
       return res.status(409).json({
-        error: 'Un compte business ou officiel ne peut pas être administrateur (type_compte >= 1)',
+        error: 'Un compte business ou officiel ne peut pas être administrateur (type_compte >= 1)', code: 'INVALID_ACCOUNT',
       });
     }
 
     const trimmedEmail = email ? String(email).toLowerCase().trim() : null;
     if (tier !== 3 && !trimmedEmail) {
-      return res.status(400).json({ error: 'Email requis pour ce type de compte' });
+      return res.status(400).json({ error: 'Email requis pour ce type de compte', code: 'ACCOUNT_REQUIRED' });
     }
     if (trimmedEmail) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(trimmedEmail)) {
-        return res.status(400).json({ error: 'Email invalide' });
+        return res.status(400).json({ error: 'Email invalide', code: 'INVALID_EMAIL' });
       }
       const [existingEmail] = await pool.execute(
         'SELECT alanyaID FROM users WHERE email = ?',
         [trimmedEmail]
       );
       if (existingEmail.length > 0) {
-        return res.status(409).json({ error: 'Cette adresse email est déjà utilisée' });
+        return res.status(409).json({ error: 'Cette adresse email est déjà utilisée', code: 'EMAIL_TAKEN' });
       }
     }
 
     const resolvedIdPays = idPays != null ? Number(idPays) : 10;
     if (!(await countryExists(resolvedIdPays))) {
-      return res.status(400).json({ error: 'Pays invalide' });
+      return res.status(400).json({ error: 'Pays invalide', code: 'INVALID_COUNTRY' });
     }
 
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
@@ -285,7 +285,7 @@ const createUser = async (req, res) => {
     res.status(201).json(rows[0]);
   } catch (error) {
     console.error('[Admin] createUser error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -296,7 +296,7 @@ const updateUserPhone = async (req, res) => {
     const canonical = normalize(alanyaPhone);
     const v = validate(canonical);
     if (!v.ok) {
-      return res.status(400).json({ error: v.error });
+      return res.status(400).json({ error: v.error, code: v.code });
     }
 
     const [users] = await pool.execute(
@@ -304,7 +304,7 @@ const updateUserPhone = async (req, res) => {
       [id]
     );
     if (users.length === 0) {
-      return res.status(404).json({ error: 'Utilisateur introuvable' });
+      return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     }
     const user = users[0];
     if (user.alanyaPhone === canonical) {
@@ -314,10 +314,10 @@ const updateUserPhone = async (req, res) => {
     const reserved = await isReserved(canonical);
     if (reserved) {
       if (await phoneExists(canonical)) {
-        return res.status(409).json({ error: 'Ce numéro est déjà utilisé' });
+        return res.status(409).json({ error: 'Ce numéro est déjà utilisé', code: 'PHONE_ALREADY_EXISTS' });
       }
     } else if (!(await isPhoneAvailable(canonical))) {
-      return res.status(409).json({ error: 'Ce numéro est déjà utilisé' });
+      return res.status(409).json({ error: 'Ce numéro est déjà utilisé', code: 'PHONE_ALREADY_EXISTS' });
     }
 
     const oldPhone = user.alanyaPhone;
@@ -334,7 +334,7 @@ const updateUserPhone = async (req, res) => {
     res.json({ message: 'Numéro mis à jour', alanyaPhone: canonical });
   } catch (error) {
     console.error('[Admin] updateUserPhone error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

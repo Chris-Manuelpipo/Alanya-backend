@@ -7,7 +7,7 @@ const auth = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Pas de token fourni' });
+      return res.status(401).json({ error: 'Pas de token fourni', code: 'INVALID_TOKEN' });
     }
 
     const token = authHeader.split('Bearer ')[1];
@@ -19,12 +19,12 @@ const auth = async (req, res, next) => {
       if (err.name === 'TokenExpiredError') {
         return res.status(401).json({ error: 'Token expiré', code: 'TOKEN_EXPIRED' });
       }
-      return res.status(401).json({ error: 'Token invalide' });
+      return res.status(401).json({ error: 'Token invalide', code: 'INVALID_TOKEN' });
     }
 
     // Vérifier que c'est bien un access token (pas un refresh token)
     if (decoded.type !== 'access') {
-      return res.status(401).json({ error: 'Type de token invalide' });
+      return res.status(401).json({ error: 'Type de token invalide', code: 'TOKEN_TYPE_INVALID' });
     }
 
     // Les tokens émis avant la migration 026 (sans appareilId) restent valides
@@ -40,7 +40,7 @@ const auth = async (req, res, next) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Utilisateur non trouvé, banni ou appareil déconnecté' });
+      return res.status(401).json({ error: 'Utilisateur non trouvé, banni ou appareil déconnecté', code: 'USER_NOT_FOUND' });
     }
 
     req.user = {
@@ -52,7 +52,7 @@ const auth = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('[Auth] ERROR:', error.message);
-    return res.status(401).json({ error: 'Échec d\'authentification' });
+    return res.status(401).json({ error: 'Échec d\'authentification', code: 'AUTH_FAILED' });
   }
 };
 

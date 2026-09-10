@@ -40,7 +40,7 @@ const getUsers = async (req, res) => {
     res.json({ items, total, page: pageN, limit: limitN });
   } catch (error) {
     console.error('[Admin] getUsers error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -65,11 +65,11 @@ const getUserById = async (req, res) => {
        WHERE u.alanyaID = ?`,
       [id]
     );
-    if (rows.length === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if (rows.length === 0) return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     res.json(rows[0]);
   } catch (error) {
     console.error('[Admin] getUserById error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -99,7 +99,7 @@ const getUserActivity = async (req, res) => {
     });
   } catch (error) {
     console.error('[Admin] getUserActivity error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -119,7 +119,7 @@ const getUserLogins = async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error('[Admin] getUserLogins error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -129,15 +129,15 @@ const banUser = async (req, res) => {
     const { id } = req.params;
     const { reason } = req.body || {};
     if (Number(id) === req.user.alanyaID) {
-      return res.status(400).json({ error: 'Impossible de se bannir soi-même' });
+      return res.status(400).json({ error: 'Impossible de se bannir soi-même', code: 'CANNOT_TARGET_SELF' });
     }
     const [users] = await pool.execute(
       'SELECT email, nom, type_compte FROM users WHERE alanyaID = ?',
       [id]
     );
-    if (users.length === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if (users.length === 0) return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     if ((users[0].type_compte ?? 0) >= 2) {
-      return res.status(403).json({ error: 'Impossible de bannir un super-admin' });
+      return res.status(403).json({ error: 'Impossible de bannir un super-admin', code: 'CANNOT_TARGET_SUPERADMIN' });
     }
     const [result] = await pool.execute(
       `UPDATE users
@@ -145,7 +145,7 @@ const banUser = async (req, res) => {
        WHERE alanyaID = ?`,
       [reason || null, id]
     );
-    if (result.affectedRows === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     _notifyUserAccountAction({
       email: users[0]?.email,
       nom: users[0]?.nom,
@@ -157,7 +157,7 @@ const banUser = async (req, res) => {
     res.json({ message: 'Utilisateur banni' });
   } catch (error) {
     console.error('[Admin] banUser error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -171,11 +171,11 @@ const unbanUser = async (req, res) => {
        WHERE alanyaID = ?`,
       [id]
     );
-    if (result.affectedRows === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     res.json({ message: 'Utilisateur débanni' });
   } catch (error) {
     console.error('[Admin] unbanUser error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -186,28 +186,28 @@ const setAccountType = async (req, res) => {
     const { type_compte } = req.body || {};
     const t = Number(type_compte);
     if (![0, 1, 2].includes(t)) {
-      return res.status(400).json({ error: 'type_compte doit être 0, 1 ou 2' });
+      return res.status(400).json({ error: 'type_compte doit être 0, 1 ou 2', code: 'INVALID_ACCOUNT_TYPE' });
     }
     if (Number(id) === req.user.alanyaID && t < 2) {
-      return res.status(400).json({ error: 'Impossible de se rétrograder soi-même' });
+      return res.status(400).json({ error: 'Impossible de se rétrograder soi-même', code: 'CANNOT_TARGET_SELF' });
     }
     const [users] = await pool.execute(
       'SELECT type_compte FROM users WHERE alanyaID = ?',
       [id]
     );
-    if (users.length === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if (users.length === 0) return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     if ((users[0].type_compte ?? 0) >= 2 && t < 2) {
-      return res.status(403).json({ error: 'Impossible de rétrograder un super-admin' });
+      return res.status(403).json({ error: 'Impossible de rétrograder un super-admin', code: 'CANNOT_TARGET_SUPERADMIN' });
     }
     const [result] = await pool.execute(
       'UPDATE users SET type_compte = ? WHERE alanyaID = ?',
       [t, id]
     );
-    if (result.affectedRows === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     res.json({ message: 'Rôle mis à jour', type_compte: t });
   } catch (error) {
     console.error('[Admin] setAccountType error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -216,7 +216,7 @@ const deleteUser = async (req, res) => {
   try {
     const { id } = req.params;
     if (Number(id) === req.user.alanyaID) {
-      return res.status(400).json({ error: 'Impossible de se supprimer soi-même' });
+      return res.status(400).json({ error: 'Impossible de se supprimer soi-même', code: 'CANNOT_TARGET_SELF' });
     }
     const [users] = await pool.execute(
       'SELECT email, nom, account_type FROM users WHERE alanyaID = ?',
@@ -254,7 +254,7 @@ const deleteUser = async (req, res) => {
         io: req.app.get('io'),
       });
     }
-    if (result.affectedRows === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     _notifyUserAccountAction({
       email: users[0]?.email,
       nom: users[0]?.nom,
@@ -265,7 +265,7 @@ const deleteUser = async (req, res) => {
     res.json({ message: 'Utilisateur supprimé' });
   } catch (error) {
     console.error('[Admin] deleteUser error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -277,7 +277,7 @@ const setUserSocle = async (req, res) => {
       'SELECT type_compte, account_type, nom, pseudo FROM users WHERE alanyaID = ?',
       [id],
     );
-    if (!users.length) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    if (!users.length) return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
 
     const updates = [];
     const values = [];
@@ -285,7 +285,7 @@ const setUserSocle = async (req, res) => {
     if (account_type != null) {
       const at = Number(account_type);
       if (![0, 1, 2].includes(at)) {
-        return res.status(400).json({ error: 'account_type invalide' });
+        return res.status(400).json({ error: 'account_type invalide', code: 'INVALID_ACCOUNT_TYPE' });
       }
       // Un compte officiel se crée, il ne se promeut pas. Sans cette règle, un
       // compte personnel — dont le propriétaire connaît l'e-mail, le mot de
@@ -300,7 +300,7 @@ const setUserSocle = async (req, res) => {
       }
       if ((users[0].type_compte ?? 0) >= 1 && at !== Number(users[0].account_type ?? 0)) {
         return res.status(409).json({
-          error: 'Impossible de modifier le genre de compte d\'un administrateur via account_type',
+          error: 'Impossible de modifier le genre de compte d\'un administrateur via account_type', code: 'INVALID_ACCOUNT',
         });
       }
       updates.push('account_type = ?');
@@ -329,7 +329,7 @@ const setUserSocle = async (req, res) => {
       values.push(process.env.AVATAR_DEFAULT_MALE || 'NON DEFINI');
     }
 
-    if (!updates.length) return res.status(400).json({ error: 'Aucune modification' });
+    if (!updates.length) return res.status(400).json({ error: 'Aucune modification', code: 'NO_FIELDS_TO_UPDATE' });
 
     values.push(id);
     await pool.execute(`UPDATE users SET ${updates.join(', ')} WHERE alanyaID = ?`, values);
@@ -339,7 +339,7 @@ const setUserSocle = async (req, res) => {
     res.json({ message: 'Socle de compte mis à jour' });
   } catch (error) {
     console.error('[Admin] setUserSocle error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

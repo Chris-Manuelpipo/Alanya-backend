@@ -79,7 +79,7 @@ const getServiceHealth = async (_req, res) => {
     });
   } catch (error) {
     console.error('[Admin] getServiceHealth error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

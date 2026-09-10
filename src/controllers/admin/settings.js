@@ -26,7 +26,7 @@ const getSettings = async (req, res) => {
     res.json(await _readSettings());
   } catch (error) {
     console.error('[Admin] getSettings error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -41,13 +41,13 @@ const updateSettings = async (req, res) => {
     if (typeof apiUrl === 'string')       next.apiUrl = apiUrl;
 
     if (JSON.stringify(next) === JSON.stringify(current)) {
-      return res.status(400).json({ error: 'Aucun paramètre à mettre à jour' });
+      return res.status(400).json({ error: 'Aucun paramètre à mettre à jour', code: 'NO_FIELDS_TO_UPDATE' });
     }
     await _writeSettings(next);
     res.json(next);
   } catch (error) {
     console.error('[Admin] updateSettings error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

@@ -20,7 +20,7 @@ const getPurges = async (req, res) => {
     res.json({ purges: await registry.describeAll({ withStats }) });
   } catch (error) {
     console.error('[Admin] getPurges error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -29,11 +29,11 @@ const updatePurge = async (req, res) => {
   try {
     const { name } = req.params;
     if (!registry.NAMES.includes(name)) {
-      return res.status(404).json({ error: 'Purge inconnue' });
+      return res.status(404).json({ error: 'Purge inconnue', code: 'PURGE_UNKNOWN' });
     }
     const { enabled, overrides } = req.body || {};
     if (typeof enabled !== 'boolean' && (!overrides || typeof overrides !== 'object')) {
-      return res.status(400).json({ error: 'Rien à mettre à jour' });
+      return res.status(400).json({ error: 'Rien à mettre à jour', code: 'NO_FIELDS_TO_UPDATE' });
     }
     const setting = await registry.updateSetting(name, { enabled, overrides }, _auteur(req));
     console.log(
@@ -43,7 +43,7 @@ const updatePurge = async (req, res) => {
     res.json(setting);
   } catch (error) {
     console.error('[Admin] updatePurge error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -59,7 +59,7 @@ const runPurgeNow = async (req, res) => {
   try {
     const { name } = req.params;
     if (!registry.NAMES.includes(name)) {
-      return res.status(404).json({ error: 'Purge inconnue' });
+      return res.status(404).json({ error: 'Purge inconnue', code: 'PURGE_UNKNOWN' });
     }
     const { result } = await registry.runPurge(name, { trigger: 'manual', by: _auteur(req) });
     const runs = await registry.listRuns(name, 5);

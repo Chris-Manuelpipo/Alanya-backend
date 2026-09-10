@@ -28,7 +28,7 @@ const getAllMeetings = async (req, res) => {
     res.json(items);
   } catch (error) {
     console.error('[Admin] getAllMeetings error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
  
@@ -37,7 +37,7 @@ const endMeeting = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute('SELECT idMeeting FROM meeting WHERE idMeeting = ?', [id]);
-    if (rows.length === 0) return res.status(404).json({ error: 'Réunion introuvable' });
+    if (rows.length === 0) return res.status(404).json({ error: 'Réunion introuvable', code: 'MEETING_NOT_FOUND' });
 
     // Deux oublis, pas un : l'arrêt administrateur posait `isEnd = 1` sans solder
     // les participants — ils restaient `connecte = 1` sans durée — et **sans rien
@@ -53,7 +53,7 @@ const endMeeting = async (req, res) => {
     res.json({ message: 'Réunion terminée' });
   } catch (error) {
     console.error('[Admin] endMeeting error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
  
@@ -62,13 +62,13 @@ const deleteMeeting = async (req, res) => {
   try {
     const { id } = req.params;
     const [rows] = await pool.execute('SELECT idMeeting FROM meeting WHERE idMeeting = ?', [id]);
-    if (rows.length === 0) return res.status(404).json({ error: 'Réunion introuvable' });
+    if (rows.length === 0) return res.status(404).json({ error: 'Réunion introuvable', code: 'MEETING_NOT_FOUND' });
     await pool.execute('DELETE FROM participant WHERE idMeeting = ?', [id]);
     await pool.execute('DELETE FROM meeting WHERE idMeeting = ?', [id]);
     res.json({ message: 'Réunion supprimée' });
   } catch (error) {
     console.error('[Admin] deleteMeeting error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

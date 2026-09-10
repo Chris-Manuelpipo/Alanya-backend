@@ -15,7 +15,7 @@ const getWelcome = async (req, res) => {
     res.json({ ...state, pendingBackfill });
   } catch (e) {
     console.error('[Admin] getWelcome:', e.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -23,11 +23,11 @@ const updateDraft = async (req, res) => {
   try {
     const { blocks } = req.body || {};
     if (!Array.isArray(blocks)) {
-      return res.status(400).json({ error: 'blocks requis (tableau)' });
+      return res.status(400).json({ error: 'blocks requis (tableau)', code: 'BLOCKS_REQUIRED' });
     }
     for (const b of blocks) {
       if (!['text', 'image', 'video', 'cta'].includes(b.blockType)) {
-        return res.status(400).json({ error: 'blockType invalide' });
+        return res.status(400).json({ error: 'blockType invalide', code: 'INVALID_BLOCK_TYPE' });
       }
     }
     const draft = await saveDraft(blocks, req.user.alanyaID);
@@ -54,7 +54,7 @@ const backfill = async (req, res) => {
     res.json(result);
   } catch (e) {
     console.error('[Admin] welcomeBackfill:', e.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -69,7 +69,7 @@ const getStatusConfig = async (req, res) => {
     res.json(await getWelcomeStatusConfig());
   } catch (e) {
     console.error('[Admin] getWelcomeStatus:', e.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

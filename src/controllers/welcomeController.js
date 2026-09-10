@@ -9,7 +9,7 @@ const deliver = async (req, res) => {
     res.json(result);
   } catch (e) {
     console.error('[Welcome] deliver:', e.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

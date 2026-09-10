@@ -138,7 +138,7 @@ const getReports = async (req, res) => {
     res.json({ items, total, open: openCount, page: pageN, limit: limitN });
   } catch (error) {
     console.error('[Admin] getReports error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -157,7 +157,7 @@ const getReportActions = async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error('[Admin] getReportActions error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -171,7 +171,7 @@ const postReportAction = async (req, res) => {
   const { action, note } = req.body || {};
   const nextState = ACTIONS[String(action || '')];
   if (!nextState) {
-    return res.status(400).json({ error: 'Décision inconnue', accepted: Object.keys(ACTIONS) });
+    return res.status(400).json({ error: 'Décision inconnue', code: 'DECISION_NOT_FOUND', accepted: Object.keys(ACTIONS) });
   }
 
   const conn = await pool.getConnection();
@@ -181,7 +181,7 @@ const postReportAction = async (req, res) => {
     const [[report]] = await conn.execute('SELECT id FROM report WHERE id = ?', [req.params.id]);
     if (!report) {
       await conn.rollback();
-      return res.status(404).json({ error: 'Signalement introuvable' });
+      return res.status(404).json({ error: 'Signalement introuvable', code: 'REPORT_NOT_FOUND' });
     }
 
     await conn.execute(
@@ -196,7 +196,7 @@ const postReportAction = async (req, res) => {
   } catch (error) {
     await conn.rollback();
     console.error('[Admin] postReportAction error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   } finally {
     conn.release();
   }

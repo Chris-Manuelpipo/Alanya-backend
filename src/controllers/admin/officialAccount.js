@@ -52,7 +52,7 @@ const getOfficialAccount = async (req, res) => {
     res.json(await findOfficialAccount());
   } catch (e) {
     console.error('[Admin] getOfficialAccount:', e.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -157,7 +157,7 @@ const createOfficialAccount = async (req, res) => {
     res.status(201).json(rows[0]);
   } catch (e) {
     console.error('[Admin] createOfficialAccount:', e.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   } finally {
     if (conn) {
       if (locked) {

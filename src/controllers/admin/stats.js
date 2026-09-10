@@ -89,7 +89,7 @@ const getStats = async (req, res) => {
     });
   } catch (error) {
     console.error('[Admin] getStats error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -152,7 +152,7 @@ const getActivityFeed = async (req, res) => {
     );
   } catch (error) {
     console.error('[Admin] getActivityFeed error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

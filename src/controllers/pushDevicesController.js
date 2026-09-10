@@ -29,10 +29,10 @@ const registerPushDevice = async (req, res) => {
     const devId = normalizeDeviceId(deviceId || device_ID);
     const token = String(fcmToken || fcm_token || '').trim();
     if (!devId) {
-      return res.status(400).json({ error: 'deviceId requis (max 128)' });
+      return res.status(400).json({ error: 'deviceId requis (max 128)', code: 'DEVICE_ID_REQUIRED' });
     }
     if (token && token.length > 4096) {
-      return res.status(400).json({ error: 'fcmToken trop long' });
+      return res.status(400).json({ error: 'fcmToken trop long', code: 'LIMIT_REACHED' });
     }
 
     const plat = _normalizePlatform(platform);
@@ -106,7 +106,7 @@ const updatePushDeviceState = async (req, res) => {
 
     const devId = normalizeDeviceId(deviceId || device_ID);
     if (!devId) {
-      return res.status(400).json({ error: 'deviceId requis' });
+      return res.status(400).json({ error: 'deviceId requis', code: 'DEVICE_ID_REQUIRED' });
     }
 
     const state = VALID_APP_STATES.has(appState) ? appState : 'unknown';
@@ -138,7 +138,7 @@ const updatePushDeviceState = async (req, res) => {
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Appareil non enregistré' });
+      return res.status(404).json({ error: 'Appareil non enregistré', code: 'INVALID_DEVICE' });
     }
 
     res.json({ ok: true });
@@ -153,7 +153,7 @@ const deletePushDevice = async (req, res) => {
     const alanyaID = req.user.alanyaID;
     const devId = normalizeDeviceId(req.params.deviceId);
     if (!devId) {
-      return res.status(400).json({ error: 'deviceId requis' });
+      return res.status(400).json({ error: 'deviceId requis', code: 'DEVICE_ID_REQUIRED' });
     }
     await pool.execute(
       'DELETE FROM user_push_devices WHERE alanyaID = ? AND deviceId = ?',

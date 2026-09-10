@@ -64,7 +64,7 @@ const getBackupKeyAccess = async (req, res) => {
     res.json(rows);
   } catch (error) {
     console.error('[Admin] getBackupKeyAccess error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -98,7 +98,7 @@ const getBackupKeyAccessSummary = async (req, res) => {
     });
   } catch (error) {
     console.error('[Admin] getBackupKeyAccessSummary error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

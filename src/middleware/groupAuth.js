@@ -50,11 +50,11 @@ const requireParticipant = async (req, res, next) => {
   try {
     const conversID = parseInt(req.params.id, 10);
     if (!conversID || conversID < 1) {
-      return res.status(400).json({ error: 'Identifiant de conversation invalide' });
+      return res.status(400).json({ error: 'Identifiant de conversation invalide', code: 'INVALID_CONVERSATION' });
     }
     const membership = await loadMembership(conversID, req.user.alanyaID);
     if (!membership) {
-      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée' });
+      return res.status(404).json({ error: 'Conversation introuvable ou non autorisée', code: 'CONVERSATION_NOT_FOUND' });
     }
     req.membership = membership;
     next();

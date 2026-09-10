@@ -60,7 +60,7 @@ const patchAppSettings = async (req, res) => {
   try {
     const patch = _normalizePatch(req.body);
     if (Object.keys(patch).length === 0) {
-      return res.status(400).json({ error: 'Aucun paramètre valide fourni' });
+      return res.status(400).json({ error: 'Aucun paramètre valide fourni', code: 'NO_FIELDS_TO_UPDATE' });
     }
     const next = await upsertUserAppSettings(req.user.alanyaID, patch);
     res.json(_formatSettings(next));

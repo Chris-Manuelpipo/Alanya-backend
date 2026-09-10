@@ -45,7 +45,7 @@ const exportUsers = async (req, res) => {
   try {
     const format = String(req.query.format || 'pdf').toLowerCase();
     if (format !== 'pdf' && format !== 'csv') {
-      return res.status(400).json({ error: 'Format non supporté (pdf ou csv)' });
+      return res.status(400).json({ error: 'Format non supporté (pdf ou csv)', code: 'UNSUPPORTED_FORMAT' });
     }
 
     const exportLimit = parseExportLimit(req.query.limit);
@@ -72,7 +72,7 @@ const exportUsers = async (req, res) => {
     return res.send(pdf);
   } catch (error) {
     console.error('[Admin] exportUsers error:', error.message);
-    res.status(500).json({ error: 'Erreur lors de l\'export' });
+    res.status(500).json({ error: 'Erreur lors de l\'export', code: 'INTERNAL' });
   }
 };
 
@@ -80,7 +80,7 @@ const exportAnalytics = async (req, res) => {
   try {
     const format = String(req.query.format || 'pdf').toLowerCase();
     if (format !== 'pdf') {
-      return res.status(400).json({ error: 'Seul le format PDF est disponible pour analytics' });
+      return res.status(400).json({ error: 'Seul le format PDF est disponible pour analytics', code: 'INVALID_FORMAT' });
     }
 
     const data = await fetchAnalyticsData(req.query.from, req.query.to);
@@ -103,7 +103,7 @@ const exportAnalytics = async (req, res) => {
     return res.send(pdf);
   } catch (error) {
     console.error('[Admin] exportAnalytics error:', error.message);
-    res.status(500).json({ error: 'Erreur lors de l\'export' });
+    res.status(500).json({ error: 'Erreur lors de l\'export', code: 'INTERNAL' });
   }
 };
 

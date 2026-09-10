@@ -15,7 +15,7 @@ const postReport = async (req, res) => {
       return res.status(error.status).json({ error: error.message });
     }
     console.error('[Report] postReport error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

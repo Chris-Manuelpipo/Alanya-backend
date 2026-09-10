@@ -66,7 +66,7 @@ router.post('/', auth, async (req, res, next) => {
 
     const id = parseInt(String(toUserId), 10);
     if (!id || Number.isNaN(id)) {
-      return res.status(400).json({ error: 'toUserId invalide' });
+      return res.status(400).json({ error: 'toUserId invalide', code: 'INVALID_TO_USER_ID' });
     }
 
     const payload = {

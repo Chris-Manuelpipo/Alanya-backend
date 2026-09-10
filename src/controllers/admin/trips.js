@@ -205,10 +205,10 @@ const getTripStats = async (req, res) => {
   } catch (error) {
     if (isMissingTripTable(error)) {
       console.error('[Admin] getTripStats: table trip absente');
-      return res.status(500).json({ error: 'Erreur serveur' });
+      return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
     }
     console.error('[Admin] getTripStats error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

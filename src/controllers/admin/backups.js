@@ -59,7 +59,7 @@ const getBackupOverview = async (_req, res) => {
     });
   } catch (error) {
     console.error('[Admin] getBackupOverview error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 
@@ -87,7 +87,7 @@ const getBackupKeyUsage = async (_req, res) => {
     })));
   } catch (error) {
     console.error('[Admin] getBackupKeyUsage error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
 

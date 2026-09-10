@@ -24,7 +24,7 @@ async function getMe(req, res) {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Profil introuvable' });
+      return res.status(404).json({ error: 'Profil introuvable', code: 'PROFILE_NOT_FOUND' });
     }
 
     const u = rows[0];
@@ -46,7 +46,7 @@ async function getMe(req, res) {
     });
   } catch (error) {
     console.error('[AdminProfile] getMe error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 }
 
@@ -61,20 +61,20 @@ async function updateMe(req, res) {
     const values = [];
 
     if (nom !== undefined) {
-      if (!nom.trim()) return res.status(400).json({ error: 'Le nom ne peut pas être vide' });
+      if (!nom.trim()) return res.status(400).json({ error: 'Le nom ne peut pas être vide', code: 'FIELD_EMPTY' });
       updates.push('nom = ?');
       values.push(nom.trim());
     }
 
     if (pseudo !== undefined) {
-      if (!pseudo.trim()) return res.status(400).json({ error: 'Le pseudo ne peut pas être vide' });
+      if (!pseudo.trim()) return res.status(400).json({ error: 'Le pseudo ne peut pas être vide', code: 'FIELD_EMPTY' });
       updates.push('pseudo = ?');
       values.push(pseudo.trim());
     }
 
     if (email !== undefined) {
       if (email && !EMAIL_RE.test(email)) {
-        return res.status(400).json({ error: 'Adresse email invalide' });
+        return res.status(400).json({ error: 'Adresse email invalide', code: 'INVALID_EMAIL' });
       }
       if (email) {
         const normalizedEmail = email.toLowerCase().trim();
@@ -83,7 +83,7 @@ async function updateMe(req, res) {
           [normalizedEmail, req.user.alanyaID]
         );
         if (existing.length > 0) {
-          return res.status(409).json({ error: 'Cette adresse email est déjà utilisée' });
+          return res.status(409).json({ error: 'Cette adresse email est déjà utilisée', code: 'EMAIL_TAKEN' });
         }
         updates.push('email = ?');
         values.push(normalizedEmail);
@@ -101,7 +101,7 @@ async function updateMe(req, res) {
       if (idPays) {
         const [country] = await pool.execute('SELECT idPays FROM pays WHERE idPays = ?', [idPays]);
         if (country.length === 0) {
-          return res.status(400).json({ error: 'Pays invalide' });
+          return res.status(400).json({ error: 'Pays invalide', code: 'INVALID_COUNTRY' });
         }
       }
       updates.push('idPays = ?');
@@ -109,7 +109,7 @@ async function updateMe(req, res) {
     }
 
     if (updates.length === 0) {
-      return res.status(400).json({ error: 'Aucun champ à modifier' });
+      return res.status(400).json({ error: 'Aucun champ à modifier', code: 'NO_FIELDS_TO_UPDATE' });
     }
 
     values.push(req.user.alanyaID);
@@ -151,7 +151,7 @@ async function updateMe(req, res) {
     });
   } catch (error) {
     console.error('[AdminProfile] updateMe error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 }
 
@@ -165,11 +165,11 @@ async function updatePassword(req, res) {
     const { currentPassword, newPassword } = req.body;
 
     if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'Mot de passe actuel et nouveau mot de passe requis' });
+      return res.status(400).json({ error: 'Mot de passe actuel et nouveau mot de passe requis', code: 'PASSWORD_REQUIRED' });
     }
 
     if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Le nouveau mot de passe doit contenir au moins 6 caractères' });
+      return res.status(400).json({ error: 'Le nouveau mot de passe doit contenir au moins 6 caractères', code: 'INVALID_PASSWORD' });
     }
 
     // Récupérer le hash actuel
@@ -179,7 +179,7 @@ async function updatePassword(req, res) {
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Utilisateur introuvable' });
+      return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     }
 
     const user = rows[0];
@@ -187,7 +187,7 @@ async function updatePassword(req, res) {
     // Vérifier l'ancien mot de passe
     const valid = await bcrypt.compare(currentPassword, user.password);
     if (!valid) {
-      return res.status(401).json({ error: 'Mot de passe actuel incorrect' });
+      return res.status(401).json({ error: 'Mot de passe actuel incorrect', code: 'PASSWORD_INCORRECT' });
     }
 
     // Hasher et mettre à jour
@@ -233,7 +233,7 @@ async function updatePassword(req, res) {
     res.json({ message: 'Mot de passe modifié avec succès' });
   } catch (error) {
     console.error('[AdminProfile] updatePassword error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 }
 
