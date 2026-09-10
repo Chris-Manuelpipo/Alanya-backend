@@ -14,6 +14,7 @@ const { ACCOUNT_TYPE } = require('../constants/accountTypes');
 const { isOfficialAccount } = require('../utils/officialAccountGuard');
 const { ensureDefaultContactLists } = require('../utils/defaultContactLists');
 const { invalidateSenderIdentity } = require('../utils/senderIdentityCache');
+const { entitlementsOrNull } = require('../services/billing/entitlements');
 
 const SALT_ROUNDS = 10;
 
@@ -663,7 +664,11 @@ const getMe = async (req, res) => {
       return res.status(404).json({ error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' });
     }
 
-    res.json(rows[0]);
+    // Les droits d'abonnement voyagent avec le profil. Absents si la base ne
+    // peut pas les calculer (migration 080 non appliquée) : l'application
+    // considère alors que tout est permis, et /me ne tombe jamais pour ça.
+    const entitlements = await entitlementsOrNull(req.user.alanyaID);
+    res.json(entitlements ? { ...rows[0], entitlements } : rows[0]);
   } catch (error) {
     console.error('[GetMe] ERROR:', error);
     res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
