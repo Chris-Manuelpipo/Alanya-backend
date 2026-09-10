@@ -43,6 +43,8 @@ jobs:
           npm run test:i18n
           npm run test:welcome
           npm run test:roles
+          npm run test:socle
+          npm run test:billing
           npm run test:ai
           npm run test:trips
           npm run test:media
