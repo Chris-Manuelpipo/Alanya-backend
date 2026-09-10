@@ -9,7 +9,7 @@ const adminAuth = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Pas de token fourni' });
+      return res.status(401).json({ error: 'Pas de token fourni', code: 'TOKEN_REQUIRED' });
     }
 
     const token = authHeader.split('Bearer ')[1];
@@ -21,11 +21,11 @@ const adminAuth = async (req, res, next) => {
       if (err.name === 'TokenExpiredError') {
         return res.status(401).json({ error: 'Token expiré', code: 'TOKEN_EXPIRED' });
       }
-      return res.status(401).json({ error: 'Token invalide' });
+      return res.status(401).json({ error: 'Token invalide', code: 'TOKEN_INVALID' });
     }
 
     if (decoded.type !== 'access') {
-      return res.status(401).json({ error: 'Type de token invalide' });
+      return res.status(401).json({ error: 'Type de token invalide', code: 'TOKEN_TYPE_INVALID' });
     }
 
     const [rows] = await pool.execute(
@@ -35,12 +35,12 @@ const adminAuth = async (req, res, next) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Utilisateur non trouvé ou banni' });
+      return res.status(401).json({ error: 'Utilisateur non trouvé ou banni', code: 'SESSION_REJECTED' });
     }
 
     const u = rows[0];
     if ((u.type_compte ?? 0) < 1) {
-      return res.status(403).json({ error: 'Accès admin requis' });
+      return res.status(403).json({ error: 'Accès admin requis', code: 'INSUFFICIENT_ROLE' });
     }
 
     req.user = {
@@ -52,14 +52,14 @@ const adminAuth = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('[AdminAuth] ERROR:', error.message);
-    return res.status(401).json({ error: 'Échec d\'authentification admin' });
+    return res.status(401).json({ error: 'Échec d\'authentification admin', code: 'AUTH_FAILED' });
   }
 };
 
 // Exige type_compte === 2 (super-admin). À utiliser APRÈS adminAuth.
 const superAdminAuth = (req, res, next) => {
   if (!req.user || (req.user.typeCompte ?? 0) < 2) {
-    return res.status(403).json({ error: 'Accès super-admin requis' });
+    return res.status(403).json({ error: 'Accès super-admin requis', code: 'INSUFFICIENT_ROLE' });
   }
   next();
 };
@@ -86,7 +86,7 @@ const requirePermission = (permission) => {
 
   const guard = (req, res, next) => {
     if (!req.user || !can(req.user.typeCompte, permission)) {
-      return res.status(403).json({ error: 'Permission requise', permission });
+      return res.status(403).json({ error: 'Permission requise', permission, code: 'INSUFFICIENT_ROLE' });
     }
     next();
   };
