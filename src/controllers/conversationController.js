@@ -66,6 +66,12 @@ async function attachParticipants(conversationRow, viewerId = null) {
       last_seen:   masked.last_seen,
       role:        Number(p.role) || 0,
       joinedAt:    p.joinedAt,
+      // Le socle était lu par la requête mais jamais renvoyé : l'en-tête de
+      // conversation, rafraîchi par ce chemin, perdait le badge du pair.
+      // Mêmes clés que la liste (conversationParticipantsBatch.js).
+      account_type:        Number(p.account_type) || 0,
+      verification_status: Number(p.verification_status) || 0,
+      verified_until:      p.verified_until ?? null,
     });
 
     // Pas de blockStatus sur une conversation avec soi-même : il n'y a pas de
