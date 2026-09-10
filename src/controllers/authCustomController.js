@@ -123,11 +123,11 @@ const register = async (req, res) => {
     const { email, password, nom, pseudo, idPays, fcm_token, device_ID, hardware_id, device_model, os_system } = req.body;
 
     if (!password) {
-      return res.status(400).json({ error: 'Mot de passe requis' });
+      return res.status(400).json({ error: 'Mot de passe requis', code: 'PASSWORD_REQUIRED' });
     }
 
     if (password.length < 6) {
-      return res.status(400).json({ error: 'Le mot de passe doit faire au moins 6 caractères' });
+      return res.status(400).json({ error: 'Le mot de passe doit faire au moins 6 caractères', code: 'INVALID_PASSWORD' });
     }
 
     // Voir login() : sans identifiant d'appareil, la session serait irrévocable.
@@ -142,7 +142,7 @@ const register = async (req, res) => {
     const cleanEmail = normalizeEmail(email);
     if (cleanEmail) {
       if (!EMAIL_REGEX.test(cleanEmail)) {
-        return res.status(400).json({ error: 'Email invalide' });
+        return res.status(400).json({ error: 'Email invalide', code: 'INVALID_EMAIL' });
       }
 
       const [existingEmail] = await pool.execute(
@@ -150,7 +150,7 @@ const register = async (req, res) => {
         [cleanEmail]
       );
       if (existingEmail.length > 0) {
-        return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée' });
+        return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée', code: 'EMAIL_TAKEN' });
       }
     }
 
@@ -159,7 +159,7 @@ const register = async (req, res) => {
 
     const resolvedIdPays = idPays != null ? Number(idPays) : 10;
     if (!(await countryExists(resolvedIdPays))) {
-      return res.status(400).json({ error: 'Pays invalide' });
+      return res.status(400).json({ error: 'Pays invalide', code: 'INVALID_COUNTRY' });
     }
 
     // Émis pour TOUT compte, avec ou sans e-mail : le client ne l'affiche qu'aux
@@ -212,7 +212,7 @@ const register = async (req, res) => {
 
     if (!appareilId) {
       console.error('[Register] recordLogin a échoué — token non émis (session serait irrévocable)');
-      return res.status(503).json({ error: 'Service temporairement indisponible' });
+      return res.status(503).json({ error: 'Service temporairement indisponible', code: 'SERVICE_UNAVAILABLE' });
     }
 
     const tokenPayload = { alanyaID: result.insertId, email: cleanEmail, appareilId };
@@ -251,7 +251,7 @@ const login = async (req, res) => {
     const { alanyaPhone, password, fcm_token, device_ID, hardware_id, device_model, os_system } = req.body;
 
     if (!alanyaPhone || !password) {
-      return res.status(400).json({ error: 'Alanya phone et mot de passe requis' });
+      return res.status(400).json({ error: 'Alanya phone et mot de passe requis', code: 'PASSWORD_REQUIRED' });
     }
 
     // Sans identifiant d'appareil, aucune ligne `appareils` n'est créée : la
@@ -279,7 +279,7 @@ const login = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Identifiants invalides' });
+      return res.status(401).json({ error: 'Identifiants invalides', code: 'INVALID_CREDENTIALS' });
     }
 
     const user = rows[0];
@@ -307,12 +307,12 @@ const login = async (req, res) => {
           scheduledAt: user.delete_scheduled_at,
         });
       }
-      return res.status(403).json({ error: 'Compte banni' });
+      return res.status(403).json({ error: 'Compte banni', code: 'ACCOUNT_BANNED' });
     }
 
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) {
-      return res.status(401).json({ error: 'Identifiants invalides' });
+      return res.status(401).json({ error: 'Identifiants invalides', code: 'INVALID_CREDENTIALS' });
     }
 
     // Mettre à jour fcm_token et device_ID si fournis (dernier appareil connu)
@@ -336,7 +336,7 @@ const login = async (req, res) => {
 
     if (!appareilId) {
       console.error('[Login] recordLogin a échoué — token non émis (session serait irrévocable)');
-      return res.status(503).json({ error: 'Service temporairement indisponible' });
+      return res.status(503).json({ error: 'Service temporairement indisponible', code: 'SERVICE_UNAVAILABLE' });
     }
 
     // Rattrape les comptes créés avant l'existence de la colonne : le UPDATE
@@ -380,7 +380,7 @@ const refreshToken = async (req, res) => {
     const { refreshToken: token } = req.body;
 
     if (!token) {
-      return res.status(400).json({ error: 'refreshToken requis' });
+      return res.status(400).json({ error: 'refreshToken requis', code: 'REFRESH_TOKEN_REQUIRED' });
     }
 
     let decoded;
@@ -390,11 +390,11 @@ const refreshToken = async (req, res) => {
       if (err.name === 'TokenExpiredError') {
         return res.status(401).json({ error: 'Refresh token expiré, veuillez vous reconnecter', code: 'REFRESH_EXPIRED' });
       }
-      return res.status(401).json({ error: 'Refresh token invalide' });
+      return res.status(401).json({ error: 'Refresh token invalide', code: 'REFRESH_INVALID' });
     }
 
     if (decoded.type !== 'refresh') {
-      return res.status(401).json({ error: 'Type de token invalide' });
+      return res.status(401).json({ error: 'Type de token invalide', code: 'TOKEN_TYPE_INVALID' });
     }
 
     // Vérifier que le user existe toujours et n'est pas banni
@@ -404,7 +404,7 @@ const refreshToken = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Utilisateur non trouvé ou banni' });
+      return res.status(401).json({ error: 'Utilisateur non trouvé ou banni', code: 'USER_NOT_FOUND' });
     }
 
     // Un appareil révoqué ne doit pas pouvoir renouveler indéfiniment son
@@ -427,7 +427,7 @@ const refreshToken = async (req, res) => {
     res.json({ accessToken: newAccessToken, refreshToken: newRefreshToken });
   } catch (error) {
     console.error('[RefreshToken] ERROR:', error);
-    res.status(500).json({ error: 'Echec du refresh du token' });
+    res.status(500).json({ error: 'Echec du refresh du token', code: 'INTERNAL' });
   }
 };
 
@@ -526,7 +526,7 @@ const requestPasswordReset = async (req, res) => {
     const { email } = req.body;
 
     if (!email) {
-      return res.status(400).json({ error: 'Email requis' });
+      return res.status(400).json({ error: 'Email requis', code: 'EMAIL_REQUIRED' });
     }
 
     const [rows] = await pool.execute(
@@ -561,7 +561,7 @@ const validateOTP = async (req, res) => {
     const { email, otp } = req.body;
 
     if (!email || !otp) {
-      return res.status(400).json({ error: 'Email et OTP requis' });
+      return res.status(400).json({ error: 'Email et OTP requis', code: 'EMAIL_REQUIRED' });
     }
 
     const [rows] = await pool.execute(
@@ -570,22 +570,22 @@ const validateOTP = async (req, res) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Email invalide' });
+      return res.status(401).json({ error: 'Email invalide', code: 'INVALID_EMAIL' });
     }
 
     const user = rows[0];
 
     // Vérifier que l'OTP existe et est valide
     if (!user.reset_otp) {
-      return res.status(400).json({ error: 'Aucun OTP demandé' });
+      return res.status(400).json({ error: 'Aucun OTP demandé', code: 'OTP_NOT_REQUESTED' });
     }
 
     if (user.reset_otp !== otp) {
-      return res.status(401).json({ error: 'OTP invalide' });
+      return res.status(401).json({ error: 'OTP invalide', code: 'OTP_INVALID' });
     }
 
     if (new Date() > new Date(user.reset_otp_expires_at)) {
-      return res.status(401).json({ error: 'OTP expiré' });
+      return res.status(401).json({ error: 'OTP expiré', code: 'OTP_EXPIRED' });
     }
 
     // Générer un token temporaire valide 15 minutes pour changer le mot de passe
@@ -608,11 +608,11 @@ const completePasswordReset = async (req, res) => {
     const { resetToken, newPassword } = req.body;
 
     if (!resetToken || !newPassword) {
-      return res.status(400).json({ error: 'Token de réinitialisation et nouveau mot de passe requis' });
+      return res.status(400).json({ error: 'Token de réinitialisation et nouveau mot de passe requis', code: 'PASSWORD_REQUIRED' });
     }
 
     if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères' });
+      return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères', code: 'INVALID_PASSWORD' });
     }
 
     // Vérifier le reset token
@@ -623,11 +623,11 @@ const completePasswordReset = async (req, res) => {
         process.env.JWT_SECRET || 'talky-secret-key-change-in-production'
       );
     } catch (err) {
-      return res.status(401).json({ error: 'Token de réinitialisation invalide ou expiré' });
+      return res.status(401).json({ error: 'Token de réinitialisation invalide ou expiré', code: 'INVALID_TOKEN' });
     }
 
     if (decoded.type !== 'password_reset') {
-      return res.status(401).json({ error: 'Type de token invalide' });
+      return res.status(401).json({ error: 'Type de token invalide', code: 'TOKEN_TYPE_INVALID' });
     }
 
     // Hacher le nouveau mot de passe
@@ -650,7 +650,7 @@ const completePasswordReset = async (req, res) => {
 const resetPassword = async (req, res) => {
   console.warn('[ResetPassword] Deprecated endpoint called');
   return res.status(410).json({
-    error: 'Cet endpoint est obsolète. Utilisez POST /auth/forgot-password puis POST /auth/reset-password-confirm.',
+    error: 'Cet endpoint est obsolète. Utilisez POST /auth/forgot-password puis POST /auth/reset-password-confirm.', code: 'INVALID_PASSWORD',
   });
 };
 
@@ -660,7 +660,7 @@ const getMe = async (req, res) => {
     const [rows] = await pool.execute(_selectUserWithPays, [req.user.alanyaID]);
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' });
     }
 
     res.json(rows[0]);
@@ -676,7 +676,7 @@ const updateFcmToken = async (req, res) => {
     const token = req.body.fcmToken || req.body.fcm_token;
     const deviceId = req.body.deviceId || req.body.device_ID || req.body.device_id;
     if (!token || typeof token !== 'string' || token.length > 4096) {
-      return res.status(400).json({ error: 'fcmToken requis' });
+      return res.status(400).json({ error: 'fcmToken requis', code: 'FCM_TOKEN_REQUIRED' });
     }
 
     if (deviceId) {
@@ -730,7 +730,7 @@ const updateMe = async (req, res) => {
     if (bio !== undefined) {
       const trimmedBio = typeof bio === 'string' ? bio.trim() : '';
       if (trimmedBio.length > 500) {
-        return res.status(400).json({ error: 'La bio ne peut pas dépasser 500 caractères' });
+        return res.status(400).json({ error: 'La bio ne peut pas dépasser 500 caractères', code: 'BIO_LIMIT' });
       }
       updates.push('bio = ?');
       values.push(trimmedBio === '' ? null : trimmedBio);
@@ -740,7 +740,7 @@ const updateMe = async (req, res) => {
     if (device_ID) { updates.push('device_ID = ?');  values.push(device_ID); }
     if (idPays != null) {
       if (!(await countryExists(idPays))) {
-        return res.status(400).json({ error: 'Pays invalide' });
+        return res.status(400).json({ error: 'Pays invalide', code: 'INVALID_COUNTRY' });
       }
       updates.push('idPays = ?');
       values.push(Number(idPays));
@@ -765,7 +765,7 @@ const updateMe = async (req, res) => {
 
       if (veutEcrireGenre) {
         if (!GENRES.includes(genre)) {
-          return res.status(400).json({ error: `Genre invalide (attendu : ${GENRES.join(', ')})` });
+          return res.status(400).json({ error: `Genre invalide (attendu : ${GENRES.join(', ')})`, code: 'INVALID_GENDER' });
         }
         if (actuel.genre != null) {
           return res.status(409).json({
@@ -780,7 +780,7 @@ const updateMe = async (req, res) => {
       if (veutEcrireAge) {
         const ageNum = Number(age);
         if (!Number.isInteger(ageNum) || ageNum < AGE_MIN || ageNum > AGE_MAX) {
-          return res.status(400).json({ error: `Âge invalide (entre ${AGE_MIN} et ${AGE_MAX})` });
+          return res.status(400).json({ error: `Âge invalide (entre ${AGE_MIN} et ${AGE_MAX})`, code: 'INVALID_AGE' });
         }
         if (actuel.age != null) {
           return res.status(409).json({
@@ -811,7 +811,7 @@ const updateMe = async (req, res) => {
     }
 
     if (updates.length === 0 && is_online === undefined) {
-      return res.status(400).json({ error: 'No fields to update' });
+      return res.status(400).json({ error: 'No fields to update', code: 'NO_FIELDS_TO_UPDATE' });
     }
 
     if (updates.length > 0) {
@@ -840,10 +840,10 @@ const requestEmailChangeOtp = async (req, res) => {
   try {
     const cleanEmail = normalizeEmail(req.body.email);
     if (!cleanEmail) {
-      return res.status(400).json({ error: 'Email requis' });
+      return res.status(400).json({ error: 'Email requis', code: 'EMAIL_REQUIRED' });
     }
     if (!EMAIL_REGEX.test(cleanEmail)) {
-      return res.status(400).json({ error: 'Email invalide' });
+      return res.status(400).json({ error: 'Email invalide', code: 'INVALID_EMAIL' });
     }
 
     const [meRows] = await pool.execute(
@@ -851,12 +851,12 @@ const requestEmailChangeOtp = async (req, res) => {
       [req.user.alanyaID]
     );
     if (meRows.length === 0) {
-      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' });
     }
 
     const current = meRows[0].email ? String(meRows[0].email).toLowerCase() : null;
     if (current && current === cleanEmail) {
-      return res.status(400).json({ error: 'Cet email est déjà associé à votre compte' });
+      return res.status(400).json({ error: 'Cet email est déjà associé à votre compte', code: 'ACCOUNT_ALREADY_EXISTS' });
     }
 
     const [taken] = await pool.execute(
@@ -864,7 +864,7 @@ const requestEmailChangeOtp = async (req, res) => {
       [cleanEmail, req.user.alanyaID]
     );
     if (taken.length > 0) {
-      return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée' });
+      return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée', code: 'EMAIL_TAKEN' });
     }
 
     const otp = generateOTP();
@@ -893,7 +893,7 @@ const confirmEmailChange = async (req, res) => {
     const otp = req.body.otp != null ? String(req.body.otp).trim() : '';
 
     if (!cleanEmail || !otp) {
-      return res.status(400).json({ error: 'Email et OTP requis' });
+      return res.status(400).json({ error: 'Email et OTP requis', code: 'EMAIL_REQUIRED' });
     }
 
     const [rows] = await pool.execute(
@@ -902,24 +902,24 @@ const confirmEmailChange = async (req, res) => {
       [req.user.alanyaID]
     );
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' });
     }
 
     const user = rows[0];
     if (!user.pending_email || !user.email_change_otp) {
-      return res.status(400).json({ error: 'Aucune demande de changement d\'email en cours' });
+      return res.status(400).json({ error: 'Aucune demande de changement d\'email en cours', code: 'INVALID_EMAIL' });
     }
 
     if (String(user.pending_email).toLowerCase() !== cleanEmail) {
-      return res.status(400).json({ error: 'Email ne correspond pas à la demande en cours' });
+      return res.status(400).json({ error: 'Email ne correspond pas à la demande en cours', code: 'INVALID_EMAIL' });
     }
 
     if (user.email_change_otp !== otp) {
-      return res.status(401).json({ error: 'OTP invalide' });
+      return res.status(401).json({ error: 'OTP invalide', code: 'OTP_INVALID' });
     }
 
     if (new Date() > new Date(user.email_change_otp_expires_at)) {
-      return res.status(401).json({ error: 'OTP expiré' });
+      return res.status(401).json({ error: 'OTP expiré', code: 'OTP_EXPIRED' });
     }
 
     // Re-vérifier l'unicité au moment de la confirmation
@@ -928,7 +928,7 @@ const confirmEmailChange = async (req, res) => {
       [cleanEmail, req.user.alanyaID]
     );
     if (taken.length > 0) {
-      return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée' });
+      return res.status(409).json({ error: 'Cette adresse Email est déjà utilisée', code: 'EMAIL_TAKEN' });
     }
 
     await pool.execute(
@@ -956,19 +956,19 @@ const changePassword = async (req, res) => {
 
     if (!currentPassword || !newPassword) {
       return res.status(400).json({
-        error: 'Mot de passe actuel et nouveau mot de passe requis',
+        error: 'Mot de passe actuel et nouveau mot de passe requis', code: 'PASSWORD_REQUIRED',
       });
     }
 
     if (newPassword.length < 6) {
       return res.status(400).json({
-        error: 'Le nouveau mot de passe doit contenir au moins 6 caractères',
+        error: 'Le nouveau mot de passe doit contenir au moins 6 caractères', code: 'INVALID_PASSWORD',
       });
     }
 
     if (currentPassword === newPassword) {
       return res.status(400).json({
-        error: 'Le nouveau mot de passe doit être différent de l\'actuel',
+        error: 'Le nouveau mot de passe doit être différent de l\'actuel', code: 'INVALID_PASSWORD',
       });
     }
 
@@ -977,12 +977,12 @@ const changePassword = async (req, res) => {
       [req.user.alanyaID]
     );
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' });
     }
 
     const valid = await bcrypt.compare(currentPassword, rows[0].password);
     if (!valid) {
-      return res.status(401).json({ error: 'Mot de passe actuel incorrect' });
+      return res.status(401).json({ error: 'Mot de passe actuel incorrect', code: 'PASSWORD_INCORRECT' });
     }
 
     const hashed = await bcrypt.hash(newPassword, SALT_ROUNDS);
@@ -1016,14 +1016,14 @@ const validateRecoveryCode = async (req, res) => {
     const { alanyaPhone, recoveryCode: saisie } = req.body;
 
     if (!alanyaPhone || !saisie) {
-      return res.status(400).json({ error: 'Numéro Alanya et code de récupération requis' });
+      return res.status(400).json({ error: 'Numéro Alanya et code de récupération requis', code: 'PHONE_REQUIRED' });
     }
 
     // Réponse volontairement identique pour « numéro inconnu », « aucun code » et
     // « code faux » : distinguer ces cas dirait à un attaquant quels numéros
     // existent, alors que le numéro Alanya est justement l'identifiant public.
     const echec = () =>
-      res.status(401).json({ error: 'Numéro ou code de récupération invalide' });
+      res.status(401).json({ error: 'Numéro ou code de récupération invalide', code: 'INVALID_PHONE' });
 
     const [rows] = await pool.execute(
       `SELECT alanyaID, recovery_code_enc, exclus, exclude_reason, delete_scheduled_at
@@ -1048,7 +1048,7 @@ const validateRecoveryCode = async (req, res) => {
           scheduledAt: user.delete_scheduled_at,
         });
       }
-      return res.status(403).json({ error: 'Compte banni' });
+      return res.status(403).json({ error: 'Compte banni', code: 'ACCOUNT_BANNED' });
     }
 
     if (!recoveryCode.matches(user.recovery_code_enc, saisie)) return echec();
@@ -1075,7 +1075,7 @@ const revealRecoveryCode = async (req, res) => {
   try {
     const { password } = req.body;
     if (!password) {
-      return res.status(400).json({ error: 'Mot de passe requis' });
+      return res.status(400).json({ error: 'Mot de passe requis', code: 'PASSWORD_REQUIRED' });
     }
 
     const [rows] = await pool.execute(
@@ -1083,12 +1083,12 @@ const revealRecoveryCode = async (req, res) => {
       [req.user.alanyaID],
     );
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+      return res.status(404).json({ error: 'Utilisateur non trouvé', code: 'USER_NOT_FOUND' });
     }
 
     const valid = await bcrypt.compare(password, rows[0].password);
     if (!valid) {
-      return res.status(401).json({ error: 'Mot de passe incorrect' });
+      return res.status(401).json({ error: 'Mot de passe incorrect', code: 'PASSWORD_INCORRECT' });
     }
 
     let code = recoveryCode.decrypt(rows[0].recovery_code_enc);

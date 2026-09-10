@@ -12,14 +12,14 @@ const getTier = (canonical) => {
 
 const validate = (canonical) => {
   if (!canonical) {
-    return { ok: false, error: 'Numéro Alanya requis' };
+    return { ok: false, error: 'Numéro Alanya requis', code: 'PHONE_REQUIRED' };
   }
   if (!/^\d+$/.test(canonical)) {
-    return { ok: false, error: 'Le numéro ne doit contenir que des chiffres' };
+    return { ok: false, error: 'Le numéro ne doit contenir que des chiffres', code: 'PHONE_NOT_NUMERIC' };
   }
   const tier = getTier(canonical);
   if (!tier) {
-    return { ok: false, error: 'Numéro invalide : 3, 4 ou 8 chiffres requis' };
+    return { ok: false, error: 'Numéro invalide : 3, 4 ou 8 chiffres requis', code: 'INVALID_PHONE_LENGTH' };
   }
   return { ok: true, tier };
 };
@@ -102,6 +102,7 @@ const validateReservedCandidate = (canonical) => {
       ok: false,
       error:
         'Ce numéro ne peut pas être réservé : 3 ou 4 chiffres, ou 8 chiffres au format XXYYZZTT (ex. 11 22 33 44)',
+      code: 'PHONE_NOT_RESERVABLE',
     };
   }
   return { ok: true, tier: v.tier };
