@@ -102,6 +102,7 @@ const ACTIONS = {
   'POST /billing/plans': { action: 'billing.plans.create', targetType: 'plan' },
   'PUT /billing/plans/:id': { action: 'billing.plans.update', targetType: 'plan', param: 'id' },
   'PUT /billing/features/:code': { action: 'billing.features.update', targetType: 'feature', param: 'code' },
+  'POST /users/:id/billing/gift': { action: 'billing.gift', targetType: 'user', param: 'id' },
 
   // Compte de l'administrateur lui-même
   'PUT /me': { action: 'profile.update', targetType: 'self' },

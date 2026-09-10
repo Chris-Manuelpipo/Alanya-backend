@@ -865,4 +865,19 @@ router.put('/billing/plans/:id',          adminAuth, requirePermission('billing.
 router.get('/billing/features',           adminAuth, requirePermission('billing.read'), listBillingFeatures);
 router.put('/billing/features/:code',     adminAuth, requirePermission('billing.plans'), updateBillingFeature);
 
+const {
+  listBillingPayments,
+  listBillingSubscribers,
+  getUserBilling,
+  giftSubscription,
+} = require('../controllers/admin/billingAccounts');
+
+// Paiements et abonnés : lecture au niveau admin. Offrir un abonnement est un
+// geste commercial — une période sans paiement — réservé au super-admin et
+// journalisé avec son motif.
+router.get('/billing/payments',           adminAuth, requirePermission('billing.read'), listBillingPayments);
+router.get('/billing/subscribers',        adminAuth, requirePermission('billing.read'), listBillingSubscribers);
+router.get('/users/:id/billing',          adminAuth, requirePermission('billing.read'), getUserBilling);
+router.post('/users/:id/billing/gift',    adminAuth, requirePermission('billing.gift'), giftSubscription);
+
 module.exports = router;

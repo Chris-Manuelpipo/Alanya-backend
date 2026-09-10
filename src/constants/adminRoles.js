@@ -120,6 +120,8 @@ const SUPER_ADMIN_ONLY = [
   // erreur touche tous les comptes à la fois.
   'billing.settings',
   'billing.plans',
+  // Offrir un abonnement : une période sans paiement, donc de l'argent.
+  'billing.gift',
 ];
 
 const ROLE_USER = 0;
