@@ -16,36 +16,21 @@ for (const bad of [3, -1, 1.5, '', 'business', true]) {
   assert.strictEqual(r.code, 'INVALID_ACCOUNT_TYPE');
 }
 
-// État de vérification : les six valeurs, pas une de plus.
-for (const v of Object.values(VERIFICATION)) {
-  assert.strictEqual(parseSoclePayload({ verification_status: v }).value.verificationStatus, v);
-}
-for (const bad of [6, 42, -1, '', ' ', 'verifie', true, 2.5]) {
-  const r = parseSoclePayload({ verification_status: bad });
-  assert.strictEqual(r.ok, false, `verification_status ${JSON.stringify(bad)} doit être refusé`);
-  assert.strictEqual(r.code, 'INVALID_VERIFICATION_STATUS');
+// La coche ne se saisit plus : elle suit le dossier et l'abonnement (lot E).
+for (const body of [
+  { verification_status: 2 },
+  { verification_status: 0 },
+  { verified_until: '2027-10-10T00:00:00Z' },
+  { verified_until: null },
+  { account_type: 0, verification_status: 2 },
+]) {
+  const r = parseSoclePayload(body);
+  assert.strictEqual(r.ok, false, `${JSON.stringify(body)} doit être refusé`);
+  assert.strictEqual(r.code, 'FIELD_IMMUTABLE');
 }
 
 // Ordre fixé par la conception : 4 = révoqué, 5 = expiré.
 assert.strictEqual(VERIFICATION.REVOQUE, 4);
 assert.strictEqual(VERIFICATION.EXPIRE, 5);
-
-// Échéance
-const ok = parseSoclePayload({ verified_until: '2027-10-10T00:00:00Z' });
-assert.ok(ok.value.verifiedUntil instanceof Date);
-assert.strictEqual(ok.value.verifiedUntil.toISOString(), '2027-10-10T00:00:00.000Z');
-assert.deepStrictEqual(parseSoclePayload({ verified_until: null }).value, { verifiedUntil: null });
-assert.deepStrictEqual(parseSoclePayload({ verified_until: '' }).value, { verifiedUntil: null });
-for (const bad of ['demain', '2027-13-45', 12345, {}]) {
-  const r = parseSoclePayload({ verified_until: bad });
-  assert.strictEqual(r.ok, false, `verified_until ${JSON.stringify(bad)} doit être refusé`);
-  assert.strictEqual(r.code, 'INVALID_VERIFIED_UNTIL');
-}
-
-// Un champ absent n'apparaît pas dans value : il ne doit pas être écrit.
-assert.deepStrictEqual(
-  parseSoclePayload({ account_type: 0, verification_status: 2 }).value,
-  { accountType: 0, verificationStatus: 2 },
-);
 
 console.log('soclePayload.test.js OK');

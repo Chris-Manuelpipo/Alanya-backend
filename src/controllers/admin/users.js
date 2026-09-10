@@ -275,7 +275,7 @@ const setUserSocle = async (req, res) => {
     const { id } = req.params;
     const parsed = parseSoclePayload(req.body);
     if (!parsed.ok) return res.status(400).json({ error: parsed.error, code: parsed.code });
-    const { accountType, verificationStatus, verifiedUntil } = parsed.value;
+    const { accountType } = parsed.value;
     const [users] = await pool.execute(
       'SELECT type_compte, account_type, nom, pseudo FROM users WHERE alanyaID = ?',
       [id],
@@ -305,15 +305,6 @@ const setUserSocle = async (req, res) => {
       }
       updates.push('account_type = ?');
       values.push(at);
-    }
-
-    if (verificationStatus !== undefined) {
-      updates.push('verification_status = ?');
-      values.push(verificationStatus);
-    }
-    if (verifiedUntil !== undefined) {
-      updates.push('verified_until = ?');
-      values.push(verifiedUntil);
     }
 
     // Révocation : le compte cesse d'être la voix de l'application, il ne doit

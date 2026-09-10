@@ -13,6 +13,11 @@ const { BillingError } = require('../../services/billing/errors');
 const settings = require('../../services/billing/settings');
 const catalog = require('../../services/billing/catalog');
 const { scheduleActivation, scheduleGraceJobs } = require('../../services/billing/billingSchedule');
+const { enqueue } = require('../../services/jobQueue');
+
+/** La phase vient de changer : l'échéance de chaque coche aussi (par lots, hors requête). */
+const recomputeBadgesLater = () => enqueue('verification_recompute_all', {})
+  .catch((err) => console.error('[admin/billing] recalcul des coches :', err.message));
 const {
   phaseAt,
   activationBlocker,
@@ -97,6 +102,7 @@ const activateBilling = async (req, res) => {
     // Annonce, compensation des abonnés au retour d'une phase gratuite, rappel
     // et fin de grâce : posés en jobs, idempotents par leur clé.
     await scheduleActivation(s).catch((err) => console.error('[admin/billing] jobs d\'activation :', err.message));
+    await recomputeBadgesLater();
     res.json(await settingsPayload());
   } catch (err) {
     return sendError(res, err, 'activation');
@@ -108,6 +114,7 @@ const deactivateBilling = async (req, res) => {
   if (!reason.ok) return reject(res, reason);
   try {
     await settings.deactivate({ adminId: req.user.alanyaID });
+    await recomputeBadgesLater();
     res.json(await settingsPayload());
   } catch (err) {
     return sendError(res, err, 'désactivation');
@@ -122,6 +129,7 @@ const extendBillingGrace = async (req, res) => {
     const s = await settings.extendGrace({ graceUntil: req.body.graceUntil, adminId: req.user.alanyaID });
     // Les jobs de l'ancienne date relisent la grâce et s'effacent d'eux-mêmes.
     await scheduleGraceJobs(s.grace_until).catch((err) => console.error('[admin/billing] jobs de grâce :', err.message));
+    await recomputeBadgesLater();
     res.json(await settingsPayload());
   } catch (err) {
     return sendError(res, err, 'prolongation de la grâce');

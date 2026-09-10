@@ -829,6 +829,13 @@ const updateMe = async (req, res) => {
       // servi depuis un cache 60 s : sans ceci un changement de nom n'y
       // apparaîtrait qu'à l'expiration.
       invalidateSenderIdentity(req.user.alanyaID);
+      // Le nom vérifié n'est plus celui qu'on affiche : la coche tombe jusqu'à
+      // un nouvel examen (et revient si l'on reprend le nom vérifié).
+      if (nom) {
+        const { recomputeVerification } = require('../services/billing/verification');
+        await recomputeVerification(req.user.alanyaID)
+          .catch((err) => console.error('[UpdateMe] recalcul de la coche :', err.message));
+      }
     }
 
     const [rows] = await pool.execute(_selectUserWithPays, [req.user.alanyaID]);

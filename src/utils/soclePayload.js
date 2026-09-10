@@ -1,7 +1,6 @@
-const { ACCOUNT_TYPE, VERIFICATION } = require('../constants/accountTypes');
+const { ACCOUNT_TYPE } = require('../constants/accountTypes');
 
 const ACCOUNT_TYPES = Object.values(ACCOUNT_TYPE);
-const VERIFICATION_STATUSES = Object.values(VERIFICATION);
 
 /**
  * Entier strict : un nombre entier, ou une chaîne de chiffres. `Number('')`
@@ -25,12 +24,22 @@ function toStrictInt(v) {
  * absent ne doit pas être écrit.
  *
  * @param {object} body
- * @returns {{ ok: true, value: { accountType?: number, verificationStatus?: number, verifiedUntil?: Date|null } }
+ * @returns {{ ok: true, value: { accountType?: number } }
  *          | { ok: false, code: string, error: string }}
  */
 function parseSoclePayload(body) {
   const { account_type, verification_status, verified_until } = body || {};
   const value = {};
+
+  // La coche ne se saisit plus : elle suit le dossier d'identité et
+  // l'abonnement (src/services/billing/verification.js, seule écriture).
+  if (verification_status !== undefined || verified_until !== undefined) {
+    return {
+      ok: false,
+      code: 'FIELD_IMMUTABLE',
+      error: 'L\'état de vérification suit le dossier d\'identité et l\'abonnement, il ne se saisit pas',
+    };
+  }
 
   if (account_type != null) {
     const at = toStrictInt(account_type);
@@ -38,28 +47,6 @@ function parseSoclePayload(body) {
       return { ok: false, code: 'INVALID_ACCOUNT_TYPE', error: 'account_type invalide' };
     }
     value.accountType = at;
-  }
-
-  if (verification_status != null) {
-    const vs = toStrictInt(verification_status);
-    if (!VERIFICATION_STATUSES.includes(vs)) {
-      return { ok: false, code: 'INVALID_VERIFICATION_STATUS', error: 'verification_status invalide' };
-    }
-    value.verificationStatus = vs;
-  }
-
-  if (verified_until !== undefined) {
-    if (verified_until === null || verified_until === '') {
-      value.verifiedUntil = null;
-    } else {
-      const d = typeof verified_until === 'string' ? new Date(verified_until) : new Date(NaN);
-      if (Number.isNaN(d.getTime())) {
-        return { ok: false, code: 'INVALID_VERIFIED_UNTIL', error: 'verified_until invalide' };
-      }
-      // Un objet Date, pas la chaîne reçue : le pool est en UTC
-      // (src/config/db.js, timezone 'Z'), mysql2 le sérialise sans décalage.
-      value.verifiedUntil = d;
-    }
   }
 
   return { ok: true, value };

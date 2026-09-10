@@ -25,7 +25,7 @@
         "test:audit": "NODE_ENV=test node src/middleware/adminAudit.test.js && NODE_ENV=test node src/middleware/adminAudit.record.test.js",
         "test:roles": "NODE_ENV=test node src/constants/adminRoles.test.js",
         "test:socle": "NODE_ENV=test node src/utils/soclePayload.test.js",
-        "test:billing": "NODE_ENV=test node src/services/billing/rules.test.js && NODE_ENV=test node src/services/payments/paymentRules.test.js",
+        "test:billing": "NODE_ENV=test node src/services/billing/rules.test.js && NODE_ENV=test node src/services/payments/paymentRules.test.js && NODE_ENV=test node src/services/billing/verificationRules.test.js && NODE_ENV=test node src/services/documentVault.test.js",
         "test:adminops": "NODE_ENV=test node src/socket/handlers/adminOps.test.js",
         "test:ai": "NODE_ENV=test node src/services/ai/openrouter.test.js && NODE_ENV=test node src/services/ai/editorialAssist.test.js",
         "test:admin": "npm run test:roles && npm run test:audit && npm run test:reports && npm run test:adminops && npm run test:ai",

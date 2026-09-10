@@ -23,7 +23,7 @@ async function entitlementsFor(alanyaID, now = new Date()) {
   const effective = tester ? { ...settings, paid_enabled: 1, grace_until: null } : settings;
 
   const [[user]] = await pool.execute(
-    'SELECT type_compte, account_type FROM users WHERE alanyaID = ?',
+    'SELECT type_compte, account_type, verification_status, verified_until FROM users WHERE alanyaID = ?',
     [alanyaID],
   );
   // L'équipe et le compte officiel ne sont jamais soumis à l'offre.
@@ -61,7 +61,16 @@ async function entitlementsFor(alanyaID, now = new Date()) {
     purgedAt: sub?.purged_at ?? null,
     now,
   });
-  return { ...decided, tester };
+  return {
+    ...decided,
+    tester,
+    // La coche telle qu'écrite par recomputeVerification : l'application
+    // l'apprend avec ses droits, sans relire tout le profil.
+    verification: {
+      status: Number(user?.verification_status) || 0,
+      until: user?.verified_until ? new Date(user.verified_until).toISOString() : null,
+    },
+  };
 }
 
 /**

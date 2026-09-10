@@ -26,6 +26,7 @@ const {
 } = require('./subscriptions');
 const { schedulePurgeJobs } = require('./billingSchedule');
 const { purgeFeatureData } = require('./featurePurge');
+const { recomputeAllVerifications } = require('./verification');
 const { pushBilling, messages, fmtDay } = require('./billingNotify');
 
 const readSubscriber = async (alanyaID) => {
@@ -205,7 +206,15 @@ async function handleGraceReminder({ graceUntil }, now = new Date()) {
 async function handleGraceEnd({ graceUntil }) {
   const s = await getBillingSettings();
   if (Number(s.paid_enabled) !== 1 || !sameInstant(s.grace_until, graceUntil)) return;
+  // Les coches des non-abonnés tombent maintenant : recalcul par lots, puis
+  // signal aux téléphones connectés.
+  await recomputeAllVerifications();
   emitToEveryone('entitlements:updated', { at: new Date().toISOString() });
+}
+
+/** Transitions de l'interrupteur : la phase change, l'échéance des coches aussi. */
+async function handleRecomputeVerifications() {
+  await recomputeAllVerifications();
 }
 
 /**
@@ -288,6 +297,7 @@ function registerBillingJobHandlers() {
   registerJobHandler('billing_grace_reminder', (p) => handleGraceReminder(p));
   registerJobHandler('billing_grace_end', (p) => handleGraceEnd(p));
   registerJobHandler('billing_compensate', (p) => handleCompensate(p));
+  registerJobHandler('verification_recompute_all', () => handleRecomputeVerifications());
 }
 
 module.exports = {

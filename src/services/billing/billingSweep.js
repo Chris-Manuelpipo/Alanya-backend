@@ -11,6 +11,7 @@
 const { withLease } = require('../schedulerLease');
 const { reconcilePending } = require('../payments/paymentService');
 const { catchUpDue } = require('./billingJobs');
+const { purgeDueDocuments } = require('./verification');
 
 const INTERVAL_MS = 5 * 60_000;
 const CATCH_UP_EVERY_MS = 60 * 60_000;
@@ -29,6 +30,8 @@ async function tick() {
         if (c.expired || c.purged) {
           console.log(`[billing] rattrapage : ${c.expired} échéance(s), ${c.purged} purge(s) examinée(s)`);
         }
+        // Pièces d'identité : détruites 90 jours après la décision.
+        await purgeDueDocuments().catch((err) => console.error('[verification] purge des pièces :', err.message));
       }
     }, 240);
   } catch (err) {

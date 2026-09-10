@@ -33,12 +33,19 @@ function emitToEveryone(event, payload) {
 }
 
 /**
- * Les droits d'un compte viennent de changer : son téléphone relit
- * `/billing/me`. On n'envoie pas les droits eux-mêmes — un seul chemin de
- * calcul, celui de la route.
+ * Les droits d'un compte viennent de changer : la coche, qui les suit, est
+ * recalculée, puis son téléphone relit `/billing/me`. On n'envoie pas les
+ * droits eux-mêmes — un seul chemin de calcul, celui de la route.
  */
 function notifyEntitlementsChanged(alanyaID) {
-  if (_io) emitToUser(_io, alanyaID, 'entitlements:updated', { at: new Date().toISOString() });
+  // Requis à l'appel : verification.js requiert les droits, qui requièrent
+  // les réglages — pas de cycle à la charge.
+  const { recomputeVerification } = require('./verification');
+  recomputeVerification(alanyaID)
+    .catch((err) => console.error(`[verification] recalcul de ${alanyaID} :`, err.message))
+    .finally(() => {
+      if (_io) emitToUser(_io, alanyaID, 'entitlements:updated', { at: new Date().toISOString() });
+    });
 }
 
 function emitToAccount(alanyaID, event, payload) {
