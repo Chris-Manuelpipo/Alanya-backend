@@ -82,11 +82,12 @@ Créez un fichier `.env` à la racine du projet :
 
 ```env
 # ─── Database MySQL ───
-DB_HOST=163.123.183.89
+DB_HOST=<IP>
 DB_PORT=3306
 DB_NAME=alanyBD2027
-DB_USER=Chris
-DB_PASSWORD=KENDRA2026
+DB_USER=user
+DB_PASSWORD=pwd
+
 
 # ─── Server ───
 PORT=3000
