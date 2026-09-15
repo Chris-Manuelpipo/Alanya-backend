@@ -561,7 +561,12 @@ async function promotePending(sessionId) {
     if (!session?.pending) return null;
     if (session.participants.size >= MAX_SESSION_PARTICIPANTS) return null;
     const inviteeId = session.pending.userId;
-    session.participants.set(inviteeId, { joinedAt: Date.now() });
+    // L'identifiant de son invitation est celui que son téléphone a donné à
+    // CallKit : les notifications de fin devront viser celui-là.
+    session.participants.set(inviteeId, {
+      joinedAt: Date.now(),
+      inviteId: session.pending.inviteId || session.sessionId,
+    });
     session.pending = null;
     session.addRight = 'consumed';
     session.joins = (session.joins || 0) + 1;

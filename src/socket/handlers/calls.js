@@ -93,6 +93,16 @@ const {
 
 // Délai serveur avant de déclarer un appel « sans réponse » (marge > sonnerie CallKit 30 s).
 const NO_ANSWER_MS = 45 * 1000;
+
+// Refus de `callSessions.addPending`, dans le vocabulaire de `call_add_rejected`.
+const REFUS_DE_GREFFE = {
+  PENDING: 'ADD_ALREADY_USED',
+  FULL: 'ADD_ALREADY_USED',
+  TARGET_BUSY: 'TARGET_BUSY',
+  SESSION_GONE: 'NOT_IN_CALL',
+  INVALID: 'TARGET_ALREADY_IN_CALL',
+  LOCKED: 'INTERNAL',
+};
 const {
   TRANSFER_READY_TIMEOUT_MS,
   TRANSFER_AUTO_LEAVE_MS,
@@ -374,6 +384,9 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
 
   const { sessionId, originCallId, mode } = session;
   const pendingInvitee = session.pending?.userId ?? null;
+  // Lu avant tout solde : en mémoire, `session` est l'objet vivant, et son
+  // invitation aura disparu au moment de couper le téléphone de l'invité.
+  const pendingInviteId = session.pending?.inviteId || sessionId;
   const wasPending = callSessions.isPending(session, userID);
   const transferMeta = session.transfer
     ? {
@@ -390,7 +403,12 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
     const presentCount = callSessions.participantIds(session).length;
     if (presentCount <= 2) {
       await failInvite(io, sessionId, reason === 'disconnect' ? 'offline' : 'caller_left');
-      // Session détruite. On termine le départ comme un hangup 1-à-1.
+    }
+    // Une session où quelqu'un est déjà entré porte l'appel — propriété
+    // d'appareil, historique — et survit au solde : le départ normal, plus
+    // bas, termine l'appel du dernier présent. Sinon elle vient d'être
+    // détruite, et on termine le départ comme un hangup 1-à-1.
+    if (presentCount <= 2 && !(session.joins > 0)) {
       await callState.cancelDisconnectGrace(userID);
       const entry = await callState.getEntry(userID);
       const peerID = entry?.peerId != null ? toInt(entry.peerId) : null;
@@ -442,8 +460,8 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
   if (!wasPending && hadPendingInvitee != null && !(await callSessions.get(sessionId))) {
     await callState.clear(hadPendingInvitee);
     await pendingCalls.clear(hadPendingInvitee);
-    emitToUser(io, hadPendingInvitee, 'call_ended', { callId: sessionId });
-    notifyCallEnded(hadPendingInvitee, userID, 'Correspondant', sessionId)
+    emitToUser(io, hadPendingInvitee, 'call_ended', { callId: sessionId, inviteId: pendingInviteId });
+    notifyCallEnded(hadPendingInvitee, userID, 'Correspondant', pendingInviteId)
       .catch((err) => console.warn('[Socket leaveCallSession] FCM pending error:', err.message));
   }
 
@@ -453,12 +471,16 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
     const failReason = reason === 'disconnect'
       ? 'offline'
       : (reason === 'media_not_ready' ? 'media_not_ready' : 'declined');
+    // Session où quelqu'un était déjà entré : elle continue sans l'invité, et
+    // l'app doit la garder.
+    const keepSession = !!(await callSessions.get(sessionId));
     for (const uid of remaining) {
       emitToUser(io, uid, 'call_conf_failed', {
         sessionId,
         userId: String(userID),
         reason: failReason,
         mode: mode || 'join',
+        keepSession,
       });
     }
     return true;
@@ -487,10 +509,14 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
     });
   }
 
+  // Entré par une invitation, le partant a présenté l'appel à CallKit sous
+  // l'identifiant de celle-ci : c'est lui que ses notifications de fin visent.
+  const presentationDuPartant = presentationIdOf(session, userID) ?? sessionId;
+
   // Retrait serveur (média non prêt) : C doit fermer CallKit / UI.
   if (reason === 'media_not_ready') {
     emitToUser(io, userID, 'call_ended', { callId: sessionId });
-    notifyCallEnded(userID, remaining[0] ?? null, 'Correspondant', sessionId)
+    notifyCallEnded(userID, remaining[0] ?? null, 'Correspondant', presentationDuPartant)
       .catch((err) => console.warn('[Socket leaveCallSession] FCM media_not_ready:', err.message));
   }
 
@@ -498,7 +524,7 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
   // Pas de call_ended socket ici : call_transfer_done suffit en foreground, et un
   // call_ended socket risquait d'être mal interprété / doublé avec le leave.
   if (reason === 'transfer') {
-    notifyCallEnded(userID, remaining[0] ?? null, 'Correspondant', sessionId)
+    notifyCallEnded(userID, remaining[0] ?? null, 'Correspondant', presentationDuPartant)
       .catch((err) => console.warn('[Socket leaveCallSession] FCM transfer:', err.message));
   }
 
@@ -534,7 +560,7 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
     emitToUser(io, last, 'call_ended', {
       callId: lastCallId != null ? String(lastCallId) : null,
     });
-    notifyCallEnded(last, userID, 'Correspondant', lastCallId)
+    notifyCallEnded(last, userID, 'Correspondant', presentationIdOf(session, last) ?? lastCallId)
       .catch((err) => console.warn('[Socket leaveCallSession] FCM error:', err.message));
 
     try {
@@ -1478,6 +1504,7 @@ async function failInvite(io, sessionId, reason, { decliningDeviceId = null } = 
   if (!session?.pending) return;
 
   const inviteeID = session.pending.userId;
+  const inviteId = session.pending.inviteId || sessionId;
   const present = callSessions.participantIds(session);
   const mode = session.mode || 'join';
 
@@ -1494,7 +1521,10 @@ async function failInvite(io, sessionId, reason, { decliningDeviceId = null } = 
 
   await callState.clear(inviteeID);
   await pendingCalls.clear(inviteeID);
-  await callDeviceOwnership.release(sessionId);
+  // Une session où quelqu'un était déjà entré continue : la propriété
+  // d'appareil de ses présents est ce qui autorise le relais média entre eux.
+  if (solde.destroyed) await callDeviceOwnership.release(sessionId);
+  else await callDeviceOwnership.forget(sessionId, inviteeID);
 
   for (const uid of present) {
     emitToUser(io, uid, 'call_conf_failed', {
@@ -1502,28 +1532,41 @@ async function failInvite(io, sessionId, reason, { decliningDeviceId = null } = 
       userId: String(inviteeID),
       reason,
       mode,
+      keepSession: !solde.destroyed,
     });
   }
 
   // Toujours stopper les appareils de C (y compris declined) — ExceptDevice si connu.
+  // Son téléphone connaît l'invitation sous `inviteId` : la fin doit viser celui-là.
   const endedPayload = {
     callId: sessionId,
+    inviteId,
     reason: reason === 'declined' ? 'rejected_elsewhere' : 'cancelled',
     claimedByAnotherDevice: reason === 'declined',
   };
   if (decliningDeviceId) {
     await emitToUserExceptDevice(io, inviteeID, decliningDeviceId, 'call_ended', endedPayload);
-    notifyCallEnded(inviteeID, present[0] ?? null, 'Correspondant', sessionId, {
+    notifyCallEnded(inviteeID, present[0] ?? null, 'Correspondant', inviteId, {
       excludeDeviceId: decliningDeviceId,
       reason: endedPayload.reason,
       claimedByAnotherDevice: !!endedPayload.claimedByAnotherDevice,
     }).catch((err) => console.warn('[Socket call_add] FCM call_ended error:', err.message));
   } else {
     emitToUser(io, inviteeID, 'call_ended', endedPayload);
-    notifyCallEnded(inviteeID, present[0] ?? null, 'Correspondant', sessionId, {
+    notifyCallEnded(inviteeID, present[0] ?? null, 'Correspondant', inviteId, {
       reason: endedPayload.reason,
     }).catch((err) => console.warn('[Socket call_add] FCM call_ended error:', err.message));
   }
+}
+
+/**
+ * Identifiant sous lequel [userId] a vu arriver cet appel, s'il y est entré
+ * par une invitation : c'est celui que son CallKit connaît, donc celui que les
+ * notifications de fin doivent viser. null pour les participants d'origine,
+ * dont l'appel porte son propre identifiant.
+ */
+function presentationIdOf(session, userId) {
+  return session?.participants?.get(Number(userId))?.inviteId ?? null;
 }
 
 /**
@@ -1598,24 +1641,59 @@ const addParticipant = (io, socket, userSockets) => {
         return reject('TARGET_BUSY');
       }
 
-      const session = await callSessions.openWithPending({
-        originCallId: entry.callId ?? null,
-        isVideo: !!entry.isVideo,
-        participants: [requesterID, peerID],
-        inviteeId: inviteeID,
-        byUserId: requesterID,
-        mode,
-      });
-      if (!session) {
-        console.log(`[Socket call_add] ⛔ droit déjà utilisé: demandeur=${requesterID}`);
-        return reject('ADD_ALREADY_USED');
+      // Blocage vérifié avant de poser quoi que ce soit : l'autre présent ne
+      // voit jamais passer une invitation vouée au refus, et aucune sonnerie
+      // n'est à défaire.
+      const [blockedByRequester, blockedByPeer] = await Promise.all([
+        isBlockedEitherWay(requesterID, inviteeID),
+        isBlockedEitherWay(peerID, inviteeID),
+      ]);
+      if (blockedByRequester || blockedByPeer) {
+        console.log(`[Socket call_add] ⛔ blocage: invité=${inviteeID}`);
+        return reject('TARGET_BLOCKED');
+      }
+
+      // Retombés à deux dans une session, on y greffe l'invitation : le relais
+      // média, la propriété d'appareil et l'historique y sont déjà rangés.
+      // Sinon, c'est la première invitation de l'appel : on ouvre la session.
+      let session;
+      const existante = await callSessions.getByUser(requesterID);
+      if (existante) {
+        if (!callSessions.participantIds(existante).includes(peerID)) return reject('NOT_IN_CALL');
+        const greffe = await callSessions.addPending(existante.sessionId, {
+          inviteeId: inviteeID,
+          byUserId: requesterID,
+          mode,
+        });
+        if (greffe.refus) {
+          console.log(`[Socket call_add] ⛔ greffe refusée (${greffe.refus}): demandeur=${requesterID}`);
+          return reject(REFUS_DE_GREFFE[greffe.refus] || 'INTERNAL');
+        }
+        session = greffe.session;
+      } else {
+        session = await callSessions.openWithPending({
+          originCallId: entry.callId ?? null,
+          isVideo: !!entry.isVideo,
+          participants: [requesterID, peerID],
+          inviteeId: inviteeID,
+          byUserId: requesterID,
+          mode,
+        });
+        if (!session) {
+          console.log(`[Socket call_add] ⛔ invitation déjà en vol: demandeur=${requesterID}`);
+          return reject('ADD_ALREADY_USED');
+        }
       }
       const { sessionId } = session;
+      const inviteId = session.pending?.inviteId || sessionId;
 
-      // Ownership session : A/B depuis l'appel d'origine, C en ringing.
+      // Ownership session : A/B depuis l'appel d'origine, C en ringing. Une
+      // session greffée connaît déjà l'appareil actif de ses présents : ne pas
+      // l'écraser par celui, peut-être périmé, de l'appel d'origine.
       await callDeviceOwnership.ring(sessionId, inviteeID);
       if (entry.callId != null) {
         for (const uid of [requesterID, peerID]) {
+          if (await callDeviceOwnership.getActiveDeviceId(sessionId, uid)) continue;
           const prev = await callDeviceOwnership.getEntry(String(entry.callId), uid);
           if (prev?.activeDeviceId) {
             await callDeviceOwnership.setActive(sessionId, uid, {
@@ -1624,16 +1702,6 @@ const addParticipant = (io, socket, userSockets) => {
             });
           }
         }
-      }
-
-      const [blockedByRequester, blockedByPeer] = await Promise.all([
-        isBlockedEitherWay(requesterID, inviteeID),
-        isBlockedEitherWay(peerID, inviteeID),
-      ]);
-      if (blockedByRequester || blockedByPeer) {
-        console.log(`[Socket call_add] ⛔ blocage: invité=${inviteeID}`);
-        await callSessions.abortPending(sessionId);
-        return reject('TARGET_BLOCKED');
       }
 
       await callState.setRinging(inviteeID, {
@@ -1674,6 +1742,7 @@ const addParticipant = (io, socket, userSockets) => {
 
       emitToUser(io, inviteeID, 'call_conf_invite', {
         sessionId,
+        inviteId,
         callId: session.originCallId,
         roomId: sessionId,
         sessionKind: 'conference',
@@ -1689,7 +1758,9 @@ const addParticipant = (io, socket, userSockets) => {
         requesterCard.name,
         requesterCard.photo,
         !!entry.isVideo,
-        sessionId,
+        // L'invitation, pas la session : c'est cet identifiant que le
+        // téléphone présente et marque terminé. La session voyage à côté.
+        inviteId,
         {
           roomId: sessionId,
           sessionId,
@@ -1805,6 +1876,8 @@ const confJoin = (io, socket, userSockets) => {
 
       const mode = session.mode || 'join';
       const present = callSessions.participantIds(session);
+      // Lu avant la promotion, qui efface l'invitation.
+      const inviteId = session.pending.inviteId || sessionId;
       const promoted = await callSessions.promotePending(sessionId);
       if (!promoted) {
         // Invitation soldée entre l'acceptation et ici (délai, annulation) :
@@ -1840,11 +1913,12 @@ const confJoin = (io, socket, userSockets) => {
 
       const elsewherePayload = {
         callId: sessionId,
+        inviteId,
         reason: 'answered_elsewhere',
         claimedByAnotherDevice: true,
       };
       await emitToUserExceptDevice(io, inviteeID, deviceId, 'call_ended', elsewherePayload);
-      notifyCallEnded(inviteeID, present[0] ?? null, 'Appel répondu sur un autre appareil', sessionId, {
+      notifyCallEnded(inviteeID, present[0] ?? null, 'Appel répondu sur un autre appareil', inviteId, {
         excludeDeviceId: deviceId,
         reason: 'answered_elsewhere',
         claimedByAnotherDevice: true,
