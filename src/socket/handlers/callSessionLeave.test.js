@@ -147,10 +147,11 @@ async function threeWaySession() {
   // d'appel ou le prochain « occupé » viserait quelqu'un qui n'est plus là.
   assert.strictEqual(Number((await callState.getEntry(AWA)).peerId), NADIA, 'Awa pointe Nadia');
   assert.strictEqual(Number((await callState.getEntry(NADIA)).peerId), AWA, 'Nadia pointe Awa');
-  // Le droit d'ajout reste consommé bien qu'ils ne soient plus que deux.
-  assert.strictEqual(await callSessions.hasAddRight(AWA), false, 'droit toujours consommé');
-  assert.strictEqual(await callSessions.hasAddRight(NADIA), false, 'droit toujours consommé');
-  assert.strictEqual((await callSessions.get(live.sessionId)).addRight, 'consumed');
+  // Retombés à deux, ils retrouvent le droit d'ajout — l'ancienne invitée
+  // comprise (docs/transfert_appel.md § 4.5).
+  assert.strictEqual(await callSessions.hasAddRight(AWA), true, 'droit rendu à Awa');
+  assert.strictEqual(await callSessions.hasAddRight(NADIA), true, "droit rendu à l'ancienne invitée");
+  assert.strictEqual((await callSessions.get(live.sessionId)).addRight, 'available');
 
   // ── 2ᵉ leave après hangup : no-op (filet anti double end_call CallKit) ──────
   // Le client peut renvoyer end_call ; leaveCallSession doit renvoyer false et
