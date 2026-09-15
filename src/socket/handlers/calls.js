@@ -1481,9 +1481,17 @@ async function failInvite(io, sessionId, reason, { decliningDeviceId = null } = 
   const present = callSessions.participantIds(session);
   const mode = session.mode || 'join';
 
+  // En Redis, `session` est une copie : l'invité a pu entrer depuis. Il est
+  // alors participant, et rien ne doit plus toucher à son état ni à la
+  // propriété d'appareil d'une session désormais à trois.
+  const solde = await callSessions.abortPending(sessionId);
+  if (!solde) {
+    console.log(`[Socket call_add] invitation déjà soldée ou promue session=${sessionId} raison=${reason}`);
+    return;
+  }
+
   console.log(`[Socket call_add] ✖ invitation soldée session=${sessionId} invité=${inviteeID} raison=${reason}`);
 
-  await callSessions.abortPending(sessionId);
   await callState.clear(inviteeID);
   await pendingCalls.clear(inviteeID);
   await callDeviceOwnership.release(sessionId);
@@ -1798,7 +1806,13 @@ const confJoin = (io, socket, userSockets) => {
       const mode = session.mode || 'join';
       const present = callSessions.participantIds(session);
       const promoted = await callSessions.promotePending(sessionId);
-      if (!promoted) return;
+      if (!promoted) {
+        // Invitation soldée entre l'acceptation et ici (délai, annulation) :
+        // la réclamation posée plus haut resterait « active » et gênerait une
+        // réinvitation de cet utilisateur dans la même session.
+        await callDeviceOwnership.forget(sessionId, inviteeID);
+        return;
+      }
 
       // Ownership A/B : reprise depuis originCallId si pas encore migrés à l'invite.
       if (session.originCallId) {

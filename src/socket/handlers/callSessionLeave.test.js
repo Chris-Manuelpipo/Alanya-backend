@@ -14,6 +14,7 @@ const { leaveCallSession, failInvite } = require('./calls');
 const callState = require('../state/callState');
 const callSessions = require('../state/callSessions');
 const pendingCalls = require('../state/pendingCalls');
+const callDeviceOwnership = require('../state/callDeviceOwnership');
 const { makeFakeIo, fakeSocket } = require('../../testUtils/fakeIo');
 
 const CHRIS = 1;
@@ -209,6 +210,39 @@ async function threeWaySession() {
   assert.strictEqual(c2.events[0].payload.claimedByAnotherDevice, true);
   assert.strictEqual(await callState.get(NADIA), 'idle');
   assert.strictEqual(await callSessions.hasAddRight(CHRIS), true, 'droit rendu après refus');
+
+  // ── failInvite qui croise l'entrée de l'invité : sans effet ─────────────────
+  // En Redis, failInvite lit une copie de la session, et l'invité peut entrer
+  // entre cette lecture et le solde. On rejoue cette copie périmée : l'invité
+  // entré entre-temps ne doit perdre ni son état, ni la session sa propriété
+  // d'appareil, et personne ne doit recevoir un faux échec.
+  await reset();
+  await twoWayCall();
+  const croise = await callSessions.openWithPending({
+    participants: [CHRIS, AWA], inviteeId: NADIA, byUserId: CHRIS,
+  });
+  const copiePerimee = { ...croise, pending: { ...croise.pending } };
+  await callSessions.promotePending(croise.sessionId);
+  await callState.setInCall(NADIA, { peerId: CHRIS });
+  await callDeviceOwnership.setActive(croise.sessionId, CHRIS, {
+    activeDeviceId: 'dev-chris', activeSocketId: 'sock-chris',
+  });
+  const vraiGet = callSessions.get;
+  callSessions.get = async (id) => (id === croise.sessionId ? copiePerimee : vraiGet(id));
+  io = fakeIo();
+  try {
+    await failInvite(io, croise.sessionId, 'no_answer');
+  } finally {
+    callSessions.get = vraiGet;
+  }
+  assert.ok(!io.sent.some((e) => e.event === 'call_conf_failed'), 'aucun faux échec annoncé');
+  assert.ok(!io.sent.some((e) => e.event === 'call_ended'), "l'invité entré n'est pas coupé");
+  assert.strictEqual(await callState.get(NADIA), 'in_call', "l'invité entré garde son état");
+  assert.strictEqual(
+    await callDeviceOwnership.getActiveDeviceId(croise.sessionId, CHRIS), 'dev-chris',
+    'propriété de la session intacte',
+  );
+  await callDeviceOwnership.release(croise.sessionId);
 
   await reset();
   console.log('✅ callSessionLeave.test.js — tous les cas passent');
