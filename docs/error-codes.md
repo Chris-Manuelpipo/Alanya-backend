@@ -64,7 +64,7 @@ sont valides mais rendus par le repli lié au statut HTTP.
 |---|---|---|
 | `QR_SESSION_EXPIRED` | 410 | Code QR périmé |
 | `DEVICE_NOT_OWNER` | 403 | Appareil non autorisé pour l'action |
-| `ADD_ALREADY_USED` | 409 | Code d'ajout déjà consommé |
+| `ADD_ALREADY_USED` | 409 | Ajout à un appel refusé : une invitation est déjà en cours, ou l'appel est déjà à trois (socket, voir plus bas) |
 | `ADD_ME_POLICY_DENIED` | 403 | La cible refuse l'ajout par code |
 
 ### Réunions
