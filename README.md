@@ -94,11 +94,11 @@ PORT=3000
 NODE_ENV=production
 
 # ─── JWT (générer une clé aléatoire 32 bytes base64)
-JWT_SECRET=nmpexO60gYH7AtkxpcMu8oipT5SDxfxOu85ZbfxQ1Xg=
+JWT_SECRET=nmpexO6za0gYH7Aaieapohpap^ùzjep$eetkxpcMu8oipT5SDxfxOu85ZbfxQ1Xg=
 
 # ─── Firebase Service Account (JSON stringifié)
 # IMPORTANT: Les \n doivent rester comme \n dans le JSON (pas d'expansion)
-FIREBASE_SERVICE_ACCOUNT={"type":"service_account","project_id":"talky-2026",...}
+FIREBASE_SERVICE_ACCOUNT={"type":"service_account","project_id":"",...}
 ```
 
 ### 4. Démarrage
