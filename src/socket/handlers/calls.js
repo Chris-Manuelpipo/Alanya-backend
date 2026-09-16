@@ -18,6 +18,7 @@ const {
   emitToDevice,
   emitToUserExceptDevice,
   isUserOnline,
+  getConnectedDeviceIds,
   normalizeDeviceId,
 } = require('../../utils/userSocketRegistry');
 
@@ -579,11 +580,69 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
 }
 
 /**
+ * Retraits provoqués par l'expiration d'une grâce de déconnexion.
+ *
+ * Volontairement limité à ces deux-là. `resume_ack_timeout` et
+ * `resume_owner_missing` sont armés APRÈS le retour de l'utilisateur, qui est
+ * donc en ligne par construction : les soumettre à la même garde les viderait
+ * de leur sens, puisqu'ils existent précisément pour retirer quelqu'un de
+ * revenu mais incapable de reprendre son appel.
+ */
+const RAISONS_DE_GRACE = new Set([
+  'disconnect_grace_expired',
+  'ringing_disconnect_grace_expired',
+]);
+
+/**
+ * L'appareil qui tient cet appel a-t-il de nouveau une socket vivante ?
+ *
+ * Socket.IO ne constate la mort d'une socket qu'au terme de son ping — 25 s
+ * d'intervalle, 20 s de patience, et `server.js` garde ces valeurs par défaut.
+ * L'application, elle, recrée la sienne en deux secondes. Le `disconnect` de
+ * l'ancienne arrive donc couramment APRÈS le retour, et arme une grâce sur
+ * quelqu'un de présent ; à l'échéance, il était retiré de son propre appel sans
+ * avoir rien fait, et sans que rien ne le lui dise.
+ *
+ * On compare les APPAREILS, pas les sockets. Le chemin de reprise ne revendique
+ * jamais la propriété — `offerCallResume` se contente de lire
+ * `getActiveDeviceId` —, donc `activeSocketId` reste sur la socket morte et une
+ * comparaison de sockets, comme celle des salons de groupe, ne verrait jamais
+ * le retour.
+ *
+ * Et on ne se contente pas de « le compte est en ligne » : un appel dont le
+ * téléphone est parti ne doit pas survivre parce qu'une tablette est connectée.
+ */
+async function appareilDAppelRevenu(io, userID) {
+  const entry = await callState.getEntry(userID);
+  const callKey = entry?.callId != null ? String(entry.callId) : null;
+  if (!callKey) return false;
+
+  const proprietaire = await callDeviceOwnership.getActiveDeviceId(callKey, userID);
+  if (!proprietaire) return false;
+
+  const connectes = await getConnectedDeviceIds(io, userID);
+  return connectes.has(proprietaire);
+}
+
+/**
  * Termine l'appel 1-à-1 actif d'un utilisateur (disconnect / kill app).
  * Nettoie callState + pendingCalls, prévient le pair (socket + FCM call_ended).
  * @returns {Promise<boolean>} true si un appel a été terminé.
  */
 async function endActiveCallForUser(io, userSockets, userID, reason = 'disconnect') {
+  // Une grâce de déconnexion qui expire alors que l'appareil est revenu ne doit
+  // rien emporter. C'est ici qu'on l'arrête, et pas ailleurs : cette fonction
+  // est l'entonnoir commun aux DEUX exécutions de la grâce — le job Redis
+  // (`callStateWorkers`) et le `setTimeout` du repli mémoire. Une garde posée
+  // dans le handler `disconnect` n'en couvrirait qu'une.
+  if (RAISONS_DE_GRACE.has(reason) && (await appareilDAppelRevenu(io, userID))) {
+    await callState.cancelDisconnectGrace(userID);
+    console.log(
+      `[Socket] grâce ignorée : l'appareil est revenu user=${userID} reason=${reason}`,
+    );
+    return false;
+  }
+
   // Session à trois : le départ n'emporte pas l'appel des autres.
   if (await leaveCallSession(io, userSockets, userID, reason)) {
     return true;
