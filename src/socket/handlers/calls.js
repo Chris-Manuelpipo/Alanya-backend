@@ -910,6 +910,7 @@ const answerCall = (io, socket, userSockets) => {
       const deviceId   = normalizeDeviceId(socket.deviceId);
       if (!callerID || !answer) {
         console.warn('[Socket answer_call] ** Données invalides', { callerID, answerExists: !!answer });
+        solder({ ok: false, reason: 'invalid_data' });
         return;
       }
       if (!deviceId) {
@@ -939,10 +940,16 @@ const answerCall = (io, socket, userSockets) => {
         String(callerEntry.callId) === callKey;
 
       if (!pairOk) {
+        // L'appel ne sonne plus : annulé, refusé ailleurs, ou démonté chez le
+        // destinataire pendant qu'il répondait. Le `finally` accusait « ok »
+        // pour cette sortie-là aussi : le client en concluait que son
+        // décrochage avait abouti, se déclarait connecté et affichait un appel
+        // en cours avec personne en face.
         socket.emit('call_error', {
           code: 'CALL_NOT_RINGING',
           callId: callKey,
         });
+        solder({ ok: false, reason: 'CALL_NOT_RINGING' });
         return;
       }
 
@@ -1024,7 +1031,12 @@ const answerCall = (io, socket, userSockets) => {
         callId: callKey,
       };
       if (!callerDeviceId) {
+        // L'état est posé, mais l'appelant n'a plus d'appareil où recevoir la
+        // réponse : elle ne lui parviendra jamais. Le dire plutôt que d'accuser
+        // « ok » — le destinataire affichait sinon un appel établi que personne
+        // ne rejoindra.
         console.warn(`[Socket answer_call] ** pas de device caller actif — pas de fan-out call_answered`);
+        solder({ ok: false, reason: 'caller_device_missing' });
         return;
       }
       console.log(`[Socket answer_call] !! Envoi call_answered → deviceRoom(${callerID}, ${callerDeviceId})`);
@@ -1033,8 +1045,10 @@ const answerCall = (io, socket, userSockets) => {
       console.error('[Socket answer_call]', error.message);
       solder({ ok: false, reason: 'error' });
     } finally {
-      // Toute sortie non soldée est un traitement mené à son terme : la
-      // réponse est arrivée et a été traitée, c'est tout ce que l'accusé dit.
+      // Seul le chemin nominal arrive ici sans avoir soldé : la réponse a été
+      // relayée à l'appelant. Chaque sortie d'échec solde désormais elle-même —
+      // un « ok » sur un appel qui ne sonne plus faisait croire au client que
+      // son décrochage avait abouti.
       solder({ ok: true });
     }
   });
