@@ -366,6 +366,19 @@ async function closeCallHistory(io, userSockets, callID) {
 }
 
 /**
+ * Départs que l'utilisateur a lui-même provoqués.
+ *
+ * Son application sait déjà qu'elle s'en va : la prévenir serait au mieux
+ * redondant, au pire un `call_ended` en retard qui raccrocherait l'appel
+ * suivant. Tout le reste est un retrait décidé par le serveur, et doit lui être
+ * annoncé.
+ *
+ * `transfer` en fait partie : `call_transfer_done` le couvre déjà côté socket,
+ * et un `call_ended` s'y doublerait.
+ */
+const DEPARTS_VOULUS = new Set(['hangup', 'transfer']);
+
+/**
  * Retire [userID] de sa session à trois, si tant est qu'il en ait une.
  *
  * C'est le cœur de « raccrocher = partir » : tant qu'il reste deux personnes,
@@ -514,11 +527,17 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
   // l'identifiant de celle-ci : c'est lui que ses notifications de fin visent.
   const presentationDuPartant = presentationIdOf(session, userID) ?? sessionId;
 
-  // Retrait serveur (média non prêt) : C doit fermer CallKit / UI.
-  if (reason === 'media_not_ready') {
-    emitToUser(io, userID, 'call_ended', { callId: sessionId });
+  // Le partant n'était prévenu que pour `media_not_ready`. Pour toute autre
+  // raison décidée par le serveur — grâce de déconnexion expirée, reprise
+  // refusée, accusé de reprise manqué — il ne recevait RIEN : ni socket, ni
+  // FCM. Seuls les restants étaient avertis, plus bas. Son écran d'appel
+  // restait donc ouvert sur une conférence dont il venait d'être retiré, et il
+  // n'avait aucun moyen de l'apprendre.
+  const retraitDecideParLeServeur = !DEPARTS_VOULUS.has(reason);
+  if (retraitDecideParLeServeur) {
+    emitToUser(io, userID, 'call_ended', { callId: sessionId, reason });
     notifyCallEnded(userID, remaining[0] ?? null, 'Correspondant', presentationDuPartant)
-      .catch((err) => console.warn('[Socket leaveCallSession] FCM media_not_ready:', err.message));
+      .catch((err) => console.warn(`[Socket leaveCallSession] FCM partant (${reason}):`, err.message));
   }
 
   // Auto-transfert : FCM pour couper CallKit si l'app de l'initiateur est en BG/kill.
@@ -543,7 +562,15 @@ async function leaveCallSession(io, userSockets, userID, reason = 'leave') {
     if (reason === 'media_not_ready') leftPayload.reason = 'media_not_ready';
     if (reason === 'transfer') leftPayload.reason = 'transfer';
 
-    for (const uid of remaining) {
+    // Le partant reçoit le sien, et c'est ce qui lui apprend son retrait : son
+    // app y reconnaît son propre identifiant et termine l'appel. Le `call_ended`
+    // envoyé plus haut ne suffit pas — pendant une conférence encore peuplée,
+    // l'app l'ignore délibérément, par garde contre les `call_ended` parasites,
+    // et le partant a justement encore ses liens ouverts.
+    const destinataires = retraitDecideParLeServeur
+      ? [...remaining, userID]
+      : remaining;
+    for (const uid of destinataires) {
       emitToUser(io, uid, 'call_conf_left', leftPayload);
     }
     return true;
