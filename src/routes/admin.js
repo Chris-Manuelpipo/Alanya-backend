@@ -870,6 +870,8 @@ const {
   listBillingSubscribers,
   getUserBilling,
   giftSubscription,
+  revokeBadge,
+  restoreBadge,
 } = require('../controllers/admin/billingAccounts');
 
 // Paiements et abonnés : lecture au niveau admin. Offrir un abonnement est un
@@ -879,6 +881,8 @@ router.get('/billing/payments',           adminAuth, requirePermission('billing.
 router.get('/billing/subscribers',        adminAuth, requirePermission('billing.read'), listBillingSubscribers);
 router.get('/users/:id/billing',          adminAuth, requirePermission('billing.read'), getUserBilling);
 router.post('/users/:id/billing/gift',    adminAuth, requirePermission('billing.gift'), giftSubscription);
+router.post('/users/:id/badge/revoke',    adminAuth, requirePermission('verifications.decide'), revokeBadge);
+router.post('/users/:id/badge/restore',   adminAuth, requirePermission('verifications.decide'), restoreBadge);
 
 const {
   listVerifications,

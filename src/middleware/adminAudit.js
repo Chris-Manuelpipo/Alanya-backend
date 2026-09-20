@@ -103,6 +103,8 @@ const ACTIONS = {
   'PUT /billing/plans/:id': { action: 'billing.plans.update', targetType: 'plan', param: 'id' },
   'PUT /billing/features/:code': { action: 'billing.features.update', targetType: 'feature', param: 'code' },
   'POST /users/:id/billing/gift': { action: 'billing.gift', targetType: 'user', param: 'id' },
+  'POST /users/:id/badge/revoke': { action: 'badge.revoke', targetType: 'user', param: 'id' },
+  'POST /users/:id/badge/restore': { action: 'badge.restore', targetType: 'user', param: 'id' },
 
   // Vérification d'identité. Refus, pièce demandée et révocation portent un
   // motif (`body.reason`), recopié ici. Les ouvertures de pièces ont leur

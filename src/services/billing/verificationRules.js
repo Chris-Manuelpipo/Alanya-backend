@@ -1,11 +1,14 @@
 /**
- * La coche d'un compte, à partir des faits — règle pure, testée sans MySQL
- * (volet 8, « Une seule écriture »). verification.js rassemble les faits et
- * écrit le résultat ; personne d'autre n'écrit `verification_status`.
+ * La coche d'un compte personnel, à partir des faits — règle pure, testée
+ * sans MySQL. verification.js rassemble les faits et écrit le résultat ;
+ * personne d'autre n'écrit `verification_status`.
+ *
+ * Pour les comptes personnels, la coche suit l'abonnement (et non plus un
+ * dossier d'identité). Les dossiers restent disponibles pour les comptes
+ * business, plus tard ; normalizeName / nameChanged leur serviront.
  */
 
-const { VERIFICATION: V } = require('../../constants/accountTypes');
-const { REQUEST_STATUS: R } = require('../../constants/verification');
+const { VERIFICATION: V, ACCOUNT_TYPE } = require('../../constants/accountTypes');
 
 const toDate = (v) => {
   if (v == null) return null;
@@ -34,40 +37,82 @@ function latest(...dates) {
 }
 
 /**
- * @param {object} p
- * @param {object|null} p.request       dernier dossier hors annulés
- * @param {string} p.currentName        nom affiché aujourd'hui
- * @param {object|null} p.entitlements  droits (entitlementsFor), null si indisponibles
- * @returns {{ status: number, until: Date|null }}
+ * Fin de la chaîne contiguë de périodes qui accordent la coche, à partir
+ * de `now` (période en cours ou première à venir).
+ *
+ * @param {Array<{starts_at, ends_at}>} grantingPeriods  grants_badge = 1, ends_at > now
  */
-function decideVerification({ request, currentName, entitlements }) {
-  if (!request) return { status: V.NON_DEMANDE, until: null };
-  const status = Number(request.status);
-  if (status === R.REVOKED) return { status: V.REVOQUE, until: null };
-  if (status === R.REFUSED) return { status: V.REFUSE, until: null };
-  if (status !== R.APPROVED) return { status: V.EN_COURS, until: null };
-  // Le nom vérifié n'est plus celui qu'on affiche : la coche attend un examen.
-  if (nameChanged(request.name_at_approval, currentName)) return { status: V.EN_COURS, until: null };
+function badgeChainEnd(grantingPeriods, now = new Date()) {
+  const sorted = [...(grantingPeriods || [])]
+    .map((p) => ({ s: toDate(p.starts_at), e: toDate(p.ends_at) }))
+    .filter((p) => p.s && p.e && p.e > now)
+    .sort((a, b) => a.s - b.s);
+  if (!sorted.length) return null;
 
-  // Droits indisponibles (migration absente, base qui hoquette) : on ne retire
-  // pas une coche faute de réponse.
-  if (!entitlements) return { status: V.VERIFIE, until: null };
-  if (!entitlements.features?.verified_badge) return { status: V.EXPIRE, until: null };
-
-  // Phase gratuite ou compte exempté : la coche ne s'arrête pas. Sinon elle
-  // suit l'abonnement — ou la grâce, qui la porte jusqu'à sa fin.
-  const until = entitlements.phase === 'free' || entitlements.exempt
-    ? null
-    : latest(entitlements.period?.endsAt, entitlements.phase === 'grace' ? entitlements.graceUntil : null);
-  return { status: V.VERIFIE, until };
+  const current = sorted.find((p) => p.s <= now);
+  const start = current || sorted[0];
+  let end = start.e;
+  for (const p of sorted) {
+    if (p.s <= end && p.e > end) end = p.e;
+  }
+  return end;
 }
+
+/**
+ * @param {object} p
+ * @param {boolean} p.revoked              ligne dans badge_revocation
+ * @param {number}  p.accountType          users.account_type
+ * @param {number}  [p.typeCompte]         users.type_compte (≥1 = équipe)
+ * @param {string}  p.phase                free | grace | paid
+ * @param {Array}   [p.grantingPeriods]    périodes grants_badge=1 finissant après now
+ * @param {Date|string|null} [p.lastEnd]   subscriber.current_end (échéance passée)
+ * @param {Date}    [p.now]
+ * @returns {{ status: number, until: Date|null }|null}
+ *   null = ne pas écrire (équipe, business, officiel : badges ailleurs)
+ */
+function decideBadge({
+  revoked = false,
+  accountType = ACCOUNT_TYPE.PERSONNEL,
+  typeCompte = 0,
+  phase = 'free',
+  grantingPeriods = [],
+  lastEnd = null,
+  now = new Date(),
+}) {
+  if (revoked) return { status: V.REVOQUE, until: null };
+  // Équipe, business, officiel : pas de coche indigo automatique.
+  if (Number(accountType) !== ACCOUNT_TYPE.PERSONNEL || Number(typeCompte) >= 1) {
+    return null;
+  }
+
+  if (phase === 'free') return { status: V.NON_DEMANDE, until: null };
+
+  const until = badgeChainEnd(grantingPeriods, now);
+  if (until) return { status: V.VERIFIE, until };
+
+  const ended = toDate(lastEnd);
+  if (ended && ended <= now) return { status: V.EXPIRE, until: null };
+  return { status: V.NON_DEMANDE, until: null };
+}
+
+/** Alias conservé pour les appels qui n'ont pas encore basculé. */
+const decideVerification = decideBadge;
 
 /** Rien à écrire : même statut, même échéance. */
 function sameVerification(a, b) {
+  if (a == null || b == null) return a === b;
   if (Number(a.status) !== Number(b.status)) return false;
   const x = toDate(a.until);
   const y = toDate(b.until);
   return (!x && !y) || (Boolean(x && y) && x.getTime() === y.getTime());
 }
 
-module.exports = { normalizeName, nameChanged, decideVerification, sameVerification };
+module.exports = {
+  normalizeName,
+  nameChanged,
+  latest,
+  badgeChainEnd,
+  decideBadge,
+  decideVerification,
+  sameVerification,
+};
