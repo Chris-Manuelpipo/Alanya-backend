@@ -6,6 +6,7 @@ const { generateAccessToken, generateRefreshToken, JWT_REFRESH_SECRET } = requir
 const { normalize } = require('../utils/alanyaPhone');
 const { generateUniquePhone } = require('../services/alanyaPhoneService');
 const deviceSessionService = require('../services/deviceSessionService');
+const { isDeviceBindingEnabled } = require('../services/securitySettingsService');
 const { emitToUser } = require('../utils/userSocketRegistry');
 const recoveryCode = require('../services/recoveryCodeService');
 const { lookupPlace } = require('../services/ipGeoService');
@@ -109,6 +110,27 @@ const _osFromUserAgent = (ua) => {
 
 // Génération d'un alanyaPhone unique à 8 chiffres
 const generateAlanyaPhone = async () => generateUniquePhone(8);
+
+/**
+ * Utilisateur rendu à l'ouverture d'une session, quelle que soit la porte
+ * d'entrée : `login` (clé = alanyaPhone) et le secours par réinitialisation
+ * (clé = alanyaID) doivent rendre le MÊME objet, sinon l'application n'affiche
+ * pas les mêmes informations selon la porte qu'on a poussée.
+ *
+ * `password` et `exclus` sont lus ici mais retirés de la réponse par les deux
+ * appelants : le premier sert à la vérification, le second aux gardes de compte.
+ *
+ * @param {'alanyaPhone'|'alanyaID'} colonneCle
+ */
+const _selectSessionUser = (colonneCle) => `
+  SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.password, u.avatar_url,
+         up.is_online AS is_online, up.last_seen AS last_seen,
+         u.genre, u.age, u.annee_naissance, u.ville,
+         u.exclus, u.exclude_reason, u.delete_scheduled_at
+  FROM users u
+  LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
+  WHERE u.${colonneCle} = ?
+`;
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -268,16 +290,7 @@ const login = async (req, res) => {
 
     const phoneCanonical = normalize(alanyaPhone);
 
-    const [rows] = await pool.execute(
-      `SELECT u.alanyaID, u.nom, u.pseudo, u.alanyaPhone, u.email, u.password, u.avatar_url,
-              up.is_online AS is_online, up.last_seen AS last_seen,
-              u.genre, u.age, u.annee_naissance, u.ville,
-              u.exclus, u.exclude_reason, u.delete_scheduled_at
-       FROM users u
-       LEFT JOIN user_presence up ON up.alanyaID = u.alanyaID
-       WHERE u.alanyaPhone = ?`,
-      [phoneCanonical]
-    );
+    const [rows] = await pool.execute(_selectSessionUser('alanyaPhone'), [phoneCanonical]);
 
     if (rows.length === 0) {
       return res.status(401).json({ error: 'Identifiants invalides', code: 'INVALID_CREDENTIALS' });
@@ -314,6 +327,45 @@ const login = async (req, res) => {
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) {
       return res.status(401).json({ error: 'Identifiants invalides', code: 'INVALID_CREDENTIALS' });
+    }
+
+    // ── Verrouillage sur les appareils enrôlés ─────────────────────────────
+    //
+    // Deux contraintes de placement, toutes deux critiques.
+    //
+    // APRÈS bcrypt.compare : répondre DEVICE_NOT_TRUSTED avant la vérification
+    // du mot de passe dirait à un inconnu quels hardware_id sont enrôlés sur un
+    // numéro Alanya, qui est un identifiant public.
+    //
+    // AVANT la mise à jour du fcm_token : un appareil refusé qui aurait déjà
+    // réécrit `users.fcm_token` recevrait les notifications du compte, c'est-à-dire
+    // exactement ce que ce verrou existe pour empêcher.
+    //
+    // Interrupteur éteint (le cas par défaut) : aucune de ces lignes ne
+    // s'exécute et la connexion se comporte comme avant ce lot.
+    if (await isDeviceBindingEnabled()) {
+      const appareilConnu = await deviceSessionService.isTrustedDevice(user.alanyaID, appareilKey);
+
+      // Compte sans aucun appareil actif : il n'a plus d'écran depuis lequel
+      // approuver un QR. Le refuser en ferait une impasse définitive — on le
+      // laisse donc entrer, c'est le seul cas où un appareil inconnu passe.
+      const sansAppareil = appareilConnu
+        ? false
+        : (await deviceSessionService.countActiveDevices(user.alanyaID)) === 0;
+
+      if (!appareilConnu && !sansAppareil) {
+        // La tentative refusée est tracée dans userAccess, qui n'a pas de
+        // colonne d'issue : le préfixe du libellé est ce qui la distingue d'une
+        // connexion réussie dans l'écran d'administration.
+        logUserAccess(req, user.alanyaID, {
+          device: `REFUS appareil non reconnu — ${device_model || device_ID || 'INDEFINI'}`,
+          osSystem: os_system,
+        });
+        return res.status(403).json({
+          error: 'Cet appareil n\'est pas reconnu. Ajoutez-le en scannant le QR depuis un appareil déjà connecté, ou réinitialisez votre mot de passe.',
+          code: 'DEVICE_NOT_TRUSTED',
+        });
+      }
     }
 
     // Mettre à jour fcm_token et device_ID si fournis (dernier appareil connu)
@@ -603,10 +655,24 @@ const validateOTP = async (req, res) => {
   }
 };
   
-// Change le mot de passe avec le reset token
+/**
+ * Change le mot de passe avec le reset token — et, si l'appelant dit sur quel
+ * appareil il se trouve, l'y enrôle et ouvre la session.
+ *
+ * C'est la voie de secours du verrouillage d'appareil : téléphone perdu, volé
+ * ou cassé, plus aucun écran pour approuver un QR. Sans elle, la garde de
+ * `login` transformerait « mot de passe oublié » en cul-de-sac.
+ *
+ * `hardware_id` est FACULTATIF, et ce n'est pas une politesse : l'application
+ * déjà publiée ne l'envoie pas. Sans lui, cette fonction se comporte exactement
+ * comme avant — même réponse `{ message }`, aucun token, aucune révocation.
+ * Seul `hardware_id` (et non `device_ID`, que d'autres routes acceptent en
+ * repli) déclenche l'enrôlement : un repli silencieux ferait déconnecter tous
+ * ses appareils à un utilisateur d'une version publiée qui n'a rien demandé.
+ */
 const completePasswordReset = async (req, res) => {
   try {
-    const { resetToken, newPassword } = req.body;
+    const { resetToken, newPassword, hardware_id, device_model, os_system } = req.body;
 
     if (!resetToken || !newPassword) {
       return res.status(400).json({ error: 'Token de réinitialisation et nouveau mot de passe requis', code: 'PASSWORD_REQUIRED' });
@@ -640,7 +706,80 @@ const completePasswordReset = async (req, res) => {
       [hashedPassword, decoded.alanyaID]
     );
 
-    res.json({ message: 'Password updated successfully' });
+    const message = 'Password updated successfully';
+
+    const appareilKey = String(hardware_id || '').trim();
+    if (!appareilKey || appareilKey === 'INDEFINI') {
+      return res.json({ message });
+    }
+
+    // Le mot de passe est DÉJÀ changé à partir d'ici : l'enrôlement est un
+    // supplément, et son échec — quel qu'il soit — rend la réponse d'avant.
+    // Remonter une erreur ferait croire que la réinitialisation n'a pas eu
+    // lieu, et l'utilisateur ressaierait avec un OTP désormais consommé.
+    try {
+      const [sessionRows] = await pool.execute(_selectSessionUser('alanyaID'), [decoded.alanyaID]);
+      const user = sessionRows[0];
+
+      // Mêmes gardes que `login` : un compte banni, en cours de suppression ou
+      // officiel change son mot de passe comme avant, mais n'obtient pas de
+      // session par cette porte. Le refus circonstancié lui sera donné par
+      // `login`, qui est le seul endroit à le formuler.
+      if (!user || user.exclus === 1 || (await isOfficialAccount(user.alanyaID))) {
+        return res.json({ message });
+      }
+
+      const appareilId = await deviceSessionService.recordLogin({
+        alanyaID: user.alanyaID,
+        deviceId: appareilKey,
+        deviceName: device_model,
+        platform: os_system,
+        ipAddress: _clientIp(req),
+        loginMethod: 'recovery',
+      });
+
+      if (!appareilId) {
+        console.error('[CompletePasswordReset] recordLogin a échoué — pas de token (session serait irrévocable)');
+        return res.json({ message });
+      }
+
+      // Reprendre la main sur un téléphone volé n'a de sens que si le voleur en
+      // est sorti. Conséquence assumée : les autres appareils légitimes devront
+      // se reconnecter, comme chez Signal ou WhatsApp.
+      //
+      // La fermeture des sockets fait partie de la révocation, elle n'en est pas
+      // un ornement : révoquer en base n'arrête un appareil qu'à son prochain
+      // appel REST, où le middleware lui répond 401. Sans cette ligne, le
+      // voleur garderait une socket ouverte et continuerait de recevoir les
+      // messages du compte en temps réel. Même appel que « Appareils
+      // connectés » (`revokeDeviceSession`).
+      const revoques = await deviceSessionService.revokeAllExcept(user.alanyaID, appareilId);
+      if (revoques.length > 0) {
+        const fermees = await deviceSessionService.disconnectRevoked(
+          req.app.get('io'),
+          user.alanyaID,
+          revoques,
+        );
+        console.log(`[CompletePasswordReset] ${revoques.length} appareil(s) révoqué(s) pour user=${user.alanyaID} sockets=${fermees}`);
+      }
+
+      const tokenPayload = { alanyaID: user.alanyaID, email: user.email, appareilId };
+      const accessToken  = generateAccessToken(tokenPayload);
+      const refreshToken = generateRefreshToken(tokenPayload);
+
+      delete user.password;
+      delete user.exclus;
+
+      logUserAccess(req, user.alanyaID, {
+        device: device_model || 'INDEFINI',
+        osSystem: os_system,
+      });
+
+      return res.json({ message, user, accessToken, refreshToken });
+    } catch (err) {
+      console.error('[CompletePasswordReset] enrôlement de secours échoué :', err.message);
+      return res.json({ message });
+    }
   } catch (error) {
     console.error('[CompletePasswordReset] ERROR:', error);
     res.status(500).json({ error: 'Reset failed', code: 'INTERNAL' });

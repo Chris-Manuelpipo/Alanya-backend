@@ -27,6 +27,10 @@ const {
   rotateKey,
   retireKey,
 } = require('../controllers/admin/backupKeys');
+const {
+  getSecuritySettings,
+  updateSecuritySettings,
+} = require('../controllers/admin/securitySettings');
 const { getReports, getReportActions, postReportAction } = require('../controllers/admin/reports');
 const {
   adminLogin,
@@ -474,6 +478,52 @@ router.delete('/meetings/:id',             adminAuth, requirePermission('meeting
  */
 router.get('/settings',                    adminAuth, requirePermission('settings.read'), getSettings);
 router.put('/settings',                    adminAuth, requirePermission('settings.write'), updateSettings);
+
+/**
+ * @swagger
+ * /api/admin/security-settings:
+ *   get:
+ *     summary: Verrouillage de la connexion sur les appareils enrôlés
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: État du verrou
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 deviceBindingEnabled:
+ *                   type: boolean
+ *                 updatedAt:
+ *                   type: string
+ *   put:
+ *     summary: Arme ou désarme le verrou (super-admin)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - deviceBindingEnabled
+ *             properties:
+ *               deviceBindingEnabled:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Verrou mis à jour — propagation aux autres instances en 30 s
+ */
+// Mêmes permissions que les réglages applicatifs : `settings.write` est déjà
+// réservée au super-admin, et désarmer un verrou de sécurité n'appelle pas un
+// niveau plus bas.
+router.get('/security-settings',           adminAuth, requirePermission('settings.read'), getSecuritySettings);
+router.put('/security-settings',           adminAuth, requirePermission('settings.write'), updateSecuritySettings);
 
 /**
  * @swagger

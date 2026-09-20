@@ -63,6 +63,7 @@ sont valides mais rendus par le repli lié au statut HTTP.
 | Code | Statut | Sens |
 |---|---|---|
 | `QR_SESSION_EXPIRED` | 410 | Code QR périmé |
+| `DEVICE_NOT_TRUSTED` | 403 | Appareil non enrôlé : passer par le QR, ou par la réinitialisation du mot de passe si le téléphone connu est perdu |
 | `DEVICE_NOT_OWNER` | 403 | Appareil non autorisé pour l'action |
 | `ADD_ALREADY_USED` | 409 | Ajout à un appel refusé : une invitation est déjà en cours, ou l'appel est déjà à trois (socket, voir plus bas) |
 | `ADD_ME_POLICY_DENIED` | 403 | La cible refuse l'ajout par code |
@@ -186,7 +187,8 @@ correctif — un code non traduit ne fait rien afficher de brut.
 - `INVALID_PASSWORD` · `INVALID_PAYLOAD` · `INVALID_PHONE`
 - `INVALID_PHONE_LENGTH` · `INVALID_PLAN` · `INVALID_PREFERENCES`
 - `INVALID_QR` · `INVALID_REFERENCE` · `INVALID_ROLE`
-- `INVALID_ROOM_ID` · `INVALID_SIGNATURE` · `INVALID_TOKEN`
+- `INVALID_ROOM_ID` · `INVALID_SECURITY_SETTING` · `INVALID_SIGNATURE`
+- `INVALID_TOKEN`
 - `INVALID_TO_USER_ID` · `INVALID_TRIP_ID` · `INVALID_USER`
 - `INVALID_VERIFICATION_STATUS` · `INVALID_VERIFIED_UNTIL` · `INVALID_VERSION`
 - `JOB_NOT_FOUND` · `JOB_WORKER_DOWN` · `JOIN_ACK_INVALID`

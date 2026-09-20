@@ -2,7 +2,7 @@ const pool = require('../config/db');
 const { generateAccessToken, generateRefreshToken } = require('../middleware/authCustom');
 const deviceSessionService = require('../services/deviceSessionService');
 const { normalizePlatform } = deviceSessionService;
-const { emitToUser, disconnectAppareilSockets } = require('../utils/userSocketRegistry');
+const { emitToUser } = require('../utils/userSocketRegistry');
 const { getClientIp } = require('../utils/clientIp');
 const qrLoginSessions = require('../socket/state/qrLoginSessions');
 const { loginPayload, secretMatches } = require('../utils/qrToken');
@@ -332,19 +332,15 @@ const revokeDeviceSession = async (req, res) => {
       [id]
     );
 
-    const io = req.app.get('io');
-
-    // Confort d'UX : on diffuse à tout le compte l'identifiant MATÉRIEL révoqué,
-    // chaque client se reconnaît lui-même et se déconnecte proprement.
-    emitToUser(io, req.user.alanyaID, 'auth:device_revoked', {
-      appareilId: id,
-      deviceId: rows[0].device_id,
-    });
-
-    // Garantie dure, elle : le 401 du middleware ferme REST, cette fermeture
-    // ferme le temps réel. Après l'emit, pour que le client reçoive l'event
-    // avant que sa socket ne tombe.
-    const fermees = await disconnectAppareilSockets(io, req.user.alanyaID, id);
+    // Confort d'UX pour l'événement, garantie dure pour la fermeture : le 401
+    // du middleware ferme REST, `disconnectRevoked` ferme le temps réel. Le
+    // même appel sert au secours par réinitialisation du mot de passe, qui
+    // révoque en masse.
+    const fermees = await deviceSessionService.disconnectRevoked(
+      req.app.get('io'),
+      req.user.alanyaID,
+      [{ id, deviceId: rows[0].device_id }],
+    );
 
     console.log(`[QrAuth] appareil révoqué id=${id} user=${req.user.alanyaID} sockets=${fermees}`);
     res.json({ ok: true });
