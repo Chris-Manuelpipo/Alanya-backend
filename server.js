@@ -406,6 +406,11 @@ async function start() {
         ['welcome_status_purge',    'welcome_status'],
         ['trip_nightly_purge',      'trip'],
         ['data_retention_purge',    'data_retention'],
+        // Déclarée dans le registre depuis la migration 079, mais jamais
+        // planifiée : la table grossissait sans limite et la page Santé
+        // l'affichait « jamais exécutée » en permanence. Le bail n'a pas besoin
+        // d'être semé, `tryAcquire` le crée à la volée.
+        ['backup_key_access_purge', 'backup_key_access'],
         ['media_nightly_purge',     'media'],
         // Balayage des partitions de médias. Il a son propre bail parce qu'il
         // n'a rien à voir avec le précédent : celui-ci interroge `message`,
