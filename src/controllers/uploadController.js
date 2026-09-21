@@ -1,9 +1,19 @@
+const fs = require('fs');
 const path = require('path');
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const pool = require('../config/db');
 const { UPLOADS_DIR } = require('../services/mediaPartitions');
+const storage = require('../services/mediaStorage');
+const {
+  mediaSubDir,
+  IMAGE_MIME_TYPES,
+  MEDIA_MIME_TYPES,
+  AVATAR_MAX_BYTES,
+  MEDIA_MAX_BYTES,
+} = require('../middleware/upload');
 const { invalidateSenderIdentity } = require('../utils/senderIdentityCache');
+const { fail } = require('../utils/apiError');
 
 const _toBool = (v) => v === true || v === 1 || v === '1' || v === 'true';
 
@@ -21,6 +31,31 @@ const publicPathFor = (file) => {
   return `${relatif.split(path.sep).join('/')}/${file.filename}`;
 };
 
+/** Type de message d'après le type MIME : 1=image, 2=vidéo, 3=audio, 4=fichier. */
+const msgTypeFor = (mimetype = '') => {
+  if (mimetype.startsWith('image/')) return 1;
+  if (mimetype.startsWith('video/')) return 2;
+  if (mimetype.startsWith('audio/')) return 3;
+  return 4;
+};
+
+/**
+ * Stockage objet : dépose chez Backblaze le fichier que multer a écrit en
+ * transit, sous la clé décidée à l'ouverture du flux. Le fichier de transit ne
+ * survit jamais à la requête, qu'elle réussisse ou non.
+ */
+async function deposerChezB2(file) {
+  try {
+    await storage.putFile(file.storageKey, file.path, { contentType: file.mimetype });
+    return storage.publicUrl(file.storageKey);
+  } finally {
+    fs.promises.unlink(file.path).catch(() => {});
+  }
+}
+
+const stockageIndisponible = (res) =>
+  fail(res, 503, 'STORAGE_UNAVAILABLE', 'Stockage des médias indisponible');
+
 // Héberge une image (avatar profil, photo de groupe, etc.) et retourne son URL.
 // Par défaut ne modifie aucune entité en base ; avec applyToProfile=true, met
 // à jour avatar_url de l'utilisateur connecté en une seule requête.
@@ -31,7 +66,17 @@ const uploadAvatar = async (req, res) => {
     }
 
     const filename = req.file.filename;
-    const url      = `${BASE_URL}/uploads/images/${filename}`;
+    let url;
+    if (req.file.storageKey) {
+      try {
+        url = await deposerChezB2(req.file);
+      } catch (e) {
+        console.error('[Upload avatar] dépôt Backblaze échoué:', e.message);
+        return stockageIndisponible(res);
+      }
+    } else {
+      url = `${BASE_URL}/uploads/images/${filename}`;
+    }
     const applyToProfile = _toBool(req.body?.applyToProfile ?? req.query?.applyToProfile);
 
     if (applyToProfile) {
@@ -75,24 +120,26 @@ const uploadMedia = async (req, res) => {
     // recalculée à 00:00:00 désignerait J+1 — un fichier qui n'existe pas.
     // Cette lecture rend aussi la bascule d'interrupteur transparente : le
     // contrôleur n'a pas à savoir si la disposition est partitionnée ou non.
-    const url      = `${BASE_URL}/uploads/${publicPathFor(file)}`;
-    const name     = file.originalname;
-    const size     = file.size;
-
-    // Détecter le type message selon mimetype
-    // 0=texte, 1=image, 2=vidéo, 3=audio, 4=fichier
-    let msgType = 4;
-    if (mimetype.startsWith('image/')) msgType = 1;
-    if (mimetype.startsWith('video/')) msgType = 2;
-    if (mimetype.startsWith('audio/')) msgType = 3;
+    // Stockage objet : même principe, la clé décidée par multer est relue.
+    let url;
+    if (file.storageKey) {
+      try {
+        url = await deposerChezB2(file);
+      } catch (e) {
+        console.error('[Upload media] dépôt Backblaze échoué:', e.message);
+        return stockageIndisponible(res);
+      }
+    } else {
+      url = `${BASE_URL}/uploads/${publicPathFor(file)}`;
+    }
 
     res.json({
       url,
       filename,
-      originalName: name,
+      originalName: file.originalname,
       mimetype,
-      size,
-      msgType,
+      size: file.size,
+      msgType: msgTypeFor(mimetype),
     });
   } catch (error) {
     console.error('[Upload media] ERROR:', error);
@@ -100,4 +147,63 @@ const uploadMedia = async (req, res) => {
   }
 };
 
-module.exports = { uploadAvatar, uploadMedia };
+/**
+ * `POST /api/upload/ticket` — autorise un envoi direct vers Backblaze.
+ *
+ * L'application annonce le type et la taille du fichier ; le serveur applique
+ * les mêmes règles que l'envoi par formulaire (types acceptés, plafonds), fixe
+ * la clé, puis signe un lien d'envoi `PUT`. Le fichier part ensuite du
+ * téléphone directement chez Backblaze : un seul trajet, sans passer par ce
+ * serveur. Le type et la taille font partie de la signature — un fichier qui
+ * ne correspond pas à ce qui a été autorisé est refusé par Backblaze.
+ *
+ * Tant que le stockage objet n'est pas actif, la réponse est
+ * `{ mode: 'multipart' }` : l'application envoie alors comme avant.
+ */
+const uploadTicket = async (req, res) => {
+  const { kind = 'media', mimetype, size, fileName } = req.body || {};
+  if (kind !== 'media' && kind !== 'avatar') {
+    return fail(res, 400, 'VALIDATION_FAILED', 'kind doit valoir media ou avatar');
+  }
+  const avatar = kind === 'avatar';
+
+  const type = String(mimetype || '').toLowerCase();
+  if (!(avatar ? IMAGE_MIME_TYPES : MEDIA_MIME_TYPES).includes(type)) {
+    return fail(res, 400, 'INVALID_EXTENSION', 'Type de fichier non autorisé');
+  }
+  const octets = Number(size);
+  if (!Number.isInteger(octets) || octets <= 0) {
+    return fail(res, 400, 'VALIDATION_FAILED', 'Taille de fichier invalide');
+  }
+  if (octets > (avatar ? AVATAR_MAX_BYTES : MEDIA_MAX_BYTES)) {
+    return fail(res, 413, 'FILE_TOO_LARGE', 'Fichier trop volumineux');
+  }
+
+  if (!storage.isB2Enabled()) return res.json({ mode: 'multipart' });
+
+  const ext = storage.safeExt(fileName);
+  const key = avatar
+    ? storage.newImageKey({ alanyaID: req.user.alanyaID, ext })
+    : storage.newMediaKey({ kind: mediaSubDir(type), alanyaID: req.user.alanyaID, ext });
+
+  try {
+    const envoi = await storage.presignUpload(key, { contentType: type, contentLength: octets });
+    return res.json({
+      mode: 'direct',
+      method: 'PUT',
+      uploadUrl: envoi.url,
+      headers: envoi.headers,
+      expiresIn: envoi.expiresIn,
+      url: storage.publicUrl(key),
+      filename: path.basename(key),
+      mimetype: type,
+      size: octets,
+      msgType: avatar ? 1 : msgTypeFor(type),
+    });
+  } catch (e) {
+    console.error('[Upload ticket] signature impossible:', e.message);
+    return stockageIndisponible(res);
+  }
+};
+
+module.exports = { uploadAvatar, uploadMedia, uploadTicket, msgTypeFor };

@@ -125,6 +125,8 @@ const {
 const { runNightlyTripPurge } = require('./src/services/tripRetention');
 const { runNightlyMediaPurge } = require('./src/services/mediaRetention');
 const { mediaExpiryGuard, staticHeaders } = require('./src/middleware/mediaExpiry');
+const { mediaRead } = require('./src/middleware/mediaRead');
+const { cleanStaleUploadTmp } = require('./src/middleware/upload');
 
 let stopAccountLifecycleSchedulers = () => {};
 
@@ -172,9 +174,15 @@ app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // partition : sans ça un cache intermédiaire garderait un an une URL qui meurt
 // dans trois jours, et le 410 n'atteindrait jamais le client.
 app.use('/uploads', mediaExpiryGuard());
+// Stockage objet (MEDIA_STORAGE=b2) : redirection vers un lien signé
+// Backblaze, sauf pour un fichier encore présent sur le disque pendant la
+// transition. Sur disque seul, ce middleware ne fait rien.
+app.use('/uploads', mediaRead());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
   setHeaders: staticHeaders(),
 }));
+// Fichiers de transit laissés par un envoi interrompu (stockage objet).
+cleanStaleUploadTmp().catch(() => {});
 
 // ── Routes API ────────────────────────────────────────────────────────
 app.use('/api/auth',          authCustomRoutes);

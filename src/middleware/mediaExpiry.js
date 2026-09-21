@@ -36,6 +36,7 @@ const path = require('path');
 
 const { RETENTION } = require('../constants/mediaRetentionPolicy');
 const { UPLOADS_DIR } = require('../services/mediaPartitions');
+const { isB2Enabled } = require('../services/mediaStorage');
 const {
   MEDIA_ROOT,
   LEGACY_KINDS,
@@ -178,7 +179,14 @@ function relaisHerite(req, res, next, { kind, nom, retentionDays, maintenant }) 
   }
 
   const cible = path.join(UPLOADS_DIR, MEDIA_ROOT, partition, kind, nom);
-  if (!fs.existsSync(cible)) return next(); // vraie absence : 404 par la suite
+  if (!fs.existsSync(cible)) {
+    // Stockage objet : le fichier a été recopié chez Backblaze sous son chemin
+    // de partition. `mediaRead` redirige vers cette clé — l'ancienne adresse,
+    // elle, n'existe nulle part. Sur disque seul, c'est une vraie absence :
+    // 404 par la suite.
+    if (isB2Enabled()) req.mediaKey = `${MEDIA_ROOT}/${partition}/${kind}/${nom}`;
+    return next();
+  }
 
   const restant = secondsUntilPartitionExpiry(partition, { retentionDays, now: maintenant });
   res.set('Cache-Control', `public, max-age=${restant}`);

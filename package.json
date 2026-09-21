@@ -33,11 +33,15 @@
         "test:notifications:full": "npm run test:notifications && npm run test:calls && node scripts/bench/push-queue-bench.js",
         "test:redis-adapter": "NODE_ENV=test node scripts/dev/redis-adapter-smoke.js",
         "smoke:openrouter": "node scripts/dev/openrouter-smoke.js",
-        "test:media": "NODE_ENV=test node src/utils/mediaPartition.test.js && NODE_ENV=test node src/services/mediaPartitions.test.js && NODE_ENV=test node src/middleware/mediaExpiry.test.js && NODE_ENV=test node src/services/mediaRetention.test.js",
+        "smoke:b2": "node scripts/dev/b2-smoke.js",
+        "test:media": "NODE_ENV=test node src/utils/mediaPartition.test.js && NODE_ENV=test node src/services/mediaPartitions.test.js && NODE_ENV=test node src/middleware/mediaExpiry.test.js && NODE_ENV=test node src/services/mediaRetention.test.js && NODE_ENV=test node src/services/mediaStorage.test.js && NODE_ENV=test node src/middleware/mediaRead.test.js",
         "test:concurrency": "NODE_ENV=test node src/socket/state/callDeviceOwnership.race.test.js && NODE_ENV=test node src/socket/state/meetingDevicePresence.race.test.js && NODE_ENV=test node src/socket/state/qrLoginSessions.race.test.js && NODE_ENV=test node src/socket/state/qrContactTokens.race.test.js && NODE_ENV=test node src/socket/state/callSessions.race.test.js && NODE_ENV=test node src/socket/state/groupRooms.race.test.js && NODE_ENV=test node src/socket/state/tripState.race.test.js && NODE_ENV=test node src/socket/state/callSessionsAccept.test.js && NODE_ENV=test node src/socket/state/groupRooms.grace.race.test.js",
         "bench:push": "node scripts/bench/push-queue-bench.js"
     },
     "dependencies": {
+        "@aws-sdk/client-s3": "^3.1133.0",
+        "@aws-sdk/lib-storage": "^3.1133.0",
+        "@aws-sdk/s3-request-presigner": "^3.1133.0",
         "@sentry/node": "^10.73.0",
         "@socket.io/redis-adapter": "^8.3.0",
         "bcryptjs": "^3.0.3",

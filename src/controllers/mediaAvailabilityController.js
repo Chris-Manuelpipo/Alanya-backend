@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const pool = require('../config/db');
+const { isB2Enabled, storedKeyFromUrl, listPrefix } = require('../services/mediaStorage');
 
 const UPLOADS_DIR = path.join(__dirname, '../../uploads');
 
@@ -25,6 +26,23 @@ const _diskPath = (mediaUrl) => {
   if (!resolved.startsWith(UPLOADS_DIR + path.sep)) return null;
   return resolved;
 };
+
+/**
+ * Tailles des objets présents chez Backblaze, pour un ensemble de clés.
+ *
+ * Une liste par dossier de partition plutôt qu'une requête par média : un
+ * export demande jusqu'à 2 000 médias, qui tiennent dans au plus quelques
+ * dizaines de dossiers (un par jour et par type).
+ */
+async function taillesChezB2(cles) {
+  const dossiers = new Set(cles.map((k) => k.slice(0, k.lastIndexOf('/') + 1)));
+  const tailles = new Map();
+  for (const dossier of dossiers) {
+    // eslint-disable-next-line no-await-in-loop
+    for (const o of await listPrefix(dossier)) tailles.set(o.key, o.size);
+  }
+  return tailles;
+}
 
 /**
  * `POST /api/media/availability` — parmi ces médias, lesquels existent encore ?
@@ -79,17 +97,41 @@ exports.checkAvailability = async (req, res) => {
 
     const available = [];
     const bytes = {};
+    // Stockage objet : ce qui n'est plus sur le disque est cherché chez
+    // Backblaze, en une seule passe à la fin.
+    const aChercher = [];
     for (const row of rows) {
       const filePath = _diskPath(row.mediaUrl);
-      if (!filePath) continue;
+      if (filePath) {
+        try {
+          const stat = fs.statSync(filePath);
+          if (stat.isFile()) {
+            available.push(row.msgID);
+            bytes[row.msgID] = stat.size;
+            continue;
+          }
+        } catch (_) {
+          // Absent du disque : purgé, jamais arrivé, ou parti chez Backblaze.
+        }
+      }
+      if (isB2Enabled()) {
+        const key = storedKeyFromUrl(row.mediaUrl);
+        if (key) aChercher.push({ msgID: row.msgID, key });
+      }
+    }
+
+    if (aChercher.length > 0) {
+      let tailles;
       try {
-        const stat = fs.statSync(filePath);
-        if (!stat.isFile()) continue;
-        available.push(row.msgID);
-        bytes[row.msgID] = stat.size;
-      } catch (_) {
-        // Absent : purgé, ou jamais arrivé. Dans les deux cas, irrécupérable —
-        // et c'est exactement ce que l'appelant a besoin de savoir.
+        tailles = await taillesChezB2(aChercher.map((c) => c.key));
+      } catch (e) {
+        console.error('[MediaAvailability] Backblaze injoignable:', e.message);
+        return res.status(503).json({ error: 'Stockage des médias indisponible', code: 'STORAGE_UNAVAILABLE' });
+      }
+      for (const c of aChercher) {
+        if (!tailles.has(c.key)) continue; // absent : irrécupérable
+        available.push(c.msgID);
+        bytes[c.msgID] = tailles.get(c.key);
       }
     }
 
