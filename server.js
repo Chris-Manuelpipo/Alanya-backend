@@ -56,6 +56,7 @@ const adminRoutes        = require('./src/routes/admin');
 const welcomeRoutes      = require('./src/routes/welcome');
 const reportRoutes       = require('./src/routes/reports');
 const qrLandingRoutes    = require('./src/routes/qrLanding');
+const legalRoutes        = require('./src/routes/legal');
 const healthRoutes       = require('./src/routes/health');
 
 // ── Socket handlers ───────────────────────────────────────────────────
@@ -204,6 +205,11 @@ app.use('/api/admin',         adminRoutes);
 app.use('/api/welcome',       welcomeRoutes);
 app.use('/api/reports',       reportRoutes);
 app.use('/notify',            notifyRoutes);
+
+// Pages légales publiques (accueil, confidentialité, CGU, licences) —
+// exigées par Google pour publier l'écran OAuth Drive, et déjà liées depuis
+// l'application. Avant le volet QR : `GET /` doit décrire Alanya, pas 404.
+app.use('/', legalRoutes);
 
 // Routes publiques du volet QR (page d'accueil d'un code, fichiers
 // d'association des liens universels) — à la racine du domaine, hors /api :
