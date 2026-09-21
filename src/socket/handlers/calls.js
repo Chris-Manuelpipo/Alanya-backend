@@ -55,6 +55,14 @@ const {
 //                 code CALL_SELF : la cible est l'appelant lui-même.
 //                 code CALL_ID_UNAVAILABLE : pas d'appel sans callId serveur.
 //   call_busy     { callId, targetId, reason:'busy' }   — cible déjà ringing / in_call
+//   call_voicemail{ callId, targetId, reason:'voicemail', isVideo, conversationID }
+//                 — à l'APPELANT seul, EN LIEU ET PLACE de call_ringing : le
+//                 répondeur de la cible est actif, rien n'a sonné et rien n'a
+//                 été armé côté serveur. L'appelant démonte son sortant et se
+//                 voit proposer de laisser un message vocal dans la
+//                 conversation transmise. Pas de texte d'annonce dans le
+//                 payload : le client le compose depuis ses propres
+//                 traductions.
 //   call_resume   { callId, peerId, status, isVideo, role, answer? }
 //
 // Ownership média : callDeviceOwnership (par callId/sessionId/roomId + userId → device).
@@ -63,8 +71,10 @@ const {
 //   ice_candidate { candidate }
 //
 // État autoritaire par userId (callState) : idle | ringing | in_call.
-//  - call_user  : cible occupée → call_busy (pas d'incoming_call ni FCM) ; sinon les
-//                 deux participants passent « ringing » + timer no-answer (45 s).
+//  - call_user  : cible occupée → call_busy (pas d'incoming_call ni FCM) ; répondeur
+//                 actif → call_voicemail (rien n'est armé, AUCUN FCM : c'est ce qui
+//                 garantit que le téléphone ne sonne pas) ; sinon les deux
+//                 participants passent « ringing » + timer no-answer (45 s).
 //  - answer_call: les deux participants passent « in_call ».
 //  - reject/end/timeout/disconnect : les deux repassent « idle ».
 //  - auth:login in_call : call_resume + timeout ack (8 s) ; grâce disconnect conservée
@@ -94,6 +104,9 @@ const {
 //   call_transfer_armed { sessionId, leaveInMs }     — initiateur seulement
 //   call_transfer_done  { sessionId, transferredUserId, remainingParticipantIds, reason }
 //   call_add_rejected { code }
+//                 code TARGET_VOICEMAIL : le répondeur de l'invité est actif.
+//                 Refusé AVANT toute pose d'invitation — aucun enregistrement
+//                 n'est proposé, on est en pleine communication.
 //
 // mode absent → join. Timer 10 s après call_conf_ready uniquement (serveur).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1839,6 +1852,25 @@ const addParticipant = (io, socket, userSockets) => {
       if (blockedByRequester || blockedByPeer) {
         console.log(`[Socket call_add] ⛔ blocage: invité=${inviteeID}`);
         return reject('TARGET_BLOCKED');
+      }
+
+      // Répondeur de l'invité : au même endroit et pour la même raison que le
+      // blocage ci-dessus — AVANT que quoi que ce soit ne soit posé.
+      //
+      // `failInvite` ne pouvait pas servir ici : il exige un `pending` déjà
+      // enregistré, donc il n'intervient qu'une fois l'invité mis en sonnerie.
+      // Or c'est précisément la sonnerie que le répondeur interdit. Le contrôle
+      // doit donc être en amont, et il l'est.
+      //
+      // Aucun enregistrement n'est proposé : on est en pleine communication à
+      // deux, il n'y a pas d'appelant disponible pour laisser un message.
+      const repondeurInvite = await shouldInterceptCall(inviteeID, requesterID).catch((err) => {
+        console.warn('[Socket call_add] répondeur: évaluation impossible:', err.message);
+        return { intercept: false };
+      });
+      if (repondeurInvite.intercept) {
+        console.log(`[Socket call_add] 📼 répondeur actif: invité=${inviteeID}`);
+        return reject('TARGET_VOICEMAIL');
       }
 
       // Retombés à deux dans une session, on y greffe l'invitation : le relais
