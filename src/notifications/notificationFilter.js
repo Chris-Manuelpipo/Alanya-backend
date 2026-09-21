@@ -127,6 +127,14 @@ const evaluateTypePush = async (alanyaID, type) => {
       return prefs.callsEnabled
         ? { allowed: true }
         : { allowed: false, reason: 'calls_disabled' };
+    // Le rappel du répondeur suit le réglage des appels : qui a demandé le
+    // silence sur les appels l'obtient aussi ici. Il n'est pas privé
+    // d'information pour autant — le bandeau dans l'application reste, lui,
+    // toujours visible.
+    case 'voicemail_active':
+      return prefs.callsEnabled
+        ? { allowed: true }
+        : { allowed: false, reason: 'calls_disabled' };
     default:
       return { allowed: true };
   }

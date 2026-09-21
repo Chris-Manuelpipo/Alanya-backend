@@ -24,6 +24,8 @@ const {
   loadConversationMuteMany,
 } = require('../notifications/notificationPrefs');
 const { loadUserDndScheduleMany } = require('./dndScheduleService');
+const { civilDayKey, FALLBACK_TIMEZONE } = require('./voicemailScheduleService');
+const { claimDailyNotice } = require('../socket/state/voicemailNotice');
 const { loadUserPrivacyPrefs, contactsAmong } = require('./privacyPrefsService');
 const { shouldUseAndroidNativeDataOnly } = require('../notifications/notificationAndroidNative');
 const { shouldUseDeviceRegistry } = require('../notifications/notificationRouting');
@@ -44,6 +46,7 @@ const _buildApnsConfig = (data) => {
       type === 'meeting_invite' ||
       type === 'meeting_reminder' ||
       type === 'status_view' ||
+      type === 'voicemail_active' ||
       // Sans cette ligne, une alerte de trajet partait en push de fond sur
       // iOS : aucun affichage, et une délivrance à la discrétion du système.
       isTripType(type));
@@ -95,6 +98,7 @@ const _buildApnsConfig = (data) => {
 // Android (retardable par Doze) — deux défauts qu'aucune lecture ne révélait.
 const VISIBLE_TYPES = [
   'message', 'meeting_invite', 'meeting_reminder', 'status_view',
+  'voicemail_active',
   ...TRIP_TYPES,
 ];
 
@@ -798,6 +802,62 @@ const notifyStatusView = async (statusOwnerID, viewerName) => {
 };
 
 /**
+ * Le répondeur vient d'intercepter un appel : on le rappelle à son
+ * propriétaire, une fois par jour au plus.
+ *
+ * Ce n'est PAS un avis d'appel manqué. Le destinataire en est déjà informé
+ * deux fois — l'entrée apparaît dans son journal (`call_log_updated`), et si
+ * l'appelant laisse un vocal il reçoit la notification de message ordinaire.
+ * Ce qu'il ne sait peut-être plus, en revanche, c'est que l'interrupteur est
+ * resté armé. C'est cela qu'on lui dit, et c'est pourquoi le plafond
+ * quotidien est dans la fonction elle-même : un appelant impossible à oublier.
+ *
+ * `sendToUser` et JAMAIS `sendCallToUser` : ce dernier est le canal VoIP qui
+ * déclenche CallKit. L'emprunter ici rallumerait très exactement la sonnerie
+ * que le répondeur vient d'éteindre.
+ */
+const notifyVoicemailActive = async (
+  targetID,
+  callerName,
+  { activeUntil = null, timeZone = null } = {},
+) => {
+  const jour = civilDayKey(new Date(), timeZone || FALLBACK_TIMEZONE);
+  if (!(await claimDailyNotice(targetID, jour))) {
+    logSkipped({ type: 'voicemail_active', userId: targetID, reason: 'deja_notifie_aujourdhui' });
+    return;
+  }
+
+  const decision = await evaluateTypePush(targetID, 'voicemail_active');
+  if (!decision.allowed) {
+    logSkipped({ type: 'voicemail_active', userId: targetID, reason: decision.reason });
+    return;
+  }
+
+  const qui = (callerName || '').trim() || 'Quelqu\'un';
+  // `activeUntil` est nul quand le créneau couvre la journée entière : on
+  // n'invente pas d'heure de fin, on dit simplement qu'il tourne.
+  let jusqua = '';
+  if (activeUntil) {
+    try {
+      const heure = new Date(activeUntil).toLocaleTimeString('fr-FR', {
+        timeZone: timeZone || FALLBACK_TIMEZONE,
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      jusqua = ` Il reste actif jusqu'à ${heure}.`;
+    } catch (_) {
+      jusqua = '';
+    }
+  }
+
+  await sendToUser(targetID, {
+    type:  'voicemail_active',
+    title: 'Votre répondeur a répondu',
+    body:  `${qui} a essayé de vous appeler.${jusqua}`,
+  });
+};
+
+/**
  * Le code QR éphémère du propriétaire vient d'être scanné : on l'invite à
  * ajouter le scanneur en retour. N'est envoyé que si aucun socket au premier
  * plan — sinon le dialogue in-app (événement `qr:contact_scanned`) suffit, et
@@ -1121,6 +1181,7 @@ module.exports = {
   buildIncomingCallPayload,
   notifyGroupCall,
   notifyStatusView,
+  notifyVoicemailActive,
   notifyQrContactScanned,
   notifyMeetingInvite,
   notifyMeetingReminder,

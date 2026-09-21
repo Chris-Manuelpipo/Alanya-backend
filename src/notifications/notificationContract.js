@@ -35,6 +35,10 @@ const NOTIFICATION_TYPES = Object.freeze([
   'payment_failed',
   // Vérification d'identité : décision sur le dossier.
   'verification_update',
+  // Répondeur : « votre répondeur vient de prendre un appel ». Plafonné à un
+  // par jour (socket/state/voicemailNotice.js) — ce n'est pas un avis d'appel
+  // manqué, c'est un rappel que l'interrupteur est resté armé.
+  'voicemail_active',
 ]);
 
 /**
