@@ -7,6 +7,7 @@ const { getClientIp } = require('../utils/clientIp');
 const qrLoginSessions = require('../socket/state/qrLoginSessions');
 const { loginPayload, secretMatches } = require('../utils/qrToken');
 const { lookupLocation } = require('../services/ipGeoService');
+const { journaliserAcces } = require('../services/userAccessLog');
 
 // Le QR encode une URL et non une donnée brute : un scan par un appareil photo
 // générique tombe sur une page web plutôt que sur une chaîne incompréhensible.
@@ -221,6 +222,26 @@ const approveQrSession = async (req, res) => {
         code: 'QR_SESSION_EXPIRED',
       });
     }
+
+    // Journalise l'accès, comme le fait la connexion par mot de passe. Sans
+    // cette ligne, un enrôlement par QR n'existait nulle part pour l'écran
+    // « Historique des connexions » ni pour l'agrégat des analytics : sept
+    // appareils s'y étaient ouverts sans laisser la moindre trace.
+    //
+    // Ici, et pas juste après `recordLogin` : une session expirée entre-temps
+    // supprime la ligne `appareils` et n'ouvre rien, journaliser plus tôt
+    // inscrirait une connexion qui n'a pas eu lieu.
+    //
+    // ⚠ TOUT vient de `entry`, rien de `req`. La requête est celle du téléphone
+    // QUI APPROUVE ; son IP et son User-Agent décriraient le mauvais appareil.
+    // Les données du demandeur ont été recueillies à l'ouverture de la session,
+    // dans `createQrSession`.
+    journaliserAcces(alanyaID, {
+      device: entry.deviceName,
+      osSystem: entry.platform,
+      ipAddress: entry.ipAddress,
+      origine: 'qr',
+    });
 
     const io = req.app.get('io');
 
