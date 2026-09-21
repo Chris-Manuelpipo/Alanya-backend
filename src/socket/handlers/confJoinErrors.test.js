@@ -8,9 +8,12 @@ const assert = require('assert');
 const pool = require('../../config/db');
 const callState = require('../state/callState');
 const callSessions = require('../state/callSessions');
+const callDeviceOwnership = require('../state/callDeviceOwnership');
 const { confJoin } = require('./calls');
 
 const INVITEE = 704;
+const HOST = 701;
+const PEER = 702;
 
 function fakeSocket(userId, deviceId) {
   const handlers = {};
@@ -58,6 +61,29 @@ async function main() {
     sockNoDevice.emitted[0]?.payload?.code, 'DEVICE_ID_REQUIRED',
     'la garde d\'appareil passe avant, et garde son code',
   );
+
+  // ── Invitation soldée entre l'acceptation et la promotion ─────────────────
+  // La réclamation d'appareil est posée avant la promotion. Si celle-ci échoue
+  // (délai ou annulation arrivés entre-temps), laisser l'entrée « active »
+  // bloquerait une réinvitation de cet utilisateur dans la même session.
+  callSessions._reset();
+  const s = await callSessions.openWithPending({
+    participants: [HOST, PEER], inviteeId: INVITEE, byUserId: HOST,
+  });
+  const vraiPromote = callSessions.promotePending;
+  callSessions.promotePending = async () => null;
+  try {
+    const sockLate = fakeSocket(INVITEE, 'dev_invitee');
+    confJoin(fakeIo(), sockLate, userSockets);
+    await sockLate.trigger('call_conf_join', {});
+  } finally {
+    callSessions.promotePending = vraiPromote;
+  }
+  assert.strictEqual(
+    await callDeviceOwnership.getEntry(s.sessionId, INVITEE), null,
+    'une promotion manquée ne laisse aucune réclamation derrière elle',
+  );
+  callSessions._reset();
 
   await callState.clear(INVITEE);
   console.log('confJoinErrors.test.js OK');

@@ -115,10 +115,10 @@ const listBillingSubscribers = async (req, res) => {
 };
 
 async function userBillingPayload(alanyaID) {
-  const [entitlements, [periods], [pays], [[sub]]] = await Promise.all([
+  const [entitlements, [periods], [pays], [[sub]], [[revocation]]] = await Promise.all([
     entitlementsFor(alanyaID),
     pool.execute(
-      `SELECT sp.id, sp.starts_at, sp.ends_at, sp.source, sp.payment_id, sp.reason,
+      `SELECT sp.id, sp.starts_at, sp.ends_at, sp.source, sp.grants_badge, sp.payment_id, sp.reason,
               pl.code AS plan_code, g.nom AS granted_by_name
          FROM subscription_period sp
          JOIN plan pl ON pl.id = sp.plan_id
@@ -133,6 +133,13 @@ async function userBillingPayload(alanyaID) {
       [alanyaID],
     ),
     pool.execute('SELECT * FROM subscriber WHERE alanyaID = ?', [alanyaID]),
+    pool.execute(
+      `SELECT br.revoked_at, br.reason, u.nom AS revoked_by_name
+         FROM badge_revocation br
+         LEFT JOIN users u ON u.alanyaID = br.revoked_by
+        WHERE br.alanyaID = ?`,
+      [alanyaID],
+    ),
   ]);
   return {
     entitlements,
@@ -144,12 +151,20 @@ async function userBillingPayload(alanyaID) {
         purge_after: sub.purge_after,
       }
       : null,
+    badge_revocation: revocation
+      ? {
+        revoked_at: revocation.revoked_at,
+        reason: revocation.reason,
+        revoked_by_name: revocation.revoked_by_name,
+      }
+      : null,
     periods: periods.map((p) => ({
       id: p.id,
       plan: p.plan_code,
       starts_at: p.starts_at,
       ends_at: p.ends_at,
       source: Number(p.source),
+      grants_badge: Number(p.grants_badge) === 1,
       payment_id: p.payment_id,
       reason: p.reason,
       granted_by_name: p.granted_by_name,
@@ -169,7 +184,7 @@ const getUserBilling = async (req, res) => {
   }
 };
 
-/** POST /admin/users/:id/billing/gift — { months: 1..24, reason } */
+/** POST /admin/users/:id/billing/gift — { months: 1..24, reason, grantsBadge? } */
 const giftSubscription = async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id) || id <= 0) return fail(res, 404, 'USER_NOT_FOUND', 'Utilisateur introuvable');
@@ -179,11 +194,81 @@ const giftSubscription = async (req, res) => {
   if (!Number.isInteger(months) || months < 1 || months > 24) {
     return fail(res, 400, 'INVALID_GIFT', 'Durée offerte : de 1 à 24 mois');
   }
+  // Par défaut la coche est accordée ; l'admin peut la retirer à l'offre.
+  let grantsBadge = true;
+  if (req.body?.grantsBadge !== undefined) {
+    if (typeof req.body.grantsBadge !== 'boolean' && req.body.grantsBadge !== 0 && req.body.grantsBadge !== 1) {
+      return fail(res, 400, 'INVALID_GIFT', 'grantsBadge doit être un booléen');
+    }
+    grantsBadge = Boolean(req.body.grantsBadge);
+  }
   try {
-    const period = await grantGift({ alanyaID: id, months, reason: reason.value, adminId: req.user.alanyaID });
+    const period = await grantGift({
+      alanyaID: id, months, reason: reason.value, adminId: req.user.alanyaID, grantsBadge,
+    });
     res.status(201).json({ gifted: period, ...(await userBillingPayload(id)) });
   } catch (err) {
     return sendError(res, err, 'abonnement offert');
+  }
+};
+
+/**
+ * POST /admin/users/:id/badge/revoke — { reason }
+ * Retire la coche ; les fonctionnalités payées restent. Notification avec motif.
+ */
+const revokeBadge = async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) return fail(res, 404, 'USER_NOT_FOUND', 'Utilisateur introuvable');
+  const reason = parseReason(req.body);
+  if (!reason.ok) return fail(res, 400, reason.code, reason.error);
+  try {
+    const [[user]] = await pool.execute(
+      'SELECT alanyaID, account_type FROM users WHERE alanyaID = ?',
+      [id],
+    );
+    if (!user) return fail(res, 404, 'USER_NOT_FOUND', 'Utilisateur introuvable');
+    if (Number(user.account_type) !== 0) {
+      return fail(res, 409, 'BADGE_NOT_APPLICABLE', 'La coche indigo ne concerne que les comptes personnels');
+    }
+    await pool.execute(
+      `INSERT INTO badge_revocation (alanyaID, revoked_by, reason)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE revoked_at = CURRENT_TIMESTAMP, revoked_by = VALUES(revoked_by), reason = VALUES(reason)`,
+      [id, req.user.alanyaID, reason.value],
+    );
+    const { recomputeVerification } = require('../../services/billing/verification');
+    const { emitToAccount } = require('../../services/billing/subscriptions');
+    const { pushBilling, messages } = require('../../services/billing/billingNotify');
+    await recomputeVerification(id);
+    emitToAccount(id, 'entitlements:updated', { at: new Date().toISOString() });
+    await pushBilling(id, messages.verificationRevoked({ reason: reason.value }));
+    res.json(await userBillingPayload(id));
+  } catch (err) {
+    return sendError(res, err, 'révocation de la coche');
+  }
+};
+
+/**
+ * POST /admin/users/:id/badge/restore — { reason }
+ * Annule une révocation : la coche revient si l'abonnement la porte encore.
+ */
+const restoreBadge = async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) return fail(res, 404, 'USER_NOT_FOUND', 'Utilisateur introuvable');
+  const reason = parseReason(req.body);
+  if (!reason.ok) return fail(res, 400, reason.code, reason.error);
+  try {
+    const [del] = await pool.execute('DELETE FROM badge_revocation WHERE alanyaID = ?', [id]);
+    if (!del.affectedRows) {
+      return fail(res, 409, 'BADGE_NOT_REVOKED', 'Aucune révocation à lever pour ce compte');
+    }
+    const { recomputeVerification } = require('../../services/billing/verification');
+    const { emitToAccount } = require('../../services/billing/subscriptions');
+    await recomputeVerification(id);
+    emitToAccount(id, 'entitlements:updated', { at: new Date().toISOString() });
+    res.json(await userBillingPayload(id));
+  } catch (err) {
+    return sendError(res, err, 'restauration de la coche');
   }
 };
 
@@ -192,4 +277,6 @@ module.exports = {
   listBillingSubscribers,
   getUserBilling,
   giftSubscription,
+  revokeBadge,
+  restoreBadge,
 };

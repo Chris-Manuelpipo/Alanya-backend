@@ -5,7 +5,7 @@
  * JS est mono-thread : ils passeraient quelle que soit l'implémentation Redis.
  * Ici, les opérations partent vraiment en même temps.
  *
- * Deux garanties, chacune protégeant un dégât précis :
+ * Cinq garanties, chacune protégeant un dégât précis :
  *   1. `openWithPending` — deux « ajouter à l'appel » simultanés sur la même
  *      paire. Sans exclusivité, chacun ouvre sa session : le droit d'ajout
  *      n'est plus unique et l'un des deux invités sonne dans le vide, sans
@@ -13,6 +13,13 @@
  *   2. `registerTransferReady` — deux `call_conf_ready` simultanés. Sans
  *      garde, deux sorties automatiques sont armées et l'initiateur est
  *      retiré deux fois de l'appel.
+ *   3. `addPending` — les deux restants d'une session retombée à deux
+ *      appuient ensemble. Sans le verrou, deux invités sonnent pour une place.
+ *   4. `addPending` contre `openWithPending` sur le même invité. Sans le
+ *      `SET NX`, il appartiendrait à deux sessions à la fois.
+ *   5. Le transfert en cascade. `leaveArmed`, posé par le premier transfert,
+ *      doit disparaître à la greffe : sinon le `HSETNX` du second échoue et
+ *      sa sortie automatique ne s'arme jamais.
  *
  * Nécessite REDIS_URL — échec explicite si absent (voir test:concurrency).
  */
@@ -33,7 +40,7 @@ const callSessions = require('./callSessions');
 
 // L'armement d'un délai passe par job_queue, donc par MySQL distant : chaque
 // itération de la section transfert coûte plusieurs allers-retours réseau. Les
-// deux sections sont donc dimensionnées séparément — ce qu'on mesure est une
+// sections sont donc dimensionnées séparément — ce qu'on mesure est une
 // exclusion mutuelle, pas un débit.
 const ITERATIONS = 60;
 const ITERATIONS_TRANSFERT = 12;
@@ -42,6 +49,21 @@ const ITERATIONS_TRANSFERT = 12;
 // échouait par dépassement de délai ou ETIMEDOUT sous charge — un échec
 // d'infrastructure qui ressemble à un échec de logique. Ce qu'on mesure est
 // une exclusion mutuelle : elle se voit tout aussi bien sur douze tentatives.
+// La promotion désarme le délai « sans réponse » : un aller-retour MySQL par
+// itération pour les sections de greffe.
+const ITERATIONS_GREFFE = 20;
+
+const cleByUser = (u) => `alanya:callSessions:byUser:${u}`;
+
+// Awa et Chris se parlent, Chris fait entrer Nadia puis s'en va.
+const retombeeADeux = async (A, B, C, originCallId) => {
+  const s = await callSessions.openWithPending({
+    originCallId, participants: [A, B], inviteeId: C, byUserId: A,
+  });
+  await callSessions.promotePending(s.sessionId);
+  await callSessions.removeParticipant(s.sessionId, A);
+  return s.sessionId;
+};
 
 (async () => {
   const client = createClient({ url: REDIS_URL });
@@ -55,9 +77,9 @@ const ITERATIONS_TRANSFERT = 12;
     // refuse alors d'ouvrir la moindre session — l'échec ressemble à un bug de
     // production alors qu'il ne vient que du test précédent.
     const plages = [];
-    for (let i = 0; i < Math.max(ITERATIONS, ITERATIONS_TRANSFERT); i += 1) {
-      for (const base of [10_000, 20_000, 30_000]) {
-        for (let d = 0; d < 4; d += 1) plages.push(`alanya:callSessions:byUser:${base + i * 10 + d}`);
+    for (let i = 0; i < ITERATIONS; i += 1) {
+      for (const base of [10_000, 20_000, 30_000, 40_000, 50_000, 60_000]) {
+        for (let d = 0; d < 6; d += 1) plages.push(cleByUser(base + i * 10 + d));
       }
     }
     await client.del(plages);
@@ -80,7 +102,7 @@ const ITERATIONS_TRANSFERT = 12;
       // Nettoyage direct : `destroy()` désarme aussi les délais, donc va
       // chercher MySQL — inutile ici, aucun délai n'a été armé.
       for (const s of [s1, s2]) if (s) await client.del(`alanya:callSessions:${s.sessionId}`);
-      await client.del([A, B, A + 2, A + 3].map((u) => `alanya:callSessions:byUser:${u}`));
+      await client.del([A, B, A + 2, A + 3].map(cleByUser));
     }
     assert.strictEqual(doubles, 0, `openWithPending : ${doubles}/${ITERATIONS} doubles sessions`);
     console.log(`✓ openWithPending : 0/${ITERATIONS} double session sur la même paire`);
@@ -111,16 +133,84 @@ const ITERATIONS_TRANSFERT = 12;
     assert.strictEqual(doublesArm, 0, `registerTransferReady : ${doublesArm}/${ITERATIONS_TRANSFERT} doubles armements`);
     console.log(`✓ registerTransferReady : 0/${ITERATIONS_TRANSFERT} double sortie automatique`);
 
+    // ── 3. Une seule greffe en vol par session ──────────────────────────────
+    let doublesGreffes = 0;
+    for (let i = 0; i < ITERATIONS_GREFFE; i += 1) {
+      const A = 40_000 + i * 10;
+      const [B, C] = [A + 1, A + 2];
+      const sid = await retombeeADeux(A, B, C, `g${i}`);
+      const [g1, g2] = await Promise.all([
+        callSessions.addPending(sid, { inviteeId: A + 3, byUserId: B }),
+        callSessions.addPending(sid, { inviteeId: A + 4, byUserId: C }),
+      ]);
+      if (g1.session && g2.session) doublesGreffes += 1;
+      assert.ok(g1.session || g2.session, `au moins une greffe doit aboutir (${g1.refus}/${g2.refus})`);
+      await client.del(`alanya:callSessions:${sid}`);
+      await client.del([A, B, C, A + 3, A + 4].map(cleByUser));
+    }
+    assert.strictEqual(doublesGreffes, 0, `addPending : ${doublesGreffes}/${ITERATIONS_GREFFE} doubles invitations`);
+    console.log(`✓ addPending : 0/${ITERATIONS_GREFFE} double invitation sur la même session`);
+
+    // ── 4. Un invité n'appartient qu'à une session ──────────────────────────
+    let doublesInvite = 0;
+    for (let i = 0; i < ITERATIONS_GREFFE; i += 1) {
+      const A = 50_000 + i * 10;
+      const [B, C, X, Y, Z] = [A + 1, A + 2, A + 3, A + 4, A + 5];
+      const sid = await retombeeADeux(A, B, C, `h${i}`);
+      const [g, o] = await Promise.all([
+        callSessions.addPending(sid, { inviteeId: Z, byUserId: B }),
+        callSessions.openWithPending({
+          originCallId: `o${i}`, participants: [X, Y], inviteeId: Z, byUserId: X,
+        }),
+      ]);
+      if (g.session && o) doublesInvite += 1;
+      assert.ok(g.session || o, 'au moins une invitation doit aboutir');
+      await client.del(`alanya:callSessions:${sid}`);
+      if (o) await client.del(`alanya:callSessions:${o.sessionId}`);
+      await client.del([A, B, C, X, Y, Z].map(cleByUser));
+    }
+    assert.strictEqual(doublesInvite, 0, `greffe/ouverture : ${doublesInvite}/${ITERATIONS_GREFFE} invités doublement pris`);
+    console.log(`✓ addPending/openWithPending : 0/${ITERATIONS_GREFFE} invité dans deux sessions`);
+
+    // ── 5. Le second transfert s'arme ───────────────────────────────────────
+    {
+      const A = 60_000;
+      const [B, C, D] = [A + 1, A + 2, A + 3];
+      const s = await callSessions.openWithPending({
+        originCallId: 'cascade', participants: [A, B], inviteeId: C, byUserId: A, mode: 'transfer',
+      });
+      await callSessions.promotePending(s.sessionId);
+      await callSessions.markTransferJoined(s.sessionId, 25_000, () => {});
+      const premier = await callSessions.registerTransferReady({
+        sessionId: s.sessionId, reporterId: B, peerId: C, leaveTimerMs: 10_000, onLeave: () => {},
+      });
+      assert.ok(premier.armed, `premier transfert armé (${premier.reason})`);
+      await callSessions.completeTransfer(s.sessionId);
+      await callSessions.removeParticipant(s.sessionId, A);
+
+      // Nadia, entrée par le premier transfert, transfère à son tour.
+      const g = await callSessions.addPending(s.sessionId, { inviteeId: D, byUserId: C, mode: 'transfer' });
+      assert.ok(g.session, `greffe du second transfert (${g.refus})`);
+      await callSessions.promotePending(s.sessionId);
+      await callSessions.markTransferJoined(s.sessionId, 25_000, () => {});
+      const second = await callSessions.registerTransferReady({
+        sessionId: s.sessionId, reporterId: B, peerId: D, leaveTimerMs: 10_000, onLeave: () => {},
+      });
+      assert.ok(second.armed, `second transfert armé (${second.reason})`);
+      await callSessions.destroy(s.sessionId);
+      console.log("✓ transfert en cascade : le second transfert s'arme");
+    }
+
     // ── Garde-fou négatif ───────────────────────────────────────────────────
     // Une ouverture naïve (vérifier les trois utilisateurs, puis écrire) doit
     // échouer sous ce même harnais.
     const naif = async (membres, invite, sessionId) => {
       for (const uid of [...membres, invite]) {
-        if (await client.exists(`alanya:callSessions:byUser:${uid}`)) return null;
+        if (await client.exists(cleByUser(uid))) return null;
       }
       await new Promise((r) => setTimeout(r, 3));
       for (const uid of [...membres, invite]) {
-        await client.set(`alanya:callSessions:byUser:${uid}`, sessionId);
+        await client.set(cleByUser(uid), sessionId);
       }
       return sessionId;
     };
@@ -133,7 +223,7 @@ const ITERATIONS_TRANSFERT = 12;
         naif([A, B], A + 3, `n2_${i}`),
       ]);
       if (x && y) doublesNaifs += 1;
-      await client.del([A, A + 1, A + 2, A + 3].map((u) => `alanya:callSessions:byUser:${u}`));
+      await client.del([A, A + 1, A + 2, A + 3].map(cleByUser));
     }
     assert.ok(
       doublesNaifs > 0,

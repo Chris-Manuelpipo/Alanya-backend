@@ -27,6 +27,10 @@ const {
   rotateKey,
   retireKey,
 } = require('../controllers/admin/backupKeys');
+const {
+  getSecuritySettings,
+  updateSecuritySettings,
+} = require('../controllers/admin/securitySettings');
 const { getReports, getReportActions, postReportAction } = require('../controllers/admin/reports');
 const {
   adminLogin,
@@ -477,6 +481,52 @@ router.put('/settings',                    adminAuth, requirePermission('setting
 
 /**
  * @swagger
+ * /api/admin/security-settings:
+ *   get:
+ *     summary: Verrouillage de la connexion sur les appareils enrôlés
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: État du verrou
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 deviceBindingEnabled:
+ *                   type: boolean
+ *                 updatedAt:
+ *                   type: string
+ *   put:
+ *     summary: Arme ou désarme le verrou (super-admin)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - deviceBindingEnabled
+ *             properties:
+ *               deviceBindingEnabled:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Verrou mis à jour — propagation aux autres instances en 30 s
+ */
+// Mêmes permissions que les réglages applicatifs : `settings.write` est déjà
+// réservée au super-admin, et désarmer un verrou de sécurité n'appelle pas un
+// niveau plus bas.
+router.get('/security-settings',           adminAuth, requirePermission('settings.read'), getSecuritySettings);
+router.put('/security-settings',           adminAuth, requirePermission('settings.write'), updateSecuritySettings);
+
+/**
+ * @swagger
  * /api/admin/groups:
  *   get:
  *     summary: Tous les groupes de l'application
@@ -870,6 +920,8 @@ const {
   listBillingSubscribers,
   getUserBilling,
   giftSubscription,
+  revokeBadge,
+  restoreBadge,
 } = require('../controllers/admin/billingAccounts');
 
 // Paiements et abonnés : lecture au niveau admin. Offrir un abonnement est un
@@ -879,6 +931,8 @@ router.get('/billing/payments',           adminAuth, requirePermission('billing.
 router.get('/billing/subscribers',        adminAuth, requirePermission('billing.read'), listBillingSubscribers);
 router.get('/users/:id/billing',          adminAuth, requirePermission('billing.read'), getUserBilling);
 router.post('/users/:id/billing/gift',    adminAuth, requirePermission('billing.gift'), giftSubscription);
+router.post('/users/:id/badge/revoke',    adminAuth, requirePermission('verifications.decide'), revokeBadge);
+router.post('/users/:id/badge/restore',   adminAuth, requirePermission('verifications.decide'), restoreBadge);
 
 const {
   listVerifications,

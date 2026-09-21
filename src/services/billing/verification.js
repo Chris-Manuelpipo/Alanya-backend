@@ -1,25 +1,28 @@
 /**
  * La coche : la seule écriture de `users.verification_status` et
- * `users.verified_until` (volet 8, « Une seule écriture »).
+ * `users.verified_until`.
  *
- * Appelée à chaque événement qui peut la changer : décision sur un dossier,
- * dépôt, annulation, changement de nom, et tout ce qui change les droits
- * (paiement, échéance, abonnement offert, compensation — par
- * `notifyEntitlementsChanged`), plus un recalcul général aux transitions de
- * l'interrupteur et à la fin de la grâce. La règle vit dans
- * verificationRules.js ; ici on rassemble les faits.
+ * Pour les comptes personnels, elle suit l'abonnement (périodes avec
+ * `grants_badge`) et une éventuelle révocation admin. Les comptes business
+ * et officiels ne sont pas touchés ici — leur badge se résout ailleurs.
+ *
+ * Appelée à chaque événement qui peut la changer : paiement, échéance,
+ * abonnement offert, compensation, révocation, et les transitions de
+ * l'interrupteur (via `recomputeAllVerifications`).
  */
 
 const pool = require('../../config/db');
-const { REQUEST_STATUS: R, DOC_RETENTION_DAYS } = require('../../constants/verification');
+const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
+const { DOC_RETENTION_DAYS } = require('../../constants/verification');
 const { entitlementsOrNull } = require('./entitlements');
-const { decideVerification, sameVerification } = require('./verificationRules');
+const { decideBadge, sameVerification } = require('./verificationRules');
 const { destroyDocument } = require('../documentVault');
 
 const DAY_MS = 86_400_000;
 
-/** Le dernier dossier du compte, hors dossiers annulés. */
+/** Le dernier dossier du compte, hors dossiers annulés (réservé au business). */
 async function latestRequest(alanyaID, db = pool) {
+  const { REQUEST_STATUS: R } = require('../../constants/verification');
   const [[row]] = await db.execute(
     `SELECT * FROM verification_request
       WHERE alanyaID = ? AND status <> ?
@@ -31,19 +34,65 @@ async function latestRequest(alanyaID, db = pool) {
 
 /**
  * Recalcule et écrit la coche d'un compte. Ne touche la ligne que si quelque
- * chose change.
+ * chose change. Les comptes non personnels sont laissés tels quels.
  *
  * @returns {Promise<{ status: number, until: Date|null, changed: boolean }|null>}
  */
 async function recomputeVerification(alanyaID, db = pool) {
   const [[user]] = await db.execute(
-    'SELECT nom, verification_status, verified_until FROM users WHERE alanyaID = ?',
+    'SELECT account_type, type_compte, verification_status, verified_until FROM users WHERE alanyaID = ?',
     [alanyaID],
   );
   if (!user) return null;
-  const request = await latestRequest(alanyaID, db);
+
+  // Business, officiel, équipe : panier / sceau doré / rien — on n'écrit pas
+  // la coche indigo automatiquement.
+  if (Number(user.account_type) !== ACCOUNT_TYPE.PERSONNEL || Number(user.type_compte) >= 1) {
+    return {
+      status: Number(user.verification_status) || 0,
+      until: user.verified_until ? new Date(user.verified_until) : null,
+      changed: false,
+    };
+  }
+
+  const [[revocation]] = await db.execute(
+    'SELECT alanyaID FROM badge_revocation WHERE alanyaID = ?',
+    [alanyaID],
+  );
   const entitlements = await entitlementsOrNull(alanyaID);
-  const next = decideVerification({ request, currentName: user.nom, entitlements });
+  const now = new Date();
+
+  // Droits indisponibles : on ne retire pas une coche faute de réponse.
+  if (!entitlements && !revocation) {
+    return {
+      status: Number(user.verification_status) || 0,
+      until: user.verified_until ? new Date(user.verified_until) : null,
+      changed: false,
+    };
+  }
+
+  const [grantingPeriods] = await db.execute(
+    `SELECT starts_at, ends_at FROM subscription_period
+      WHERE alanyaID = ? AND grants_badge = 1 AND ends_at > ?
+      ORDER BY starts_at ASC LIMIT 24`,
+    [alanyaID, now],
+  );
+  const [[sub]] = await db.execute(
+    'SELECT current_end FROM subscriber WHERE alanyaID = ?',
+    [alanyaID],
+  );
+
+  const next = decideBadge({
+    revoked: Boolean(revocation),
+    accountType: ACCOUNT_TYPE.PERSONNEL,
+    typeCompte: Number(user.type_compte) || 0,
+    phase: entitlements?.phase ?? 'free',
+    grantingPeriods,
+    lastEnd: sub?.current_end ?? null,
+    now,
+  });
+  if (next == null) return null;
+
   const current = { status: user.verification_status, until: user.verified_until };
   if (sameVerification(current, next)) return { ...next, changed: false };
 
@@ -62,19 +111,24 @@ async function recomputeVerification(alanyaID, db = pool) {
 }
 
 /**
- * Tous les dossiers approuvés, par lots : la phase a changé (activation,
- * désactivation, fin de grâce), donc l'échéance de chaque coche aussi.
+ * Tous les abonnés et tous les comptes dont la coche est posée, par lots :
+ * la phase a changé, ou une échéance collective doit tout recalculer.
  */
 async function recomputeAllVerifications({ batch = 500 } = {}) {
   let after = 0;
   let changed = 0;
   let seen = 0;
   for (;;) {
+    // Abonnés (période ou non) + comptes personnels déjà marqués vérifiés /
+    // expirés / révoqués, pour ne laisser personne avec une coche orpheline.
     const [rows] = await pool.execute(
-      `SELECT DISTINCT alanyaID FROM verification_request
-        WHERE status = ? AND alanyaID > ?
-        ORDER BY alanyaID ASC LIMIT ${Number(batch)}`,
-      [R.APPROVED, after],
+      `SELECT DISTINCT u.alanyaID FROM users u
+        LEFT JOIN subscriber s ON s.alanyaID = u.alanyaID
+       WHERE u.account_type = ?
+         AND u.alanyaID > ?
+         AND (s.alanyaID IS NOT NULL OR u.verification_status IN (2, 4, 5))
+       ORDER BY u.alanyaID ASC LIMIT ${Number(batch)}`,
+      [ACCOUNT_TYPE.PERSONNEL, after],
     );
     if (!rows.length) break;
     for (const { alanyaID } of rows) {

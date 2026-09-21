@@ -1,14 +1,28 @@
 // Registre des sessions d'appel à trois (« Ajouter à l'appel » / transfert).
 //
 // Un appel 1-à-1 ordinaire n'a PAS de session : il vit entièrement dans callState.
-// Une session naît au premier `call_add_participant` et meurt quand l'ajout échoue
-// (retour à l'appel 1-à-1 vierge) ou qu'il ne reste plus assez de monde.
+// Une session naît au premier `call_add_participant`. Elle meurt quand il ne reste
+// plus assez de monde, ou quand sa toute première invitation échoue (retour à
+// l'appel 1-à-1 vierge).
 //
-//   pas de session            → droit DISPONIBLE
-//   session addRight=locked   → droit VERROUILLÉ  (un invité sonne)
-//   session addRight=consumed → droit CONSOMMÉ    (définitif après entrée)
+// Le droit d'ajout est rendu dès qu'on retombe à deux (docs/transfert_appel.md
+// § 4.5) : c'est ce qui permet le transfert en cascade.
 //
-// mode vit AU NIVEAU SESSION :
+//   pas de session             → droit DISPONIBLE
+//   addRight=available (à deux) → droit DISPONIBLE — greffe par `addPending`
+//   addRight=locked            → droit VERROUILLÉ  (un invité sonne)
+//   addRight=consumed          → droit ÉPUISÉ      (trois présents)
+//
+// Dès que quelqu'un est entré (`joins > 0`), la session porte l'appel jusqu'au
+// bout : le relais média, la propriété d'appareil et l'historique y sont rangés.
+// Un échec d'invitation retire alors l'invité sans détruire la session.
+//
+// Chaque invitation a son identifiant (`pending.inviteId`) : le sessionId à la
+// première, `${sessionId}_r${n}` ensuite. Le téléphone de l'invité marque les
+// identifiants terminés pendant deux minutes : réinviter quelqu'un qui a déjà
+// été dans la session sous le même identifiant tomberait sur sa marque.
+//
+// mode vit AU NIVEAU SESSION et change à chaque invitation :
 //   mode=join     → transfer === null
 //   mode=transfer → objet transfer obligatoire
 //
@@ -35,6 +49,12 @@
 //      réécriraient chacun, la seconde écriture effaçant la première. Le
 //      verrou expire tout seul (2 s) : un process qui meurt en le tenant ne
 //      bloque personne durablement.
+//
+//   4. `addPending` — le verrou de session, plus un `SET NX` sur la clé
+//      `byUser` de l'invité. C'est la seule clé partagée avec les autres
+//      sessions, et une écriture conditionnelle sur une clé unique est
+//      atomique : deux sessions qui invitent la même personne n'en retiennent
+//      qu'une.
 //
 // Les handles `setTimeout` ne se sérialisent pas : côté Redis, les trois
 // minuteurs deviennent des lignes `job_queue` (voir services/callSessionsWorkers.js)
@@ -69,6 +89,29 @@ function _toInt(v) {
 
 function normalizeMode(mode) {
   return mode === 'transfer' ? 'transfer' : 'join';
+}
+
+function _nouvelleInvitation(inviteeId, byUserId, inviteId) {
+  return {
+    userId: inviteeId,
+    byUserId,
+    inviteId,
+    invitedAt: Date.now(),
+    timer: null,
+    acceptedByDeviceId: null,
+    acceptedSocketId: null,
+  };
+}
+
+function _nouveauTransfert(initiatorId, targetId) {
+  return {
+    initiatorId,
+    targetId,
+    state: 'pending',
+    readyBy: new Set(),
+    readyTimer: null,
+    leaveTimer: null,
+  };
 }
 
 // ── Sérialisation ───────────────────────────────────────────────────────────
@@ -216,11 +259,17 @@ function isPending(session, userId) {
 }
 
 /**
- * true si [userId] peut encore déclencher un ajout.
- * Ne vérifie QUE le droit : l'appelant doit s'assurer qu'il est bien à deux.
+ * true si [userId] peut déclencher un ajout : pas de session, ou une session à
+ * deux dont il est membre et où aucune invitation n'est en vol.
+ * Ne vérifie QUE le droit : l'appelant doit s'assurer qu'il est bien en appel.
  */
 async function hasAddRight(userId) {
-  return (await getByUser(userId)) === null;
+  const id = _toInt(userId);
+  const session = await getByUser(id);
+  if (!session) return true;
+  return !session.pending
+    && session.participants.size === 2
+    && session.participants.has(id);
 }
 
 /** Snapshot testable des timers transfert (leaveTimer uniquement après ready). */
@@ -309,28 +358,14 @@ async function openWithPending({
     mode: normalizedMode,
     createdAt: now,
     addRight: 'locked',
+    joins: 0,
+    invites: 1,
     participants: new Map(members.map((uid) => [uid, { joinedAt: now }])),
-    pending: {
-      userId: invitee,
-      byUserId: by,
-      invitedAt: now,
-      timer: null,
-      acceptedByDeviceId: null,
-      acceptedSocketId: null,
-    },
-    transfer: null,
+    // Première invitation : son identifiant est le sessionId lui-même, pour
+    // que les charges restent celles qu'attendent les apps déjà installées.
+    pending: _nouvelleInvitation(invitee, by, sessionId),
+    transfer: normalizedMode === 'transfer' ? _nouveauTransfert(by, invitee) : null,
   };
-
-  if (normalizedMode === 'transfer') {
-    session.transfer = {
-      initiatorId: by,
-      targetId: invitee,
-      state: 'pending',
-      readyBy: new Set(),
-      readyTimer: null,
-      leaveTimer: null,
-    };
-  }
 
   if (client) {
     const cles = [...members, invitee].map(byUserKeyOf);
@@ -368,24 +403,152 @@ async function armPendingTimer(sessionId, ms, onExpire) {
   session.pending.timer = setTimeout(onExpire, ms);
 }
 
+/** Retire l'invité d'une session qui continue : retour à deux, droit rendu. */
+function _retirerInvitation(session) {
+  session.pending = null;
+  session.mode = 'join';
+  session.transfer = null;
+  session.addRight = 'available';
+}
+
+/** Minuteurs du repli mémoire ; côté Redis ce sont des booléens, sans effet ici. */
+function _arreterMinuteursTransfert(transfer) {
+  if (!transfer) return;
+  if (transfer.readyTimer) clearTimeout(transfer.readyTimer);
+  if (transfer.leaveTimer) clearTimeout(transfer.leaveTimer);
+}
+
 /**
- * L'invitation a échoué. Détruit la session (droit d'ajout rendu).
- * @returns {number|null} invité retiré
+ * L'invitation a échoué (refus, sans réponse, annulation, blocage, départ).
+ *
+ * Tant que personne n'est entré, la session est détruite : les deux
+ * participants retrouvent leur appel 1-à-1 vierge. Une fois quelqu'un entré,
+ * elle porte l'appel — relais média, propriété d'appareil, historique — et
+ * seul l'invité en est retiré.
+ *
+ * La décision se prend sous le verrou : une invitation soldée à l'instant où
+ * l'invité entre ne doit détruire ni sa promotion, ni la session qu'elle vient
+ * de faire passer à trois.
+ *
+ * @returns {Promise<{inviteeId: number, destroyed: boolean}|null>} null si
+ *          aucune invitation n'était en attente — déjà promue ou déjà soldée.
  */
 async function abortPending(sessionId) {
   const client = getDataClient();
   if (client) {
-    const session = await get(sessionId);
-    if (!session?.pending) return null;
-    const inviteeId = session.pending.userId;
-    await destroy(sessionId);
-    return inviteeId;
+    const r = await _mutate(client, sessionId, async (session, ctx) => {
+      if (!session?.pending) return null;
+      const inviteeId = session.pending.userId;
+      if (!(session.joins > 0)) {
+        await _effacerCles(client, session);
+        ctx.supprimer();
+        return { inviteeId, destroyed: true };
+      }
+      _retirerInvitation(session);
+      if ((await client.get(byUserKeyOf(inviteeId))) === sessionId) {
+        await client.del(byUserKeyOf(inviteeId));
+      }
+      await client.hDel(keyOf(sessionId), 'leaveArmed');
+      return { inviteeId, destroyed: false };
+    });
+    if (!r) return null;
+    await _desarmer(sessionId, KINDS);
+    return r;
   }
   const session = _sessions.get(sessionId);
   if (!session?.pending) return null;
   const inviteeId = session.pending.userId;
-  await destroy(sessionId);
-  return inviteeId;
+  if (!(session.joins > 0)) {
+    await destroy(sessionId);
+    return { inviteeId, destroyed: true };
+  }
+  if (session.pending.timer) clearTimeout(session.pending.timer);
+  _arreterMinuteursTransfert(session.transfer);
+  _retirerInvitation(session);
+  if (_byUser.get(inviteeId) === sessionId) _byUser.delete(inviteeId);
+  return { inviteeId, destroyed: false };
+}
+
+/**
+ * Greffe une invitation sur une session retombée à deux : le droit d'ajout
+ * rendu (docs/transfert_appel.md § 4.5), qui rend le transfert en cascade
+ * possible.
+ *
+ * Refus :
+ *   SESSION_GONE — plus de session, ou le demandeur n'en fait plus partie
+ *   PENDING      — une invitation est déjà en vol (deux appuis simultanés)
+ *   FULL         — déjà trois présents
+ *   TARGET_BUSY  — l'invité appartient à une autre session
+ *   INVALID      — invité manquant, identique au demandeur ou déjà présent
+ *   LOCKED       — verrou de session indisponible
+ *
+ * @returns {Promise<{session: object}|{refus: string}>}
+ */
+async function addPending(sessionId, { inviteeId, byUserId, mode = 'join' } = {}) {
+  const invitee = _toInt(inviteeId);
+  const by = _toInt(byUserId);
+  if (invitee == null || by == null || invitee === by) return { refus: 'INVALID' };
+  const normalizedMode = normalizeMode(mode);
+
+  const refusDe = (session) => {
+    if (!session || !session.participants.has(by)) return 'SESSION_GONE';
+    if (session.participants.has(invitee)) return 'INVALID';
+    if (session.pending) return 'PENDING';
+    if (session.participants.size >= MAX_SESSION_PARTICIPANTS) return 'FULL';
+    if (session.participants.size < 2) return 'SESSION_GONE';
+    return null;
+  };
+
+  // Rend l'objet transfer du tour précédent, dont l'appelant éteint les délais.
+  const greffer = (session) => {
+    const ancien = session.transfer;
+    session.invites = (session.invites || 1) + 1;
+    // Une session à deux sans invitation a forcément vu entrer quelqu'un ;
+    // celles ouvertes avant l'existence de ce compteur n'en portent pas trace.
+    session.joins = Math.max(session.joins || 0, 1);
+    session.mode = normalizedMode;
+    session.addRight = 'locked';
+    session.pending = _nouvelleInvitation(invitee, by, `${session.sessionId}_r${session.invites}`);
+    session.transfer = normalizedMode === 'transfer' ? _nouveauTransfert(by, invitee) : null;
+    return ancien;
+  };
+
+  const client = getDataClient();
+  if (client) {
+    const r = await _mutate(client, sessionId, async (session) => {
+      const refus = refusDe(session);
+      if (refus) return { refus };
+      if (!(await client.set(byUserKeyOf(invitee), sessionId, { NX: true }))) {
+        return { refus: 'TARGET_BUSY' };
+      }
+      try {
+        const ancien = greffer(session);
+        // Posé par le transfert précédent : sans l'effacer, le HSETNX de
+        // `registerTransferReady` échouerait et le nouveau transfert ne
+        // s'armerait jamais.
+        await client.hDel(keyOf(sessionId), 'leaveArmed');
+        return { session, avaitTransfert: !!ancien };
+      } catch (err) {
+        await client.del(byUserKeyOf(invitee));
+        throw err;
+      }
+    });
+    if (!r) return { refus: 'LOCKED' };
+    if (r.refus) return { refus: r.refus };
+    if (r.avaitTransfert) {
+      await _desarmer(sessionId, ['callsession_ready_timeout', 'callsession_auto_leave']);
+    }
+    return { session: r.session };
+  }
+
+  // Repli mémoire : contrôle et écriture sans aucun `await` entre les deux.
+  const session = _sessions.get(sessionId);
+  const refus = refusDe(session);
+  if (refus) return { refus };
+  if (_byUser.has(invitee)) return { refus: 'TARGET_BUSY' };
+  _arreterMinuteursTransfert(greffer(session));
+  _byUser.set(invitee, sessionId);
+  return { session };
 }
 
 /**
@@ -398,9 +561,15 @@ async function promotePending(sessionId) {
     if (!session?.pending) return null;
     if (session.participants.size >= MAX_SESSION_PARTICIPANTS) return null;
     const inviteeId = session.pending.userId;
-    session.participants.set(inviteeId, { joinedAt: Date.now() });
+    // L'identifiant de son invitation est celui que son téléphone a donné à
+    // CallKit : les notifications de fin devront viser celui-là.
+    session.participants.set(inviteeId, {
+      joinedAt: Date.now(),
+      inviteId: session.pending.inviteId || session.sessionId,
+    });
     session.pending = null;
     session.addRight = 'consumed';
+    session.joins = (session.joins || 0) + 1;
     if (session.mode === 'transfer' && session.transfer) {
       session.transfer.state = 'joined';
       session.transfer.targetId = inviteeId;
@@ -618,8 +787,13 @@ async function removeParticipant(sessionId, userId) {
 
   if (isPending(session, id)) {
     const remaining = participantIds(session);
-    await abortPending(sessionId);
-    return { remaining, destroyed: true, wasPending: true, hadPendingInvitee: id };
+    const solde = await abortPending(sessionId);
+    return {
+      remaining,
+      destroyed: solde ? solde.destroyed : false,
+      wasPending: true,
+      hadPendingInvitee: id,
+    };
   }
 
   // Annuler le transfert si l'un des acteurs part (ou si B part pendant armed).
@@ -636,6 +810,7 @@ async function removeParticipant(sessionId, userId) {
         s.transfer.state = 'cancelled';
       }
       s.participants.delete(id);
+      if (s.participants.size === 2 && !s.pending) s.addRight = 'available';
       const restants = participantIds(s);
       const pendingLeft = s.pending?.userId ?? null;
       return { restants, aDetruire: s.participants.size < 2, pendingLeft };
@@ -661,6 +836,7 @@ async function removeParticipant(sessionId, userId) {
   }
   s.participants.delete(id);
   _byUser.delete(id);
+  if (s.participants.size === 2 && !s.pending) s.addRight = 'available';
   if (s.participants.size < 2) {
     const remaining = participantIds(s);
     const pendingLeft = s.pending?.userId ?? null;
@@ -673,17 +849,21 @@ async function removeParticipant(sessionId, userId) {
   return { remaining: participantIds(s), destroyed: false, wasPending: false, hadPendingInvitee: null };
 }
 
+/** Supprime une session et les clés `byUser` de ses membres et de son invité. */
+async function _effacerCles(client, session) {
+  const cles = [...session.participants.keys()].map(byUserKeyOf);
+  if (session.pending) cles.push(byUserKeyOf(session.pending.userId));
+  if (cles.length) await client.del(cles);
+  await client.del(keyOf(session.sessionId));
+}
+
 async function destroy(sessionId) {
   const client = getDataClient();
   if (client) {
     const session = await get(sessionId);
     await cancelByDedupeKey(dedupeOf(sessionId), KINDS);
-    if (session) {
-      const cles = [...session.participants.keys()].map(byUserKeyOf);
-      if (session.pending) cles.push(byUserKeyOf(session.pending.userId));
-      if (cles.length) await client.del(cles);
-    }
-    await client.del(keyOf(sessionId));
+    if (session) await _effacerCles(client, session);
+    else await client.del(keyOf(sessionId));
     return;
   }
   const session = _sessions.get(sessionId);
@@ -723,6 +903,7 @@ module.exports = {
   openWithPending,
   armPendingTimer,
   abortPending,
+  addPending,
   promotePending,
   markPendingAccepted,
   markTransferJoined,

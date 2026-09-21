@@ -1,63 +1,90 @@
 const assert = require('assert');
-const { VERIFICATION: V } = require('../../constants/accountTypes');
-const { REQUEST_STATUS: R } = require('../../constants/verification');
+const { VERIFICATION: V, ACCOUNT_TYPE } = require('../../constants/accountTypes');
 const {
-  normalizeName, nameChanged, decideVerification, sameVerification,
+  normalizeName, nameChanged, decideBadge, sameVerification, badgeChainEnd,
 } = require('./verificationRules');
 
 const END = '2027-10-10T00:00:00.000Z';
-const GRACE = '2026-10-01T00:00:00.000Z';
-const ents = (over = {}) => ({
+const START = '2026-10-10T00:00:00.000Z';
+const NOW = new Date('2026-11-01T00:00:00.000Z');
+const PAST = '2026-09-01T00:00:00.000Z';
+
+const period = (startsAt, endsAt) => ({ starts_at: startsAt, ends_at: endsAt });
+const decide = (over = {}) => decideBadge({
+  revoked: false,
+  accountType: ACCOUNT_TYPE.PERSONNEL,
   phase: 'paid',
-  exempt: false,
-  graceUntil: null,
-  period: { endsAt: END },
-  features: { verified_badge: true },
+  grantingPeriods: [period(START, END)],
+  lastEnd: null,
+  now: NOW,
   ...over,
 });
-const approved = { status: R.APPROVED, name_at_approval: 'Marie Kouassi' };
-const decide = (request, entitlements = ents(), currentName = 'Marie Kouassi') =>
-  decideVerification({ request, currentName, entitlements });
 
-// ── Noms ──────────────────────────────────────────────────────────────────
+// ── Noms (conservés pour le dossier business) ─────────────────────────────
 assert.strictEqual(normalizeName('  Marie   KOUASSI '), 'marie kouassi');
 assert.strictEqual(nameChanged('Marie Kouassi', 'marie  kouassi'), false);
 assert.strictEqual(nameChanged('Marie Kouassi', 'Marie Kouassi-Diallo'), true);
 
-// ── Dossier ───────────────────────────────────────────────────────────────
-assert.deepStrictEqual(decide(null), { status: V.NON_DEMANDE, until: null });
-assert.strictEqual(decide({ status: R.PENDING }).status, V.EN_COURS);
-assert.strictEqual(decide({ status: R.DOCUMENT_REQUESTED }).status, V.EN_COURS);
-assert.strictEqual(decide({ status: R.REFUSED }).status, V.REFUSE);
-assert.strictEqual(decide({ status: R.REVOKED }).status, V.REVOQUE);
+// ── Chaîne de périodes ────────────────────────────────────────────────────
+assert.strictEqual(badgeChainEnd([period(START, END)], NOW).toISOString(), END);
+assert.strictEqual(
+  badgeChainEnd([period(START, '2027-01-01T00:00:00.000Z'), period('2027-01-01T00:00:00.000Z', END)], NOW)
+    .toISOString(),
+  END,
+);
 
-// ── Approuvé : la coche suit l'abonnement ─────────────────────────────────
+// ── Révocation ────────────────────────────────────────────────────────────
+assert.deepStrictEqual(decide({ revoked: true }), { status: V.REVOQUE, until: null });
+
+// ── Comptes non personnels : ne pas écrire ────────────────────────────────
+assert.strictEqual(decide({ accountType: ACCOUNT_TYPE.BUSINESS }), null);
+assert.strictEqual(decide({ accountType: ACCOUNT_TYPE.OFFICIEL }), null);
+assert.strictEqual(decide({ typeCompte: 1 }), null, 'équipe : pas de coche indigo');
+assert.strictEqual(decide({ typeCompte: 2 }), null);
+
+// ── Phase gratuite : aucune coche ─────────────────────────────────────────
+assert.deepStrictEqual(decide({ phase: 'free' }), { status: V.NON_DEMANDE, until: null });
+assert.deepStrictEqual(
+  decide({ phase: 'free', grantingPeriods: [period(START, END)] }),
+  { status: V.NON_DEMANDE, until: null },
+  'même avec une période offerte, rien avant l\'activation',
+);
+
+// ── Abonné : coche jusqu'à la fin de la chaîne ────────────────────────────
 {
-  const v = decide(approved);
+  const v = decide();
   assert.strictEqual(v.status, V.VERIFIE);
   assert.strictEqual(v.until.toISOString(), END);
 }
-assert.deepStrictEqual(decide(approved, ents({ features: { verified_badge: false }, period: null })),
-  { status: V.EXPIRE, until: null }, 'échu : la coche tombe');
-assert.deepStrictEqual(decide(approved, ents({ phase: 'free', period: null })),
-  { status: V.VERIFIE, until: null }, 'phase gratuite : vérification seule');
-assert.strictEqual(decide(approved, ents({ phase: 'grace', period: null, graceUntil: GRACE })).until.toISOString(),
-  GRACE, 'la grâce porte la coche jusqu\'à sa fin');
-assert.strictEqual(
-  decide(approved, ents({ phase: 'grace', period: { endsAt: END }, graceUntil: GRACE })).until.toISOString(),
-  END,
-);
-assert.deepStrictEqual(decide(approved, ents({ exempt: true })), { status: V.VERIFIE, until: null });
-assert.deepStrictEqual(decide(approved, null), { status: V.VERIFIE, until: null },
-  'droits indisponibles : la coche reste');
 
-// ── Changement de nom : nouvel examen ─────────────────────────────────────
-assert.strictEqual(decide(approved, ents(), 'Marie Diallo').status, V.EN_COURS);
+// Période à venir (payée pendant la grâce) : coche immédiate.
+{
+  const futureStart = '2026-12-01T00:00:00.000Z';
+  const v = decide({
+    phase: 'grace',
+    grantingPeriods: [period(futureStart, END)],
+  });
+  assert.strictEqual(v.status, V.VERIFIE);
+  assert.strictEqual(v.until.toISOString(), END);
+}
+
+// Période qui n'accorde pas la coche : pas de coche.
+assert.deepStrictEqual(
+  decide({ grantingPeriods: [] }),
+  { status: V.NON_DEMANDE, until: null },
+);
+
+// ── Échu ──────────────────────────────────────────────────────────────────
+assert.deepStrictEqual(
+  decide({ grantingPeriods: [], lastEnd: PAST }),
+  { status: V.EXPIRE, until: null },
+);
 
 // ── Rien à écrire ─────────────────────────────────────────────────────────
 assert.strictEqual(sameVerification({ status: 2, until: null }, { status: 2, until: null }), true);
 assert.strictEqual(sameVerification({ status: 2, until: new Date(END) }, { status: 2, until: END }), true);
 assert.strictEqual(sameVerification({ status: 2, until: null }, { status: 2, until: END }), false);
 assert.strictEqual(sameVerification({ status: 1, until: null }, { status: 2, until: null }), false);
+assert.strictEqual(sameVerification(null, null), true);
 
 console.log('verificationRules.test.js OK');

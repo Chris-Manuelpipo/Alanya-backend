@@ -98,7 +98,6 @@ const messages = {
   }),
   verificationRevoked: ({ reason }) => ({
     type: 'verification_update',
-    deeplink: 'alanya://verification',
     title: 'Votre coche a été retirée',
     body: `Motif : ${reason}`,
   }),

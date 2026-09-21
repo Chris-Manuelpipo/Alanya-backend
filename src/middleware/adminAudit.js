@@ -69,6 +69,11 @@ const ACTIONS = {
   // Réglages et annuaire
   'PUT /settings': { action: 'settings.write', targetType: 'settings' },
 
+  // Verrouillage de la connexion sur les appareils enrôlés. Le DÉSARMEMENT est
+  // le geste qui compte : il rouvre la connexion par mot de passe depuis
+  // n'importe quel téléphone, et doit laisser une trace nominative.
+  'PUT /security-settings': { action: 'security.settings', targetType: 'settings' },
+
   // Clés de sauvegarde. Les deux gestes les plus lourds de conséquence du
   // système : ils décident de ce qui restera lisible.
   'POST /backup/keys': { action: 'backup.keys.rotate', targetType: 'backup_key' },
@@ -103,6 +108,8 @@ const ACTIONS = {
   'PUT /billing/plans/:id': { action: 'billing.plans.update', targetType: 'plan', param: 'id' },
   'PUT /billing/features/:code': { action: 'billing.features.update', targetType: 'feature', param: 'code' },
   'POST /users/:id/billing/gift': { action: 'billing.gift', targetType: 'user', param: 'id' },
+  'POST /users/:id/badge/revoke': { action: 'badge.revoke', targetType: 'user', param: 'id' },
+  'POST /users/:id/badge/restore': { action: 'badge.restore', targetType: 'user', param: 'id' },
 
   // Vérification d'identité. Refus, pièce demandée et révocation portent un
   // motif (`body.reason`), recopié ici. Les ouvertures de pièces ont leur

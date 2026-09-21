@@ -45,7 +45,8 @@ const contactListRoutes  = require('./src/routes/contactLists');
 const backupRoutes       = require('./src/routes/backup');
 const billingRoutes      = require('./src/routes/billing');
 const paymentsRoutes     = require('./src/routes/payments');
-const verificationRoutes = require('./src/routes/verification');
+// verificationRoutes : tables et contrôleurs conservés, route non montée
+// (comptes personnels sans dossier ; business plus tard).
 const mediaAvailRoutes   = require('./src/routes/mediaAvailability');
 const tripRoutes         = require('./src/routes/trips');
 const qrRoutes           = require('./src/routes/qr');
@@ -200,7 +201,8 @@ app.use('/api/contact-lists', contactListRoutes);
 app.use('/api/backup',        backupRoutes);
 app.use('/api/billing',       billingRoutes);
 app.use('/api/payments',      paymentsRoutes);
-app.use('/api/verification',  verificationRoutes);
+// /api/verification : mis en sommeil (comptes personnels sans dossier).
+// Les tables et contrôleurs restent pour les comptes business plus tard.
 app.use('/api/media',         mediaAvailRoutes);
 app.use('/api/trips', tripRoutes);
 app.use('/api/qr',            qrRoutes);
@@ -412,6 +414,11 @@ async function start() {
         ['welcome_status_purge',    'welcome_status'],
         ['trip_nightly_purge',      'trip'],
         ['data_retention_purge',    'data_retention'],
+        // Déclarée dans le registre depuis la migration 079, mais jamais
+        // planifiée : la table grossissait sans limite et la page Santé
+        // l'affichait « jamais exécutée » en permanence. Le bail n'a pas besoin
+        // d'être semé, `tryAcquire` le crée à la volée.
+        ['backup_key_access_purge', 'backup_key_access'],
         ['media_nightly_purge',     'media'],
         // Balayage des partitions de médias. Il a son propre bail parce qu'il
         // n'a rien à voir avec le précédent : celui-ci interroge `message`,

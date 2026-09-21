@@ -72,6 +72,7 @@ async function lockSubscriber(conn, alanyaID) {
 async function appendPeriod(conn, {
   alanyaID, plan, now = new Date(), graceUntil = null, source,
   paymentId = null, grantedBy = null, reason = null, months = null, days = null,
+  grantsBadge = true,
 }) {
   const sub = await lockSubscriber(conn, alanyaID);
   const start = nextPeriodStart({ now, currentEnd: sub.current_end, graceUntil });
@@ -82,9 +83,9 @@ async function appendPeriod(conn, {
     : addMonths(start, months ?? Number(plan.duration_months));
   await conn.execute(
     `INSERT INTO subscription_period
-       (alanyaID, plan_id, starts_at, ends_at, source, payment_id, granted_by, reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [alanyaID, plan.id, start, end, source, paymentId, grantedBy, reason],
+       (alanyaID, plan_id, starts_at, ends_at, source, grants_badge, payment_id, granted_by, reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [alanyaID, plan.id, start, end, source, grantsBadge ? 1 : 0, paymentId, grantedBy, reason],
   );
   // Une nouvelle période efface l'échéance de purge : les données payantes
   // conservées depuis l'expiration redeviennent simplement actives.
@@ -109,7 +110,8 @@ async function graceToPreserve(now = new Date()) {
  * transaction, puis ses jobs d'échéance et le signal au téléphone.
  */
 async function grantPeriod({
-  alanyaID, plan, now = new Date(), source, grantedBy = null, reason = null, months = null, days = null,
+  alanyaID, plan, now = new Date(), source, grantedBy = null, reason = null,
+  months = null, days = null, grantsBadge = true,
 }) {
   const graceUntil = await graceToPreserve(now);
   const conn = await pool.getConnection();
@@ -117,7 +119,7 @@ async function grantPeriod({
   try {
     await conn.beginTransaction();
     result = await appendPeriod(conn, {
-      alanyaID, plan, now, graceUntil, source, grantedBy, reason, months, days,
+      alanyaID, plan, now, graceUntil, source, grantedBy, reason, months, days, grantsBadge,
     });
     await conn.commit();
   } catch (err) {
@@ -139,9 +141,12 @@ async function grantPeriod({
 /**
  * Abonnement offert par l'administration : une période de plus, jamais un
  * faux paiement. Le plan retenu est celui mis en avant (il porte l'offre
- * complète) ; la durée est celle choisie par l'administrateur.
+ * complète) ; la durée est celle choisie par l'administrateur. La coche
+ * est optionnelle (`grantsBadge`).
  */
-async function grantGift({ alanyaID, months, reason, adminId, now = new Date() }) {
+async function grantGift({
+  alanyaID, months, reason, adminId, grantsBadge = true, now = new Date(),
+}) {
   const [[user]] = await pool.execute('SELECT alanyaID FROM users WHERE alanyaID = ?', [alanyaID]);
   if (!user) throw new BillingError('USER_NOT_FOUND', 404, 'Utilisateur introuvable');
   const [[plan]] = await pool.execute(
@@ -149,7 +154,7 @@ async function grantGift({ alanyaID, months, reason, adminId, now = new Date() }
   );
   if (!plan) throw new BillingError('PLAN_NOT_FOUND', 404, 'Aucun plan actif à offrir');
   return grantPeriod({
-    alanyaID, plan, now, source: PERIOD_SOURCE.GIFT, grantedBy: adminId, reason, months,
+    alanyaID, plan, now, source: PERIOD_SOURCE.GIFT, grantedBy: adminId, reason, months, grantsBadge,
   });
 }
 

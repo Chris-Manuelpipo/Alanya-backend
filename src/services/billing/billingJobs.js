@@ -164,15 +164,15 @@ async function broadcastToEveryone(clientId, translations) {
 }
 
 const graceText = (graceUntil) => ({
-  fr: `Alanya Plus arrive. La traduction, la sauvegarde, les trajets de confiance et les sonneries par liste restent gratuits jusqu'au ${fmtDay(graceUntil)}, puis rejoignent l'offre Alanya Plus. Abonnez-vous dès maintenant depuis votre profil : votre première période ne commencera qu'à cette date.`,
-  en: `Alanya Plus is coming. Translation, backup, trusted trips and list ringtones stay free until ${fmtDay(graceUntil, 'en-GB')}, then become part of Alanya Plus. Subscribe now from your profile: your first period only starts on that date.`,
-  zh: `Alanya Plus 即将推出。翻译、备份、可信行程和列表铃声在 ${fmtDay(graceUntil, 'zh-CN')} 之前仍然免费，之后将纳入 Alanya Plus。现在即可在个人资料中订阅：您的第一个周期将从该日期开始。`,
+  fr: `Alanya Plus arrive. Jusqu'au ${fmtDay(graceUntil)}, traduction, sauvegarde, trajets de confiance et sonneries par liste restent gratuits. Ensuite, ils rejoignent l'offre annuelle à 1 000 F, qui inclut aussi la coche « Abonné Alanya Plus ». Abonnez-vous dès maintenant depuis votre profil : votre première période et votre coche commencent à cette date.`,
+  en: `Alanya Plus is coming. Until ${fmtDay(graceUntil, 'en-GB')}, translation, backup, trusted trips and list ringtones stay free. Then they join the yearly offer at 1,000 F, which also includes the “Alanya Plus subscriber” badge. Subscribe now from your profile: your first period and badge start on that date.`,
+  zh: `Alanya Plus 即将推出。在 ${fmtDay(graceUntil, 'zh-CN')} 之前，翻译、备份、可信行程和列表铃声仍然免费。之后它们将纳入每年 1,000 F 的方案，并附带「Alanya Plus 订阅用户」标记。现在即可在个人资料中订阅：您的第一个周期和标记将从该日期开始。`,
 });
 
 const graceReminderText = (graceUntil) => ({
-  fr: `Plus que 7 jours : à partir du ${fmtDay(graceUntil)}, la traduction, la sauvegarde, les trajets de confiance et les sonneries par liste feront partie d'Alanya Plus. Déjà abonné ? Rien à faire.`,
-  en: `7 days left: from ${fmtDay(graceUntil, 'en-GB')}, translation, backup, trusted trips and list ringtones will be part of Alanya Plus. Already subscribed? Nothing to do.`,
-  zh: `还剩 7 天：自 ${fmtDay(graceUntil, 'zh-CN')} 起，翻译、备份、可信行程和列表铃声将属于 Alanya Plus。已经订阅？无需任何操作。`,
+  fr: `Plus que 7 jours : à partir du ${fmtDay(graceUntil)}, traduction, sauvegarde, trajets et sonneries par liste font partie d'Alanya Plus (1 000 F / an, avec la coche). Déjà abonné ? Rien à faire.`,
+  en: `7 days left: from ${fmtDay(graceUntil, 'en-GB')}, translation, backup, trips and list ringtones will be part of Alanya Plus (1,000 F / year, with the badge). Already subscribed? Nothing to do.`,
+  zh: `还剩 7 天：自 ${fmtDay(graceUntil, 'zh-CN')} 起，翻译、备份、行程和列表铃声将属于 Alanya Plus（每年 1,000 F，含标记）。已经订阅？无需任何操作。`,
 });
 
 /** L'activation tient toujours (pas désactivée ni rejouée entre-temps). */
@@ -230,7 +230,8 @@ async function handleCompensate({ activatedAt, deactivatedAt }, now = new Date()
 
   const reason = `compensation:${new Date(activatedAt).toISOString()}`;
   const [rows] = await pool.execute(
-    `SELECT sp.alanyaID, MAX(sp.plan_id) AS plan_id
+    `SELECT sp.alanyaID, MAX(sp.plan_id) AS plan_id,
+            MAX(sp.grants_badge) AS grants_badge
        FROM subscription_period sp
       WHERE sp.starts_at <= ? AND sp.ends_at > ?
       GROUP BY sp.alanyaID`,
@@ -247,6 +248,9 @@ async function handleCompensate({ activatedAt, deactivatedAt }, now = new Date()
     if (!plan) continue;
     await grantPeriod({
       alanyaID: row.alanyaID, plan, now, source: PERIOD_SOURCE.COMPENSATION, reason, days,
+      // Hérite de la période couvrant la désactivation : qui avait la coche
+      // la retrouve, qui ne l'avait pas ne la gagne pas au passage.
+      grantsBadge: Number(row.grants_badge) === 1,
     });
     granted++;
   }

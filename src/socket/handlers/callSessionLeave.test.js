@@ -14,6 +14,7 @@ const { leaveCallSession, failInvite } = require('./calls');
 const callState = require('../state/callState');
 const callSessions = require('../state/callSessions');
 const pendingCalls = require('../state/pendingCalls');
+const callDeviceOwnership = require('../state/callDeviceOwnership');
 const { makeFakeIo, fakeSocket } = require('../../testUtils/fakeIo');
 
 const CHRIS = 1;
@@ -147,10 +148,11 @@ async function threeWaySession() {
   // d'appel ou le prochain « occupé » viserait quelqu'un qui n'est plus là.
   assert.strictEqual(Number((await callState.getEntry(AWA)).peerId), NADIA, 'Awa pointe Nadia');
   assert.strictEqual(Number((await callState.getEntry(NADIA)).peerId), AWA, 'Nadia pointe Awa');
-  // Le droit d'ajout reste consommé bien qu'ils ne soient plus que deux.
-  assert.strictEqual(await callSessions.hasAddRight(AWA), false, 'droit toujours consommé');
-  assert.strictEqual(await callSessions.hasAddRight(NADIA), false, 'droit toujours consommé');
-  assert.strictEqual((await callSessions.get(live.sessionId)).addRight, 'consumed');
+  // Retombés à deux, ils retrouvent le droit d'ajout — l'ancienne invitée
+  // comprise (docs/transfert_appel.md § 4.5).
+  assert.strictEqual(await callSessions.hasAddRight(AWA), true, 'droit rendu à Awa');
+  assert.strictEqual(await callSessions.hasAddRight(NADIA), true, "droit rendu à l'ancienne invitée");
+  assert.strictEqual((await callSessions.get(live.sessionId)).addRight, 'available');
 
   // ── 2ᵉ leave après hangup : no-op (filet anti double end_call CallKit) ──────
   // Le client peut renvoyer end_call ; leaveCallSession doit renvoyer false et
@@ -208,6 +210,39 @@ async function threeWaySession() {
   assert.strictEqual(c2.events[0].payload.claimedByAnotherDevice, true);
   assert.strictEqual(await callState.get(NADIA), 'idle');
   assert.strictEqual(await callSessions.hasAddRight(CHRIS), true, 'droit rendu après refus');
+
+  // ── failInvite qui croise l'entrée de l'invité : sans effet ─────────────────
+  // En Redis, failInvite lit une copie de la session, et l'invité peut entrer
+  // entre cette lecture et le solde. On rejoue cette copie périmée : l'invité
+  // entré entre-temps ne doit perdre ni son état, ni la session sa propriété
+  // d'appareil, et personne ne doit recevoir un faux échec.
+  await reset();
+  await twoWayCall();
+  const croise = await callSessions.openWithPending({
+    participants: [CHRIS, AWA], inviteeId: NADIA, byUserId: CHRIS,
+  });
+  const copiePerimee = { ...croise, pending: { ...croise.pending } };
+  await callSessions.promotePending(croise.sessionId);
+  await callState.setInCall(NADIA, { peerId: CHRIS });
+  await callDeviceOwnership.setActive(croise.sessionId, CHRIS, {
+    activeDeviceId: 'dev-chris', activeSocketId: 'sock-chris',
+  });
+  const vraiGet = callSessions.get;
+  callSessions.get = async (id) => (id === croise.sessionId ? copiePerimee : vraiGet(id));
+  io = fakeIo();
+  try {
+    await failInvite(io, croise.sessionId, 'no_answer');
+  } finally {
+    callSessions.get = vraiGet;
+  }
+  assert.ok(!io.sent.some((e) => e.event === 'call_conf_failed'), 'aucun faux échec annoncé');
+  assert.ok(!io.sent.some((e) => e.event === 'call_ended'), "l'invité entré n'est pas coupé");
+  assert.strictEqual(await callState.get(NADIA), 'in_call', "l'invité entré garde son état");
+  assert.strictEqual(
+    await callDeviceOwnership.getActiveDeviceId(croise.sessionId, CHRIS), 'dev-chris',
+    'propriété de la session intacte',
+  );
+  await callDeviceOwnership.release(croise.sessionId);
 
   await reset();
   console.log('✅ callSessionLeave.test.js — tous les cas passent');
