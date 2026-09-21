@@ -821,15 +821,19 @@ const notifyVoicemailActive = async (
   callerName,
   { activeUntil = null, timeZone = null } = {},
 ) => {
-  const jour = civilDayKey(new Date(), timeZone || FALLBACK_TIMEZONE);
-  if (!(await claimDailyNotice(targetID, jour))) {
-    logSkipped({ type: 'voicemail_active', userId: targetID, reason: 'deja_notifie_aujourdhui' });
-    return;
-  }
-
+  // Les préférences d'abord, le quota ensuite — et pas l'inverse. Réserver la
+  // journée puis se faire refouler par « Ne pas déranger » brûlerait le droit
+  // à notifier : un appel intercepté à 2 h du matin consommerait le quota,
+  // et l'appel de 9 h, lui parfaitement notifiable, resterait muet.
   const decision = await evaluateTypePush(targetID, 'voicemail_active');
   if (!decision.allowed) {
     logSkipped({ type: 'voicemail_active', userId: targetID, reason: decision.reason });
+    return;
+  }
+
+  const jour = civilDayKey(new Date(), timeZone || FALLBACK_TIMEZONE);
+  if (!(await claimDailyNotice(targetID, jour))) {
+    logSkipped({ type: 'voicemail_active', userId: targetID, reason: 'deja_notifie_aujourdhui' });
     return;
   }
 
