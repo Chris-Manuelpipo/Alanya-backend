@@ -52,6 +52,14 @@ async function fetchAnalyticsData(fromInput, toInput) {
     // trois restent disjointes, leur somme reste le total : le camembert de
     // l'écran Analytics en dépend.
     //
+    // `voicemail` (statut 4) est le QUATRIÈME seau, et il lui fallait le sien :
+    // un appel renvoyé au répondeur n'a été ni décroché, ni refusé, ni vraiment
+    // manqué — le téléphone n'a jamais sonné. Le ranger sous « manqué »
+    // masquerait le seul chiffre qui dit si la fonctionnalité sert, et le
+    // laisser hors des quatre le ferait disparaître du camembert tout en
+    // restant dans `total`, ce qui est précisément le défaut que la note
+    // ci-dessus décrit pour le statut 3.
+    //
     // `totalDuration` filtre sur le décrochage : sans ce filtre, il comptait le
     // temps de SONNERIE des appels sans réponse comme du temps d'appel —
     // 3 143 heures au 31/08/2026. La moyenne juste en dessous filtrait déjà.
@@ -63,6 +71,7 @@ async function fetchAnalyticsData(fromInput, toInput) {
          SUM(status = 1)      AS answered,
          SUM(status = 0 OR status = 3) AS missed,
          SUM(status = 2)      AS rejected,
+         SUM(status = 4)      AS voicemail,
          SUM(mode = 0)        AS relay,
          SUM(mode = 1)        AS p2p,
          SUM(mode IS NULL)    AS modeUnknown,
@@ -234,6 +243,14 @@ async function fetchAnalyticsData(fromInput, toInput) {
 
   const callsTotal = _num(callAgg.total);
   const callsAnswered = _num(callAgg.answered);
+  const callsVoicemail = _num(callAgg.voicemail);
+  // Dénominateur du taux de réussite : le total MOINS les renvois au
+  // répondeur. Un appel intercepté n'avait aucune chance d'être décroché — ce
+  // n'est pas une défaillance de la plateforme, c'est le réglage qui a
+  // fonctionné. Le laisser au dénominateur ferait chuter un indicateur de
+  // santé technique à mesure que la fonctionnalité est adoptée, ce qui est
+  // exactement le contraire de ce qu'il doit mesurer.
+  const callsJoignables = Math.max(0, callsTotal - callsVoicemail);
   const callsRelay = _num(callAgg.relay);
   const callsP2p = _num(callAgg.p2p);
   const callsModeKnown = callsRelay + callsP2p;
@@ -260,6 +277,7 @@ async function fetchAnalyticsData(fromInput, toInput) {
       answered: callsAnswered,
       missed: _num(callAgg.missed),
       rejected: _num(callAgg.rejected),
+      voicemail: _num(callAgg.voicemail),
       avgDuration: _num(callAgg.avgDuration),
       totalDuration: _num(callAgg.totalDuration),
       relay: callsRelay,
@@ -267,7 +285,7 @@ async function fetchAnalyticsData(fromInput, toInput) {
       modeUnknown: _num(callAgg.modeUnknown),
       relayRate: callsModeKnown ? Math.round((callsRelay / callsModeKnown) * 100) : 0,
       p2pRate: callsModeKnown ? Math.round((callsP2p / callsModeKnown) * 100) : 0,
-      successRate: callsTotal ? Math.round((callsAnswered / callsTotal) * 100) : 0,
+      successRate: callsJoignables ? Math.round((callsAnswered / callsJoignables) * 100) : 0,
     },
     callsByDay: callsByDay.map((r) => ({
       date: r.date,
