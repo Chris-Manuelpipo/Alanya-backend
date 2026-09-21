@@ -2,7 +2,6 @@ const assert = require('assert');
 
 const {
   MEDIA_ROOT,
-  TRASH_DIR,
   LEGACY_KINDS,
   MS_PAR_JOUR,
   partitionKeyFor,
@@ -10,12 +9,9 @@ const {
   partitionStartMs,
   partitionExpiresAtMs,
   isPartitionExpired,
-  secondsUntilPartitionExpiry,
   partitionFromPath,
   uploadMsFromFileName,
   partitionDirFor,
-  trashNameFor,
-  parseTrashName,
 } = require('./mediaPartition');
 
 const utc = (s) => Date.parse(s);
@@ -48,11 +44,10 @@ assert.ok(!isPartitionKey(''));
 assert.ok(!isPartitionKey(null));
 
 // Aucun des dossiers hérités ne peut être pris pour une partition : c'est ce
-// qui permet aux deux dispositions de cohabiter sous `uploads/media/`.
+// qui permet aux deux dispositions de cohabiter sous `media/`.
 for (const kind of LEGACY_KINDS) {
   assert.ok(!isPartitionKey(kind), `${kind} ne doit pas passer pour une partition`);
 }
-assert.ok(!isPartitionKey(TRASH_DIR));
 
 // ── Début et échéance ───────────────────────────────────────────────
 assert.strictEqual(partitionStartMs('2026-08-24'), utc('2026-08-24T00:00:00Z'));
@@ -102,28 +97,6 @@ assert.strictEqual(partitionExpiresAtMs('2026-07-20', undefined), null);
   assert.ok(!isPartitionExpired('2026-02-31', opts('2030-01-01T00:00:00Z')));
 }
 
-// ── Plafond de cache ────────────────────────────────────────────────
-{
-  const restant = secondsUntilPartitionExpiry('2026-07-20', {
-    retentionDays: 30,
-    now: utc('2026-08-19T00:00:00Z'),
-  });
-  assert.strictEqual(restant, 86400); // il reste exactement un jour
-
-  // Jamais de valeur négative : une partition déjà échue plafonne à 0.
-  assert.strictEqual(
-    secondsUntilPartitionExpiry('2026-07-20', {
-      retentionDays: 30,
-      now: utc('2026-09-01T00:00:00Z'),
-    }),
-    0,
-  );
-  assert.strictEqual(
-    secondsUntilPartitionExpiry('images', { retentionDays: 30 }),
-    0,
-  );
-}
-
 // ── Lecture d'un chemin ─────────────────────────────────────────────
 assert.strictEqual(
   partitionFromPath('https://www.alanya237.com/uploads/media/2026-08-24/images/media_1_1756000000000.jpg'),
@@ -169,33 +142,5 @@ assert.strictEqual(
 );
 assert.strictEqual(partitionDirFor('images', 'pas un instant'), null);
 assert.ok(partitionDirFor('video').startsWith(`${MEDIA_ROOT}/`));
-
-// ── Nommage de corbeille ────────────────────────────────────────────
-{
-  const nom = trashNameFor('2026-07-20', 'hote:123:abcd', 'run-7');
-  const lu = parseTrashName(nom);
-  assert.deepStrictEqual(lu, { cle: '2026-07-20', workerId: 'hote-123-abcd', runId: 'run-7' });
-
-  // Deux exécutions ne visent jamais la même destination : c'est ce qui permet
-  // à `rename` de servir de verrou sans se marcher dessus.
-  assert.notStrictEqual(
-    trashNameFor('2026-07-20', 'a', 'run-1'),
-    trashNameFor('2026-07-20', 'b', 'run-1'),
-  );
-  assert.notStrictEqual(
-    trashNameFor('2026-07-20', 'a', 'run-1'),
-    trashNameFor('2026-07-20', 'a', 'run-2'),
-  );
-
-  // Les séparateurs de chemin ne peuvent pas survivre à l'assainissement :
-  // un workerId hostile ne doit pas pouvoir sortir du sas.
-  const hostile = trashNameFor('2026-07-20', '../../etc', 'run');
-  assert.ok(!hostile.includes('/'));
-  assert.ok(!hostile.includes('..'));
-
-  assert.strictEqual(parseTrashName('2026-07-20'), null);
-  assert.strictEqual(parseTrashName('images__a__b'), null);
-  assert.strictEqual(parseTrashName(''), null);
-}
 
 console.log('mediaPartition: OK');

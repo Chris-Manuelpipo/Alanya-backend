@@ -1,6 +1,6 @@
 const assert = require('assert');
 
-const { mediaExpiryGuard, staticHeaders, GONE_MAX_AGE } = require('./mediaExpiry');
+const { mediaExpiryGuard, GONE_MAX_AGE } = require('./mediaExpiry');
 
 const MAINTENANT = Date.parse('2026-08-25T12:00:00Z');
 const RETENTION = 30;
@@ -25,15 +25,16 @@ function fausseReponse() {
 function passer(chemin, { now = MAINTENANT, relayLegacy = true } = {}) {
   const guard = mediaExpiryGuard({ retentionDays: RETENTION, now: () => now, relayLegacy });
   const res = fausseReponse();
+  const req = { path: chemin };
   let suivant = false;
-  guard({ path: chemin }, res, () => { suivant = true; });
-  return { res, suivant };
+  guard(req, res, () => { suivant = true; });
+  return { req, res, suivant };
 }
 
-// ── Partition échue : 410, sans jamais toucher au disque ────────────
+// ── Partition échue : 410, sans jamais appeler le stockage ──────────
 {
   const { res, suivant } = passer('/media/2026-07-20/images/media_1_1753000000000.jpg');
-  assert.strictEqual(suivant, false, 'la requête ne doit pas atteindre express.static');
+  assert.strictEqual(suivant, false, 'la requête ne doit pas atteindre mediaRead');
   assert.strictEqual(res.code, 410);
   assert.strictEqual(res.corps.error, 'MEDIA_EXPIRED');
   assert.strictEqual(res.corps.partition, '2026-07-20');
@@ -73,23 +74,24 @@ function passer(chemin, { now = MAINTENANT, relayLegacy = true } = {}) {
   assert.strictEqual(res.code, null);
 }
 
-// ── Chemin hérité, fichier récent absent des deux côtés → vraie absence ──
+// ── Chemin hérité, partition vivante : traduit en clé pour `mediaRead` ──
 {
-  // Horodatage dans une partition encore vivante, mais aucun fichier de ce nom
-  // nulle part : le relais constate l'absence et laisse `express.static`
-  // répondre 404. Une absence n'est pas une expiration.
+  // L'URL en base précède le découpage en tranches ; l'objet, lui, a été rangé
+  // sous sa partition. Le relais recalcule la clé depuis l'horodatage du nom,
+  // sans rien demander à la base ni à Backblaze.
   const recent = Date.parse('2026-08-24T10:00:00Z');
-  const { res, suivant } = passer(`/media/images/media_1_${recent}.jpg`);
+  const { req, res, suivant } = passer(`/media/images/media_1_${recent}.jpg`);
   assert.strictEqual(suivant, true);
   assert.strictEqual(res.code, null);
+  assert.strictEqual(req.mediaKey, `media/2026-08-24/images/media_1_${recent}.jpg`);
 }
 
 // ── Chemin hérité dont la partition dérivée est échue → 410, pas 404 ──
 {
-  // Le fichier a été déplacé par la migration, puis sa partition est tombée.
+  // Le média a été rangé sous sa partition, puis celle-ci est tombée.
   // Le client doit lire « expiré » et cesser de réessayer, pas « introuvable »
   // qui laisse croire à une panne passagère. La date se lit dans le nom, donc
-  // ce verdict ne coûte ni accès disque ni requête en base.
+  // ce verdict ne coûte ni appel au stockage ni requête en base.
   const vieux = Date.parse('2026-07-20T10:00:00Z');
   const { res, suivant } = passer(`/media/images/media_1_${vieux}.jpg`);
   assert.strictEqual(suivant, false);
@@ -100,67 +102,35 @@ function passer(chemin, { now = MAINTENANT, relayLegacy = true } = {}) {
 
 // ── Un nom hors convention n'est jamais relayé ──────────────────────
 {
-  const { suivant } = passer('/media/images/photo-vacances.jpg');
+  const { req, suivant } = passer('/media/images/photo-vacances.jpg');
   assert.strictEqual(suivant, true);
+  assert.strictEqual(req.mediaKey, undefined);
 }
 
 // ── Aucune remontée de répertoire ne peut passer par le relais ──────
 {
-  const { res, suivant } = passer('/media/images/..%2F..%2Fetc%2Fpasswd');
+  const { req, suivant } = passer('/media/images/..%2F..%2Fetc%2Fpasswd');
   assert.strictEqual(suivant, true);
-  assert.strictEqual(res.envoye, null, 'aucun fichier ne doit être servi');
+  assert.strictEqual(req.mediaKey, undefined, 'aucune clé ne doit être fabriquée');
 }
 
-// ── En-têtes de cache ───────────────────────────────────────────────
+// ── Le relais est actif par défaut ──────────────────────────────────
 {
-  const entetes = staticHeaders({ retentionDays: RETENTION, now: () => MAINTENANT });
-
-  // Média partitionné : le cache ne peut pas survivre à sa partition, sinon
-  // un intermédiaire servirait un fichier que le serveur a supprimé.
-  const r1 = fausseReponse();
-  entetes(r1, '/srv/uploads/media/2026-08-24/images/x.jpg');
-  const restant = (Date.parse('2026-09-24T00:00:00Z') - MAINTENANT) / 1000;
-  assert.strictEqual(r1.entetes['Cache-Control'], `public, max-age=${restant}, immutable`);
-  assert.ok(restant < 31536000, 'le plafond doit être bien inférieur à un an');
-
-  // Avatar : pas d'expiration, comportement d'origine conservé.
-  const r2 = fausseReponse();
-  entetes(r2, '/srv/uploads/images/img_1_1.jpg');
-  assert.strictEqual(r2.entetes['Cache-Control'], 'public, max-age=31536000, immutable');
-
-  // Partition déjà échue : plus aucune durée de cache.
-  const r3 = fausseReponse();
-  entetes(r3, '/srv/uploads/media/2026-07-20/images/x.jpg');
-  assert.strictEqual(r3.entetes['Cache-Control'], 'public, max-age=0, immutable');
-}
-
-// ── Le relais ne dépend PAS de l'interrupteur des partitions ──
-{
-  // Régression du 25/08/2026 : le relais avait été conditionné à
-  // `MEDIA_PARTITIONS_ENABLED`. Le script de migration a déplacé les fichiers,
-  // la base pointait toujours vers l'ancien chemin, l'interrupteur était
-  // éteint — plus personne ne faisait le pont et TOUS les médias renvoyaient
-  // 404 en production.
-  //
-  // Le relais répond à « ce fichier a-t-il bougé ? », pas à « les partitions
-  // sont-elles activées ? ». C'est la migration qui déplace les fichiers, pas
-  // l'interrupteur : lier les deux rouvrirait la même fenêtre.
+  // Régression du 25/08/2026 : le relais avait été conditionné à un
+  // interrupteur. Les fichiers avaient été déplacés, la base pointait toujours
+  // vers l'ancien chemin, l'interrupteur était éteint — plus personne ne
+  // faisait le pont et TOUS les médias renvoyaient 404 en production.
   const vieux = Date.parse('2026-07-20T10:00:00Z');
-  const { mediaExpiryGuard: guardParDefaut } = require('./mediaExpiry');
-  const guard = guardParDefaut({ retentionDays: RETENTION, now: () => MAINTENANT });
+  const guard = mediaExpiryGuard({ retentionDays: RETENTION, now: () => MAINTENANT });
   const res = fausseReponse();
   let suivant = false;
   guard({ path: `/media/images/media_1_${vieux}.jpg` }, res, () => { suivant = true; });
 
-  // Sans option explicite, le relais est actif : il tranche au lieu de laisser
-  // filer vers un 404 muet.
   assert.strictEqual(suivant, false, 'le relais doit être actif par défaut');
   assert.strictEqual(res.code, 410);
 }
 
-// Un chemin PARTITIONNÉ reste jugé sur son URL en toutes circonstances : une
-// extinction de l'interrupteur ne doit pas ressusciter en 404 muets des médias
-// déjà supprimés du disque.
+// Un chemin PARTITIONNÉ reste jugé sur son URL même relais coupé.
 {
   const { res } = passer('/media/2026-07-20/images/x.jpg', { relayLegacy: false });
   assert.strictEqual(res.code, 410);

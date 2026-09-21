@@ -20,10 +20,12 @@
  */
 
 const pool = require('../config/db');
-const mediaPolicy = require('../constants/mediaRetentionPolicy');
 const tripPolicy = require('../constants/tripPolicy');
 
-const NAMES = ['media', 'media_partitions', 'broadcast', 'story', 'welcome_status', 'trip', 'data_retention', 'backup_key_access'];
+// Les médias n'y figurent plus : ils vivent chez Backblaze, et ce sont les
+// règles de cycle de vie du bucket qui les suppriment à l'échéance de leur
+// partition. Le serveur n'a plus de fichier à balayer.
+const NAMES = ['broadcast', 'story', 'welcome_status', 'trip', 'data_retention', 'backup_key_access'];
 
 /** Borne une valeur de réglage. Une saisie hors bornes est ramenée, jamais rejetée en silence. */
 function clampInt(value, { min, max, fallback }) {
@@ -40,79 +42,6 @@ function clampInt(value, { min, max, fallback }) {
 // `run(opts)`   : exécution réelle.
 
 const DESCRIPTORS = {
-  media: {
-    label: 'Médias expirés',
-    description:
-      "Vide `message.mediaUrl` et supprime le fichier du disque au-delà de la "
-      + 'rétention. Le message lui-même est conservé : seule la pièce jointe disparaît.',
-    knobs: [{
-      key: 'mediaDays',
-      label: 'Rétention des médias',
-      unit: 'jours',
-      min: 1,
-      max: 365,
-      default: () => mediaPolicy.RETENTION.mediaDays,
-    }],
-    async stats(opts) {
-      const [rows] = await pool.execute(
-        `SELECT COUNT(*) AS fichiers,
-                COALESCE(SUM(m.mediaSize), 0) AS octets,
-                MIN(m.sendAt) AS plusAncien
-           FROM message m
-          WHERE m.mediaUrl IS NOT NULL AND m.mediaUrl <> ''
-            AND m.sendAt < DATE_SUB(NOW(), INTERVAL ? DAY)`,
-        [opts.mediaDays],
-      );
-      return {
-        fichiers: Number(rows[0].fichiers) || 0,
-        octets: Number(rows[0].octets) || 0,
-        plusAncien: rows[0].plusAncien,
-      };
-    },
-    async run(opts) {
-      const { runNightlyMediaPurge } = require('./mediaRetention');
-      return runNightlyMediaPurge(undefined, { mediaDays: opts.mediaDays });
-    },
-  },
-
-  // Purge TEMPORELLE des médias, par opposition à la purge référentielle
-  // ci-dessus. Elle ne demande pas à `message` quels fichiers sont expirés :
-  // elle supprime le répertoire du jour échu, dont le nom porte la date. La
-  // différence n'est pas de performance mais de garantie — un fichier que la
-  // base ne référence pas (upload interrompu, conversation supprimée, `unlink`
-  // en échec) tombe avec sa partition, alors que la purge référentielle ne peut
-  // pas même le voir. C'est exactement ce qui a laissé 707 fichiers orphelins
-  // sur le disque le 25/08/2026.
-  //
-  // Les deux coexistent le temps de la transition : `media` continue de traiter
-  // les fichiers restés à leur ancienne adresse, `media_partitions` prend en
-  // charge tout ce qui est déposé dans une tranche datée. Le vrai interrupteur
-  // reste la variable d'environnement `MEDIA_PARTITIONS_ENABLED` : tant qu'elle
-  // est éteinte, ce balayage ne supprime rien et `stats()` l'annonce.
-  media_partitions: {
-    label: 'Partitions de médias échues',
-    description:
-      "Supprime les tranches de 24 h dont tous les fichiers ont dépassé la "
-      + 'rétention. La suppression ne consulte pas la base : elle atteint donc '
-      + 'aussi les fichiers qu\'aucun message ne référence.',
-    knobs: [{
-      key: 'mediaDays',
-      label: 'Rétention des médias',
-      unit: 'jours',
-      min: 1,
-      max: 365,
-      default: () => mediaPolicy.RETENTION.mediaDays,
-    }],
-    async stats(opts) {
-      const { partitionStats } = require('./mediaPartitions');
-      return partitionStats({ retentionDays: opts.mediaDays });
-    },
-    async run(opts) {
-      const { sweepPartitions } = require('./mediaPartitions');
-      return sweepPartitions({ retentionDays: opts.mediaDays });
-    },
-  },
-
   broadcast: {
     label: 'Accusés de diffusion',
     description:

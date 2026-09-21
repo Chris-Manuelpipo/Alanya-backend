@@ -1,5 +1,5 @@
 /**
- * Stockage objet des médias — Backblaze B2, par son API compatible S3.
+ * Stockage des médias — Backblaze B2, par son API compatible S3.
  *
  * Conception : docs/conception/medias-backblaze.html.
  *
@@ -12,12 +12,12 @@
  * Le serveur répond à cette adresse par une redirection vers un lien signé
  * (voir `middleware/mediaRead.js`) : le bucket reste privé.
  *
- * ── L'interrupteur ──
+ * ── Le disque n'est plus une option ──
  *
- * `MEDIA_STORAGE=b2` active le stockage objet ; toute autre valeur, ou une
- * configuration incomplète, laisse le disque. Déployer ce code sans rien
- * poser dans le `.env` ne change donc aucun comportement — même principe que
- * `MEDIA_PARTITIONS_ENABLED`.
+ * Il n'y a plus d'interrupteur : tout média passe par ce module. Une
+ * configuration incomplète est donc une panne, annoncée au démarrage et rendue
+ * en `503 STORAGE_UNAVAILABLE` aux appelants — jamais un repli silencieux sur
+ * un disque que plus personne ne relit.
  *
  * ── La purge n'est pas ici ──
  *
@@ -38,7 +38,6 @@ const {
   isPartitionKey,
   uploadMsFromFileName,
 } = require('../utils/mediaPartition');
-const { UPLOADS_DIR } = require('./mediaPartitions');
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
@@ -62,7 +61,6 @@ const lireEntier = (nom, defaut, min, max) => {
 };
 
 const STORAGE = {
-  demande: String(process.env.MEDIA_STORAGE || 'disk').trim().toLowerCase(),
   endpoint: process.env.B2_ENDPOINT || '',
   region: process.env.B2_REGION || '',
   bucket: process.env.B2_BUCKET || '',
@@ -72,18 +70,17 @@ const STORAGE = {
   uploadTtlS: lireEntier('B2_UPLOAD_URL_TTL_S', 900, 60, 3600),
 };
 
-const configurationComplete = () =>
+/** `true` si les cinq variables indispensables sont renseignées. */
+const isConfigured = () =>
   Boolean(STORAGE.endpoint && STORAGE.region && STORAGE.bucket && STORAGE.keyId && STORAGE.appKey);
 
-if (STORAGE.demande === 'b2' && !configurationComplete()) {
-  // Bruyant exprès : un interrupteur allumé sur une configuration incomplète
-  // resterait sinon silencieusement sur le disque.
-  console.error('[MediaStorage] MEDIA_STORAGE=b2 mais B2_ENDPOINT, B2_REGION, B2_BUCKET, '
-    + 'B2_KEY_ID ou B2_APP_KEY manque : les médias restent sur le disque.');
+if (!isConfigured() && process.env.NODE_ENV !== 'test') {
+  // Bruyant exprès : sans repli disque, une configuration incomplète veut dire
+  // qu'aucun média ne pourra être déposé ni servi. Mieux vaut le lire au
+  // démarrage que le découvrir au premier envoi d'un utilisateur.
+  console.error('[MediaStorage] B2_ENDPOINT, B2_REGION, B2_BUCKET, B2_KEY_ID ou B2_APP_KEY '
+    + 'manque : aucun média ne pourra être déposé ni servi.');
 }
-
-/** `true` si les médias vont chez Backblaze. */
-const isB2Enabled = () => STORAGE.demande === 'b2' && configurationComplete();
 
 // ── Clients ─────────────────────────────────────────────────────────────────
 
@@ -193,9 +190,6 @@ function newImageKey({ alanyaID, ext = '', instant = Date.now() }) {
 
 /** Adresse publique d'une clé. */
 const publicUrl = (key) => `${BASE_URL}/uploads/${key}`;
-
-/** Chemin sur le disque d'une clé déjà validée. */
-const diskPathForKey = (key, root = UPLOADS_DIR) => path.join(root, key);
 
 const TYPES_PAR_EXTENSION = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
@@ -342,12 +336,13 @@ async function listPrefix(prefixe) {
 /**
  * Copie propre d'un média transféré, dans la partition du jour.
  *
- * Même sémantique que l'ancien lien matériel (`relinkForForward`) : chaque
- * message garantit la rétention à son propre média. Pendant la transition, un
- * fichier encore sur le disque est déposé depuis le disque. Renvoie la
- * nouvelle clé, ou `null` — l'appelant garde alors l'URL d'origine.
+ * Chaque message garantit la rétention à son propre média : sans cette copie,
+ * deux messages partageraient une clé, et la chute de la partition du plus
+ * ancien laisserait le transfert pointer dans le vide. La copie a lieu chez
+ * Backblaze, aucun octet ne passe par le serveur. Renvoie la nouvelle clé, ou
+ * `null` — l'appelant garde alors l'URL d'origine.
  */
-async function copyForForward(mediaUrl, { alanyaID, instant = Date.now(), root = UPLOADS_DIR } = {}) {
+async function copyForForward(mediaUrl, { alanyaID, instant = Date.now() } = {}) {
   const source = storedKeyFromUrl(mediaUrl);
   if (!source || !source.startsWith(`${MEDIA_ROOT}/`)) return null;
   const segments = source.split('/');
@@ -356,12 +351,7 @@ async function copyForForward(mediaUrl, { alanyaID, instant = Date.now(), root =
 
   const cible = newMediaKey({ kind, alanyaID, ext: safeExt(source), instant });
   try {
-    const surDisque = diskPathForKey(source, root);
-    if (fs.existsSync(surDisque)) {
-      await putFile(cible, surDisque, { contentType: contentTypeForKey(source) });
-    } else {
-      await copyObject(source, cible);
-    }
+    await copyObject(source, cible);
     return cible;
   } catch (e) {
     console.error('[MediaStorage] transfert : copie impossible:', e.message);
@@ -381,7 +371,7 @@ function configureForTests({ client, ...reglages } = {}) {
 module.exports = {
   STORAGE,
   CACHE_IMMUABLE,
-  isB2Enabled,
+  isConfigured,
   isSafeKey,
   keyFromPath,
   keyFromUrl,
@@ -390,7 +380,6 @@ module.exports = {
   newMediaKey,
   newImageKey,
   publicUrl,
-  diskPathForKey,
   contentTypeForKey,
   presignRead,
   presignUpload,

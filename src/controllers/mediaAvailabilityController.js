@@ -1,31 +1,8 @@
-const fs = require('fs');
-const path = require('path');
 const pool = require('../config/db');
-const { isB2Enabled, storedKeyFromUrl, listPrefix } = require('../services/mediaStorage');
+const { storedKeyFromUrl, listPrefix } = require('../services/mediaStorage');
 
-const UPLOADS_DIR = path.join(__dirname, '../../uploads');
-
-/** Au-delà, la requête est refusée plutôt que de balayer le disque sans fin. */
+/** Au-delà, la requête est refusée plutôt que de lister le bucket sans fin. */
 const MAX_IDS = 2000;
-
-/**
- * Chemin disque d'un média à partir de son URL publique.
- *
- * Renvoie `null` si l'URL ne pointe pas dans `uploads/`, ou si elle tente de
- * remonter l'arborescence. Le contrôle de remontée n'est pas théorique : cette
- * URL vient de la base, mais la base a été alimentée par des clients.
- */
-const _diskPath = (mediaUrl) => {
-  if (!mediaUrl) return null;
-  const marker = '/uploads/';
-  const idx = String(mediaUrl).indexOf(marker);
-  if (idx === -1) return null;
-
-  const relative = decodeURIComponent(mediaUrl.substring(idx + marker.length));
-  const resolved = path.resolve(UPLOADS_DIR, relative);
-  if (!resolved.startsWith(UPLOADS_DIR + path.sep)) return null;
-  return resolved;
-};
 
 /**
  * Tailles des objets présents chez Backblaze, pour un ensemble de clés.
@@ -65,9 +42,10 @@ async function taillesChezB2(cles) {
  *
  * ── Ce qui est vérifié ──
  *
- * L'existence du **fichier sur le disque**, pas seulement la date de partition.
- * Un fichier peut manquer pour d'autres raisons qu'une purge, et annoncer
- * récupérable ce qui ne l'est pas est précisément le défaut qu'on corrige.
+ * L'existence de **l'objet chez Backblaze**, pas seulement la date de
+ * partition. Un média peut manquer pour d'autres raisons qu'une purge, et
+ * annoncer récupérable ce qui ne l'est pas est précisément le défaut qu'on
+ * corrige.
  */
 exports.checkAvailability = async (req, res) => {
   const raw = req.body?.msgIDs;
@@ -97,27 +75,10 @@ exports.checkAvailability = async (req, res) => {
 
     const available = [];
     const bytes = {};
-    // Stockage objet : ce qui n'est plus sur le disque est cherché chez
-    // Backblaze, en une seule passe à la fin.
     const aChercher = [];
     for (const row of rows) {
-      const filePath = _diskPath(row.mediaUrl);
-      if (filePath) {
-        try {
-          const stat = fs.statSync(filePath);
-          if (stat.isFile()) {
-            available.push(row.msgID);
-            bytes[row.msgID] = stat.size;
-            continue;
-          }
-        } catch (_) {
-          // Absent du disque : purgé, jamais arrivé, ou parti chez Backblaze.
-        }
-      }
-      if (isB2Enabled()) {
-        const key = storedKeyFromUrl(row.mediaUrl);
-        if (key) aChercher.push({ msgID: row.msgID, key });
-      }
+      const key = storedKeyFromUrl(row.mediaUrl);
+      if (key) aChercher.push({ msgID: row.msgID, key });
     }
 
     if (aChercher.length > 0) {
@@ -141,5 +102,3 @@ exports.checkAvailability = async (req, res) => {
     return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
   }
 };
-
-exports._diskPath = _diskPath;

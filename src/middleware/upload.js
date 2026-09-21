@@ -3,9 +3,7 @@ const path    = require('path');
 const fs      = require('fs');
 const os      = require('os');
 
-const { resolveUploadDirSync } = require('../services/mediaPartitions');
 const {
-  isB2Enabled,
   newMediaKey,
   newImageKey,
   safeExt,
@@ -16,9 +14,8 @@ const AVATAR_MAX_BYTES = 5 * 1024 * 1024;   // 5 MB
 const MEDIA_MAX_BYTES  = 50 * 1024 * 1024;  // 50 MB
 
 /**
- * Dossier de transit quand les médias vont chez Backblaze : multer y écrit,
- * le contrôleur dépose le fichier chez Backblaze puis le supprime. Hors de
- * `uploads/`, qui est servi en statique.
+ * Dossier de transit : multer y écrit, le contrôleur dépose le fichier chez
+ * Backblaze puis le supprime. Rien ne s'attarde sur le disque du serveur.
  */
 const UPLOAD_TMP_DIR = path.join(os.tmpdir(), 'alanya-uploads');
 
@@ -61,32 +58,22 @@ async function cleanStaleUploadTmp({
 
 // Sauvegarde : images (avatars, photos groupe)
 //
-// Stockage objet : la clé Backblaze est décidée ici et portée par `file` ;
-// le fichier ne fait que transiter par `UPLOAD_TMP_DIR`.
+// La clé Backblaze est décidée ici et portée par `file` ; le fichier ne fait
+// que transiter par `UPLOAD_TMP_DIR`.
 const imageStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     try {
-      if (isB2Enabled()) {
-        file.storageKey = newImageKey({
-          alanyaID: req.user.alanyaID,
-          ext: safeExt(file.originalname),
-        });
-        ensureDir(UPLOAD_TMP_DIR);
-        return cb(null, UPLOAD_TMP_DIR);
-      }
-      const dir = path.join(__dirname, '../../uploads/images');
-      ensureDir(dir);
-      return cb(null, dir);
+      file.storageKey = newImageKey({
+        alanyaID: req.user.alanyaID,
+        ext: safeExt(file.originalname),
+      });
+      ensureDir(UPLOAD_TMP_DIR);
+      return cb(null, UPLOAD_TMP_DIR);
     } catch (e) {
       return cb(e);
     }
   },
-  filename: (req, file, cb) => {
-    if (file.storageKey) return cb(null, path.basename(file.storageKey));
-    const ext  = path.extname(file.originalname).toLowerCase();
-    const name = `img_${req.user.alanyaID}_${Date.now()}${ext}`;
-    return cb(null, name);
-  },
+  filename: (req, file, cb) => cb(null, path.basename(file.storageKey)),
 });
 
 /**
@@ -102,43 +89,27 @@ const mediaSubDir = (mimetype = '') => {
 
 // Sauvegarde : médias messages (images, fichiers, audio)
 //
-// Le répertoire est décidé par `resolveUploadDirSync` : disposition
-// historique tant que l'interrupteur des partitions est éteint, tranche du
-// jour ensuite (`uploads/media/<AAAA-MM-JJ>/<sous-dossier>`).
-//
-// Le choix est fait ICI, à l'ouverture du flux, et le contrôleur relit ensuite
-// `req.file.destination` au lieu de recalculer. Ce n'est pas de l'élégance :
-// avec des partitions, recalculer la date au moment de composer l'URL ouvre
-// une fenêtre à minuit — un upload commencé à 23:59:59 atterrit dans la
-// partition du jour J, et une URL recomposée à 00:00:00 désignerait J+1, donc
-// un fichier qui n'y est pas. Une seule décision, relue, ferme la fenêtre.
-//
-// Stockage objet : même règle, la clé Backblaze (partition comprise) est
-// décidée ici et relue par le contrôleur via `file.storageKey`.
+// La clé — partition du jour comprise — est décidée ICI, à l'ouverture du
+// flux, et le contrôleur la relit via `file.storageKey` au lieu de recalculer.
+// Ce n'est pas de l'élégance : recomposer la date au moment de fabriquer
+// l'URL ouvre une fenêtre à minuit. Un envoi commencé à 23:59:59 atterrit dans
+// la partition du jour J, et une URL recomposée à 00:00:00 désignerait J+1,
+// donc un objet qui n'existe pas. Une seule décision, relue, ferme la fenêtre.
 const mediaStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     try {
-      if (isB2Enabled()) {
-        file.storageKey = newMediaKey({
-          kind: mediaSubDir(file.mimetype),
-          alanyaID: req.user.alanyaID,
-          ext: safeExt(file.originalname),
-        });
-        ensureDir(UPLOAD_TMP_DIR);
-        return cb(null, UPLOAD_TMP_DIR);
-      }
-      const { absolu } = resolveUploadDirSync(mediaSubDir(file.mimetype));
-      return cb(null, absolu);
+      file.storageKey = newMediaKey({
+        kind: mediaSubDir(file.mimetype),
+        alanyaID: req.user.alanyaID,
+        ext: safeExt(file.originalname),
+      });
+      ensureDir(UPLOAD_TMP_DIR);
+      return cb(null, UPLOAD_TMP_DIR);
     } catch (e) {
       return cb(e);
     }
   },
-  filename: (req, file, cb) => {
-    if (file.storageKey) return cb(null, path.basename(file.storageKey));
-    const ext  = path.extname(file.originalname).toLowerCase();
-    const name = `media_${req.user.alanyaID}_${Date.now()}${ext}`;
-    return cb(null, name);
-  },
+  filename: (req, file, cb) => cb(null, path.basename(file.storageKey)),
 });
 
 // Types acceptés — exportés pour la route de ticket, qui applique les mêmes

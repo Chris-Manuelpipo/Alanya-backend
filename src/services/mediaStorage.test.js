@@ -1,13 +1,9 @@
 const assert = require('assert');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 const { S3Client } = require('@aws-sdk/client-s3');
 
 const storage = require('./mediaStorage');
 
 const CONFIG_B2 = {
-  demande: 'b2',
   endpoint: 'https://s3.eu-central-003.backblazeb2.com',
   region: 'eu-central-003',
   bucket: 'alanyaprivate',
@@ -55,12 +51,12 @@ const test = async (nom, fn) => {
 (async () => {
   storage.configureForTests(CONFIG_B2);
 
-  await test('interrupteur : b2 seulement si demandé ET entièrement configuré', () => {
-    assert.strictEqual(storage.isB2Enabled(), true);
-    storage.configureForTests({ keyId: '' });
-    assert.strictEqual(storage.isB2Enabled(), false, 'configuration incomplète : disque');
-    storage.configureForTests({ ...CONFIG_B2, demande: 'disk' });
-    assert.strictEqual(storage.isB2Enabled(), false);
+  await test('configuration : les cinq variables sont toutes indispensables', () => {
+    assert.strictEqual(storage.isConfigured(), true);
+    for (const manquante of ['endpoint', 'region', 'bucket', 'keyId', 'appKey']) {
+      storage.configureForTests({ ...CONFIG_B2, [manquante]: '' });
+      assert.strictEqual(storage.isConfigured(), false, `${manquante} manquant`);
+    }
     storage.configureForTests(CONFIG_B2);
   });
 
@@ -172,49 +168,29 @@ const test = async (nom, fn) => {
   await test('transfert : copie côté Backblaze vers la partition du jour', async () => {
     const { client, appels } = fauxClient();
     storage.configureForTests({ ...CONFIG_B2, client });
-    const racineVide = fs.mkdtempSync(path.join(os.tmpdir(), 'b2-fwd-'));
     const t = Date.parse('2026-09-15T10:00:00Z');
     const cle = await storage.copyForForward(
       'https://x/uploads/media/2026-09-01/images/media_1_1756700000000_aaaa.jpg',
-      { alanyaID: 9, instant: t, root: racineVide },
+      { alanyaID: 9, instant: t },
     );
     assert.match(cle, /^media\/2026-09-15\/images\/media_9_\d+_[0-9a-f]{16}\.jpg$/);
     const copie = appels.find((a) => a.commande === 'CopyObjectCommand');
     assert.strictEqual(copie.input.CopySource, 'alanyaprivate/media/2026-09-01/images/media_1_1756700000000_aaaa.jpg');
     assert.strictEqual(copie.input.Key, cle);
+    // Aucun octet ne passe par le serveur : jamais de dépôt pour un transfert.
+    assert.ok(!appels.some((a) => a.commande === 'PutObjectCommand'));
     // Un avatar n'expire pas : jamais recopié. Une URL étrangère : refusée.
-    assert.strictEqual(await storage.copyForForward('https://x/uploads/images/img_1.jpg', { alanyaID: 9, root: racineVide }), null);
-    assert.strictEqual(await storage.copyForForward('https://ailleurs/x.jpg', { alanyaID: 9, root: racineVide }), null);
-    fs.rmSync(racineVide, { recursive: true });
-  });
-
-  await test('transfert pendant la transition : un fichier encore sur le disque part du disque', async () => {
-    const { client, appels } = fauxClient();
-    storage.configureForTests({ ...CONFIG_B2, client });
-    const racine = fs.mkdtempSync(path.join(os.tmpdir(), 'b2-fwd-disque-'));
-    const rel = 'media/2026-09-01/video/media_1_1756700000000.mp4';
-    fs.mkdirSync(path.join(racine, path.dirname(rel)), { recursive: true });
-    fs.writeFileSync(path.join(racine, rel), Buffer.alloc(10));
-    const cle = await storage.copyForForward(`https://x/uploads/${rel}`, { alanyaID: 3, root: racine });
-    assert.ok(cle);
-    const depot = appels.find((a) => a.commande === 'PutObjectCommand');
-    assert.ok(depot, 'dépôt depuis le disque attendu');
-    assert.strictEqual(depot.input.Key, cle);
-    assert.strictEqual(depot.input.ContentType, 'video/mp4');
-    assert.strictEqual(depot.input.CacheControl, storage.CACHE_IMMUABLE);
-    assert.ok(!appels.some((a) => a.commande === 'CopyObjectCommand'));
-    fs.rmSync(racine, { recursive: true });
+    assert.strictEqual(await storage.copyForForward('https://x/uploads/images/img_1.jpg', { alanyaID: 9 }), null);
+    assert.strictEqual(await storage.copyForForward('https://ailleurs/x.jpg', { alanyaID: 9 }), null);
   });
 
   await test('transfert : un échec Backblaze rend null, jamais une exception', async () => {
     const { client } = fauxClient({ CopyObjectCommand: () => { throw new Error('réseau'); } });
     storage.configureForTests({ ...CONFIG_B2, client });
-    const racineVide = fs.mkdtempSync(path.join(os.tmpdir(), 'b2-fwd-ko-'));
     assert.strictEqual(
-      await storage.copyForForward('https://x/uploads/media/2026-09-01/images/a.jpg', { alanyaID: 1, root: racineVide }),
+      await storage.copyForForward('https://x/uploads/media/2026-09-01/images/a.jpg', { alanyaID: 1 }),
       null,
     );
-    fs.rmSync(racineVide, { recursive: true });
   });
 
   console.log(`mediaStorage : ${ok} tests passés`);

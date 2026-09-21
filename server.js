@@ -13,7 +13,6 @@ const http       = require('http');
 const { Server } = require('socket.io');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const cors       = require('cors');
-const path       = require('path');
 const { REDIS_ENABLED, REDIS_URL, createRedisClient, connectWithTimeout } = require('./src/config/redis');
 const { setDataClient } = require('./src/config/redisData');
 const pool = require('./src/config/db');
@@ -124,8 +123,7 @@ const {
   startTripStaleSweeper, stopTripStaleSweeper,
 } = require('./src/services/tripStaleWorkers');
 const { runNightlyTripPurge } = require('./src/services/tripRetention');
-const { runNightlyMediaPurge } = require('./src/services/mediaRetention');
-const { mediaExpiryGuard, staticHeaders } = require('./src/middleware/mediaExpiry');
+const { mediaExpiryGuard } = require('./src/middleware/mediaExpiry');
 const { mediaRead } = require('./src/middleware/mediaRead');
 const { cleanStaleUploadTmp } = require('./src/middleware/upload');
 
@@ -156,33 +154,21 @@ app.use(express.json({
 app.use(generalLimiter);
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-// Servir les fichiers uploadés statiquement.
-// Les noms de fichiers sont uniques (`media_<alanyaID>_<timestamp>.<ext>`),
-// donc une URL donnée pointe toujours vers le même contenu : on autorise les
-// caches HTTP (et flutter_cache_manager côté app) à conserver la réponse sans
-// revalidation. Sans cela, chaque retour dans un écran (chat, Mes médias)
-// re-téléchargeait les médias déjà vus.
+// Médias. Les octets sont chez Backblaze ; `/uploads` ne sert plus aucun
+// fichier depuis le disque, il tranche et il redirige.
 //
 // Le garde d'expiration passe AVANT : sur un média partitionné, le chemin
-// porte le jour de l'upload, donc l'expiration se tranche sans ouvrir le
-// moindre fichier ni interroger la base. Il répond alors `410 Gone`, que le
-// client sait distinguer d'une panne réseau — un 404 laisserait croire à un
-// incident passager et l'app réessaierait indéfiniment. Le même garde relaie
-// les anciennes adresses vers la partition d'un fichier déplacé, ce qui évite
-// tout `UPDATE` de masse sur `message.mediaUrl`.
-//
-// `staticHeaders` plafonne en outre le `max-age` à la vie restante de la
-// partition : sans ça un cache intermédiaire garderait un an une URL qui meurt
-// dans trois jours, et le 410 n'atteindrait jamais le client.
+// porte le jour de l'upload, donc l'expiration se tranche sans appeler le
+// stockage ni interroger la base. Il répond alors `410 Gone`, que le client
+// sait distinguer d'une panne réseau — un 404 laisserait croire à un incident
+// passager et l'app réessaierait indéfiniment. Le même garde relaie les
+// anciennes adresses vers la partition du fichier, ce qui a évité tout
+// `UPDATE` de masse sur `message.mediaUrl`.
 app.use('/uploads', mediaExpiryGuard());
-// Stockage objet (MEDIA_STORAGE=b2) : redirection vers un lien signé
-// Backblaze, sauf pour un fichier encore présent sur le disque pendant la
-// transition. Sur disque seul, ce middleware ne fait rien.
+// Redirection `302` vers un lien signé Backblaze, valable pour la méthode de
+// la requête. Le bucket reste privé.
 app.use('/uploads', mediaRead());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-  setHeaders: staticHeaders(),
-}));
-// Fichiers de transit laissés par un envoi interrompu (stockage objet).
+// Fichiers de transit laissés par un envoi interrompu.
 cleanStaleUploadTmp().catch(() => {});
 
 // ── Routes API ────────────────────────────────────────────────────────
@@ -419,14 +405,9 @@ async function start() {
         // l'affichait « jamais exécutée » en permanence. Le bail n'a pas besoin
         // d'être semé, `tryAcquire` le crée à la volée.
         ['backup_key_access_purge', 'backup_key_access'],
-        ['media_nightly_purge',     'media'],
-        // Balayage des partitions de médias. Il a son propre bail parce qu'il
-        // n'a rien à voir avec le précédent : celui-ci interroge `message`,
-        // celui-là ne touche qu'au système de fichiers. Sa correction ne
-        // dépend d'ailleurs pas du bail — deux instances qui réclament la même
-        // partition sont départagées par `rename`, atomique — mais le bail
-        // évite qu'elles fassent le même `readdir` au même instant.
-        ['media_partition_drop',    'media_partitions'],
+        // Les médias ne sont plus purgés ici : ce sont les règles de cycle de
+        // vie du bucket Backblaze qui les suppriment, à l'échéance calculée
+        // depuis la partition. Voir docs/conception/medias-backblaze.html.
       ];
       for (const [bail, purge] of purges) {
         withLease(bail, () => runPurgeIfEnabled(purge)).catch(

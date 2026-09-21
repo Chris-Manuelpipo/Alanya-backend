@@ -1,51 +1,40 @@
 /**
  * Partitions de médias — arithmétique pure des tranches de 24 heures.
  *
- * Le chemin d'un média encode le jour de son upload :
+ * La clé d'un média encode le jour de son dépôt :
  *
- *     uploads/media/<AAAA-MM-JJ>/<sous-dossier>/media_<alanyaID>_<epochMs>.<ext>
- *                   └─ la partition
+ *     media/<AAAA-MM-JJ>/<sous-dossier>/media_<alanyaID>_<epochMs>.<ext>
+ *           └─ la partition
  *
  * Toute la conception tient dans cette ligne : **la date d'expiration est
- * dérivable du chemin**. Le serveur sait qu'une URL est morte sans consulter la
- * base ni toucher au disque, et la suppression se fait en retirant un
- * répertoire entier — jamais en demandant à `message` quels fichiers sont
- * encore référencés. C'est ce qui borne réellement l'espace disque : un fichier
- * jamais rattaché à un message (upload interrompu, conversation supprimée,
- * `unlink` en échec) tombe avec sa partition comme les autres, alors que la
- * purge référentielle ne pouvait pas même le voir.
+ * dérivable de la clé**. Le serveur sait qu'une URL est morte sans consulter
+ * la base ni appeler Backblaze, et la suppression n'a pas besoin de demander à
+ * `message` quels médias sont encore référencés — ce sont les règles de cycle
+ * de vie du bucket qui effacent, sur le seul critère de l'âge. C'est ce qui
+ * borne réellement le stockage : un fichier jamais rattaché à un message
+ * (envoi interrompu, conversation supprimée, suppression en échec) tombe comme
+ * les autres, alors qu'une purge référentielle ne pouvait pas même le voir.
  *
  * Ce module ne fait aucune entrée-sortie et ne lit aucune variable
  * d'environnement : il calcule, il interprète, rien de plus. Les réglages sont
- * dans `constants/mediaRetentionPolicy.js`, les effets dans
- * `services/mediaPartitions.js`.
+ * dans `constants/mediaRetentionPolicy.js`.
  *
  * ── Le fuseau ──
  * Les partitions sont découpées en **UTC**, jamais en heure locale. Le fuseau
  * du serveur peut changer (migration d'hébergeur, heure d'été) ; UTC ne bouge
- * pas. Une frontière de partition qui se déplace ferait tomber deux partitions
- * le même jour, ou aucune.
+ * pas. Une frontière de partition qui se déplace ferait expirer deux
+ * partitions le même jour, ou aucune.
  */
 
-/** Racine des médias de message, relative au dossier `uploads/`. */
+/** Racine des médias de message, premier segment de la clé. */
 const MEDIA_ROOT = 'media';
 
 /**
- * Sas de suppression. Une partition échue y est déplacée par `rename` avant
- * d'être effacée : elle quitte l'espace servi en un seul appel système, et le
- * `rm -rf` — qui peut durer plusieurs minutes sur des dizaines de gigaoctets —
- * se fait hors du chemin critique. Le nom commence par un point pour qu'il ne
- * puisse jamais être confondu avec une partition (`isPartitionKey` le rejette
- * de toute façon).
- */
-const TRASH_DIR = '.trash';
-
-/**
- * Sous-dossiers par type de média, hérités de `middleware/upload.js`. Ils sont
- * listés ici parce que `readdir(uploads/media)` renvoie, pendant toute la
- * transition, un mélange de partitions et de ces quatre dossiers historiques :
- * il faut pouvoir distinguer les deux sans se tromper. Les noms de partition
- * étant des dates strictes, aucune collision n'est possible.
+ * Sous-dossiers par type de média, hérités de `middleware/upload.js`. Ils
+ * restent nommés ici parce que les clés d'avant le découpage en tranches
+ * (`media/<kind>/<fichier>`) vivent encore dans `message.mediaUrl` : le relais
+ * de lecture doit pouvoir les reconnaître. Les noms de partition étant des
+ * dates strictes, aucune collision n'est possible.
  */
 const LEGACY_KINDS = ['images', 'audio', 'video', 'files'];
 
@@ -135,20 +124,6 @@ function isPartitionExpired(cle, { retentionDays, now = Date.now() } = {}) {
 }
 
 /**
- * Secondes restantes avant la chute de la partition, plancher à 0.
- *
- * Sert à plafonner le `max-age` des réponses HTTP. Les fichiers d'upload sont
- * immuables, d'où le `Cache-Control: immutable` d'origine — mais une URL qui
- * meurt dans trois jours ne doit pas être gardée un an par un cache
- * intermédiaire, sinon le 410 n'atteint jamais le client.
- */
-function secondsUntilPartitionExpiry(cle, { retentionDays, now = Date.now() } = {}) {
-  const echeance = partitionExpiresAtMs(cle, retentionDays);
-  if (echeance === null) return 0;
-  return Math.max(0, Math.floor((echeance - now) / 1000));
-}
-
-/**
  * Extrait la clé de partition d'un chemin ou d'une URL de média.
  *
  * Reconnaît les deux dispositions, parce qu'elles coexistent pendant toute la
@@ -185,7 +160,7 @@ function uploadMsFromFileName(nom) {
 }
 
 /**
- * Chemin relatif à `uploads/` où déposer un nouveau média.
+ * Préfixe de clé où déposer un nouveau média.
  * Exemple : `media/2026-08-24/images`.
  */
 function partitionDirFor(kind, instant = Date.now()) {
@@ -194,49 +169,8 @@ function partitionDirFor(kind, instant = Date.now()) {
   return `${MEDIA_ROOT}/${cle}/${kind}`;
 }
 
-/**
- * Nom du répertoire de corbeille pour une partition réclamée.
- *
- * Le nom porte le worker et l'exécution parce que **le verrou réel du balayage
- * est `rename(2)`, pas le bail en base**. `rename` étant atomique, deux
- * instances qui décident simultanément de faire tomber la même partition
- * aboutissent à une seule réussite, l'autre recevant `ENOENT` — qui se traite
- * comme « quelqu'un d'autre l'a prise », pas comme une erreur. Le suffixe
- * unique garantit qu'elles ne se disputent jamais la même destination, et il
- * permet ensuite à chacune de n'effacer que ce qu'elle a réclamé.
- */
-function trashNameFor(cle, workerId, runId) {
-  return `${cle}__${sanitizeIdPart(workerId)}__${sanitizeIdPart(runId)}`;
-}
-
-/**
- * Réduit un identifiant à ce qui peut tenir dans un nom de répertoire.
- *
- * Le point est exclu de la liste blanche, pas seulement la barre oblique : un
- * `..` résiduel n'aurait pas permis de sortir du sas, mais un nom de répertoire
- * contenant une séquence de remontée n'a aucune raison d'exister.
- *
- * Exporté parce que la comparaison « cette entrée de corbeille est-elle la
- * mienne ? » doit appliquer exactement la même transformation que la
- * composition du nom — deux recettes distinctes finiraient par diverger, et
- * une instance n'effacerait plus ses propres réclamations.
- */
-function sanitizeIdPart(v) {
-  return String(v || 'inconnu').replace(/[^A-Za-z0-9_-]/g, '-');
-}
-
-/** Décompose un nom de corbeille. `null` si le nom ne vient pas de `trashNameFor`. */
-function parseTrashName(nom) {
-  const parts = String(nom || '').split('__');
-  if (parts.length !== 3) return null;
-  const [cle, workerId, runId] = parts;
-  if (!isPartitionKey(cle)) return null;
-  return { cle, workerId, runId };
-}
-
 module.exports = {
   MEDIA_ROOT,
-  TRASH_DIR,
   LEGACY_KINDS,
   MS_PAR_JOUR,
   partitionKeyFor,
@@ -244,11 +178,7 @@ module.exports = {
   partitionStartMs,
   partitionExpiresAtMs,
   isPartitionExpired,
-  secondsUntilPartitionExpiry,
   partitionFromPath,
   uploadMsFromFileName,
   partitionDirFor,
-  trashNameFor,
-  parseTrashName,
-  sanitizeIdPart,
 };

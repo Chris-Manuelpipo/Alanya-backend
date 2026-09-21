@@ -10,8 +10,7 @@ const { resolveReplyToID } = require('../utils/resolveReplyToID');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
 const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
 const { MEDIA_THUMB_SELECT } = require('../utils/messageThumbSql');
-const { relinkForForward } = require('../services/mediaPartitions');
-const { isB2Enabled, copyForForward } = require('../services/mediaStorage');
+const { copyForForward } = require('../services/mediaStorage');
 
 // Même origine que celle composée à l'upload : une URL de transfert doit être
 // indiscernable d'une URL d'upload, sans quoi le client la traiterait comme
@@ -1015,22 +1014,17 @@ const batchForwardMessages = async (req, res) => {
           content = source.content ?? null;
         }
 
-        // Le média transféré reçoit une adresse à LUI, par lien matériel vers
-        // le même inode (zéro octet copié). Sans ça, deux messages partagent un
-        // seul fichier : la purge le supprime au terme de la rétention du
-        // message d'origine, et le transfert — parfois vieux de quelques heures
-        // — pointe dans le vide avec sa `mediaUrl` intacte, ce qui affiche un
-        // média cassé chez le destinataire. Chaque message garantit désormais
-        // la rétention à son propre média.
+        // Le média transféré reçoit une adresse à LUI, par copie côté
+        // Backblaze (`CopyObject`, aucun octet ne transite par le serveur).
+        // Sans ça, deux messages partagent une seule clé : le cycle de vie du
+        // bucket la supprime au terme de la rétention du message d'origine, et
+        // le transfert — parfois vieux de quelques heures — pointe dans le
+        // vide avec sa `mediaUrl` intacte, ce qui affiche un média cassé chez
+        // le destinataire. Chaque message garantit sa rétention à son média.
         //
-        // En cas d'échec (fichier source déjà disparu), on retombe sur l'URL
+        // En cas d'échec (objet source déjà disparu), on retombe sur l'URL
         // d'origine : le comportement d'avant vaut mieux qu'un transfert refusé.
-        //
-        // Stockage objet : une copie côté Backblaze (CopyObject) remplace le
-        // lien matériel, avec la même garantie — un fichier par message.
-        const cheminRelie = isB2Enabled()
-          ? await copyForForward(source.mediaUrl, { alanyaID: senderID })
-          : relinkForForward(source.mediaUrl, { alanyaID: senderID });
+        const cheminRelie = await copyForForward(source.mediaUrl, { alanyaID: senderID });
         const mediaUrlTransfere = cheminRelie
           ? `${MEDIA_BASE_URL}/uploads/${cheminRelie}`
           : source.mediaUrl;
