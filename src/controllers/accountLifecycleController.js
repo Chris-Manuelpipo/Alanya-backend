@@ -6,6 +6,7 @@ const { emitToUser } = require('../utils/userSocketRegistry');
 const { loadUserPrivacyPrefs } = require('../services/privacyPrefsService');
 const { loadUserAppSettings } = require('../services/appSettingsService');
 const { loadUserDndSchedule } = require('../services/dndScheduleService');
+const { loadUserVoicemailSchedule } = require('../services/voicemailScheduleService');
 const { loadUserNotificationPrefs } = require('../notifications/notificationPrefs');
 const { withLease } = require('../services/schedulerLease');
 const {
@@ -129,12 +130,14 @@ const _buildSyncExport = async (alanyaID) => {
     }
   }
 
-  const [privacyPrefs, appSettings, notificationPrefs, dndSchedule] = await Promise.all([
-    loadUserPrivacyPrefs(alanyaID),
-    loadUserAppSettings(alanyaID),
-    loadUserNotificationPrefs(alanyaID),
-    loadUserDndSchedule(alanyaID),
-  ]);
+  const [privacyPrefs, appSettings, notificationPrefs, dndSchedule, voicemailSchedule] =
+    await Promise.all([
+      loadUserPrivacyPrefs(alanyaID),
+      loadUserAppSettings(alanyaID),
+      loadUserNotificationPrefs(alanyaID),
+      loadUserDndSchedule(alanyaID),
+      loadUserVoicemailSchedule(alanyaID),
+    ]);
 
   return {
     exportedAt: new Date().toISOString(),
@@ -147,6 +150,7 @@ const _buildSyncExport = async (alanyaID) => {
     appSettings,
     notificationPrefs,
     dndSchedule,
+    voicemailSchedule,
     conversations: conversations.map((c) => ({
       ...c,
       lastMessage: undefined,

@@ -49,6 +49,10 @@ const {
   patchDndSchedule,
 } = require('../controllers/dndScheduleController');
 const {
+  getVoicemailSchedule,
+  patchVoicemailSchedule,
+} = require('../controllers/voicemailScheduleController');
+const {
   deleteAccount,
   cancelAccountDeletionHandler,
   exportAccountData,
@@ -744,6 +748,13 @@ router.patch('/app-settings', authCustom, patchAppSettings);
 
 router.get('/dnd-schedule', authCustom, getDndSchedule);
 router.patch('/dnd-schedule', authCustom, patchDndSchedule);
+
+// Le répondeur est un réglage distinct du « Ne pas déranger » : celui-ci ne
+// coupe que les notifications de messages, celui-là empêche le téléphone de
+// sonner. Les greffer sur le même interrupteur détournerait les appels de tous
+// ceux qui ont déjà réglé un créneau DND.
+router.get('/voicemail-schedule', authCustom, getVoicemailSchedule);
+router.patch('/voicemail-schedule', authCustom, patchVoicemailSchedule);
 
 router.delete('/me', authCustom, deleteAccount);
 router.post('/me/cancel-deletion', authCustom, cancelAccountDeletionHandler);
