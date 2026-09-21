@@ -11,6 +11,7 @@ const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
 const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
 const { MEDIA_THUMB_SELECT } = require('../utils/messageThumbSql');
 const { relinkForForward } = require('../services/mediaPartitions');
+const { isB2Enabled, copyForForward } = require('../services/mediaStorage');
 
 // Même origine que celle composée à l'upload : une URL de transfert doit être
 // indiscernable d'une URL d'upload, sans quoi le client la traiterait comme
@@ -1024,7 +1025,12 @@ const batchForwardMessages = async (req, res) => {
         //
         // En cas d'échec (fichier source déjà disparu), on retombe sur l'URL
         // d'origine : le comportement d'avant vaut mieux qu'un transfert refusé.
-        const cheminRelie = relinkForForward(source.mediaUrl, { alanyaID: senderID });
+        //
+        // Stockage objet : une copie côté Backblaze (CopyObject) remplace le
+        // lien matériel, avec la même garantie — un fichier par message.
+        const cheminRelie = isB2Enabled()
+          ? await copyForForward(source.mediaUrl, { alanyaID: senderID })
+          : relinkForForward(source.mediaUrl, { alanyaID: senderID });
         const mediaUrlTransfere = cheminRelie
           ? `${MEDIA_BASE_URL}/uploads/${cheminRelie}`
           : source.mediaUrl;

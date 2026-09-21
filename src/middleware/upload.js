@@ -1,25 +1,91 @@
 const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
+const os      = require('os');
 
 const { resolveUploadDirSync } = require('../services/mediaPartitions');
+const {
+  isB2Enabled,
+  newMediaKey,
+  newImageKey,
+  safeExt,
+} = require('../services/mediaStorage');
+
+/** Plafonds d'envoi, partagés avec la route de ticket (envoi direct). */
+const AVATAR_MAX_BYTES = 5 * 1024 * 1024;   // 5 MB
+const MEDIA_MAX_BYTES  = 50 * 1024 * 1024;  // 50 MB
+
+/**
+ * Dossier de transit quand les médias vont chez Backblaze : multer y écrit,
+ * le contrôleur dépose le fichier chez Backblaze puis le supprime. Hors de
+ * `uploads/`, qui est servi en statique.
+ */
+const UPLOAD_TMP_DIR = path.join(os.tmpdir(), 'alanya-uploads');
 
 // Créer les dossiers si nécessaire
 const ensureDir = (dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 };
 
+/**
+ * Supprime les fichiers de transit abandonnés — un processus arrêté en plein
+ * envoi ne passe jamais par le `finally` qui les efface. Appelé au démarrage ;
+ * ne touche qu'aux fichiers vieux de plus d'une heure.
+ */
+async function cleanStaleUploadTmp({
+  dir = UPLOAD_TMP_DIR,
+  maxAgeMs = 60 * 60 * 1000,
+  now = Date.now(),
+} = {}) {
+  let noms;
+  try {
+    noms = await fs.promises.readdir(dir);
+  } catch {
+    return 0;
+  }
+  let supprimes = 0;
+  for (const nom of noms) {
+    const chemin = path.join(dir, nom);
+    try {
+      const st = await fs.promises.stat(chemin);
+      if (st.isFile() && now - st.mtimeMs > maxAgeMs) {
+        await fs.promises.unlink(chemin);
+        supprimes += 1;
+      }
+    } catch {
+      // Déjà supprimé par un autre processus : le but est atteint.
+    }
+  }
+  return supprimes;
+}
+
 // Sauvegarde : images (avatars, photos groupe)
+//
+// Stockage objet : la clé Backblaze est décidée ici et portée par `file` ;
+// le fichier ne fait que transiter par `UPLOAD_TMP_DIR`.
 const imageStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = path.join(__dirname, '../../uploads/images');
-    ensureDir(dir);
-    cb(null, dir);
+    try {
+      if (isB2Enabled()) {
+        file.storageKey = newImageKey({
+          alanyaID: req.user.alanyaID,
+          ext: safeExt(file.originalname),
+        });
+        ensureDir(UPLOAD_TMP_DIR);
+        return cb(null, UPLOAD_TMP_DIR);
+      }
+      const dir = path.join(__dirname, '../../uploads/images');
+      ensureDir(dir);
+      return cb(null, dir);
+    } catch (e) {
+      return cb(e);
+    }
   },
   filename: (req, file, cb) => {
+    if (file.storageKey) return cb(null, path.basename(file.storageKey));
     const ext  = path.extname(file.originalname).toLowerCase();
     const name = `img_${req.user.alanyaID}_${Date.now()}${ext}`;
-    cb(null, name);
+    return cb(null, name);
   },
 });
 
@@ -46,80 +112,97 @@ const mediaSubDir = (mimetype = '') => {
 // une fenêtre à minuit — un upload commencé à 23:59:59 atterrit dans la
 // partition du jour J, et une URL recomposée à 00:00:00 désignerait J+1, donc
 // un fichier qui n'y est pas. Une seule décision, relue, ferme la fenêtre.
+//
+// Stockage objet : même règle, la clé Backblaze (partition comprise) est
+// décidée ici et relue par le contrôleur via `file.storageKey`.
 const mediaStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     try {
+      if (isB2Enabled()) {
+        file.storageKey = newMediaKey({
+          kind: mediaSubDir(file.mimetype),
+          alanyaID: req.user.alanyaID,
+          ext: safeExt(file.originalname),
+        });
+        ensureDir(UPLOAD_TMP_DIR);
+        return cb(null, UPLOAD_TMP_DIR);
+      }
       const { absolu } = resolveUploadDirSync(mediaSubDir(file.mimetype));
-      cb(null, absolu);
+      return cb(null, absolu);
     } catch (e) {
-      cb(e);
+      return cb(e);
     }
   },
   filename: (req, file, cb) => {
+    if (file.storageKey) return cb(null, path.basename(file.storageKey));
     const ext  = path.extname(file.originalname).toLowerCase();
     const name = `media_${req.user.alanyaID}_${Date.now()}${ext}`;
-    cb(null, name);
+    return cb(null, name);
   },
 });
 
+// Types acceptés — exportés pour la route de ticket, qui applique les mêmes
+// règles avant d'autoriser un envoi direct.
+const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+const MEDIA_MIME_TYPES = [
+  'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+  // Audio — inclure les variantes `x-` : le package `mime` côté Flutter
+  // renvoie audio/x-wav pour .wav, audio/x-flac pour .flac, etc.
+  'audio/mpeg', 'audio/mp3', 'audio/x-mpeg',
+  'audio/ogg', 'audio/vorbis', 'audio/opus',
+  'audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave',
+  'audio/aac', 'audio/mp4', 'audio/x-m4a', 'audio/m4a', 'audio/webm',
+  'audio/flac', 'audio/x-flac',
+  'audio/x-ms-wma',
+  'audio/aiff', 'audio/x-aiff',
+  'audio/midi', 'audio/x-midi',
+  'audio/x-caf', 'audio/amr',
+  'video/mp4', 'video/webm', 'video/quicktime', 'video/3gpp',
+  // Documents
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/csv',
+  'application/csv',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+  'application/rtf',
+  'text/rtf',
+  'application/zip',
+  'application/x-7z-compressed',
+  'application/vnd.rar',
+  'application/x-rar-compressed',
+  'application/vnd.android.package-archive',
+  'text/plain',
+];
+
 // Filtres de fichiers
 const imageFilter = (req, file, cb) => {
-  const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-  if (allowed.includes(file.mimetype)) return cb(null, true);
+  if (IMAGE_MIME_TYPES.includes(file.mimetype)) return cb(null, true);
   cb(new Error('Seuls les formats d\'image suivants sont autorisés (jpeg, png, webp, gif)'), false);
 };
 
 const mediaFilter = (req, file, cb) => {
-  const allowed = [
-    'image/jpeg', 'image/png', 'image/webp', 'image/gif',
-    // Audio — inclure les variantes `x-` : le package `mime` côté Flutter
-    // renvoie audio/x-wav pour .wav, audio/x-flac pour .flac, etc.
-    'audio/mpeg', 'audio/mp3', 'audio/x-mpeg',
-    'audio/ogg', 'audio/vorbis', 'audio/opus',
-    'audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave',
-    'audio/aac', 'audio/mp4', 'audio/x-m4a', 'audio/m4a', 'audio/webm',
-    'audio/flac', 'audio/x-flac',
-    'audio/x-ms-wma',
-    'audio/aiff', 'audio/x-aiff',
-    'audio/midi', 'audio/x-midi',
-    'audio/x-caf', 'audio/amr',
-    'video/mp4', 'video/webm', 'video/quicktime', 'video/3gpp',
-    // Documents
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'text/csv',
-    'application/csv',
-    'application/vnd.ms-powerpoint',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    'application/vnd.oasis.opendocument.text',
-    'application/vnd.oasis.opendocument.spreadsheet',
-    'application/vnd.oasis.opendocument.presentation',
-    'application/rtf',
-    'text/rtf',
-    'application/zip',
-    'application/x-7z-compressed',
-    'application/vnd.rar',
-    'application/x-rar-compressed',
-    'application/vnd.android.package-archive',
-    'text/plain',
-  ];
-  if (allowed.includes(file.mimetype)) return cb(null, true);
+  if (MEDIA_MIME_TYPES.includes(file.mimetype)) return cb(null, true);
   cb(new Error(`Type de fichier ${file.mimetype} non autorisé`), false);
 };
 
 // Multer middleware
 const uploadAvatar = multer({
   storage: imageStorage,
-  limits:  { fileSize: 5 * 1024 * 1024 },  // 5 MB
+  limits:  { fileSize: AVATAR_MAX_BYTES },
   fileFilter: imageFilter,
 });
 
 const uploadMedia = multer({
   storage: mediaStorage,
-  limits:  { fileSize: 50 * 1024 * 1024 }, // 50 MB
+  limits:  { fileSize: MEDIA_MAX_BYTES },
   fileFilter: mediaFilter,
 });
 
@@ -142,4 +225,15 @@ const handleMulterError = (err, req, res, next) => {
   next();
 };
 
-module.exports = { uploadAvatar, uploadMedia, handleMulterError, mediaSubDir };
+module.exports = {
+  uploadAvatar,
+  uploadMedia,
+  handleMulterError,
+  mediaSubDir,
+  IMAGE_MIME_TYPES,
+  MEDIA_MIME_TYPES,
+  AVATAR_MAX_BYTES,
+  MEDIA_MAX_BYTES,
+  UPLOAD_TMP_DIR,
+  cleanStaleUploadTmp,
+};

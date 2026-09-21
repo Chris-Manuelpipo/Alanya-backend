@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Médias Alanya sur Backblaze</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+
+<style>
+  :root {
+    --ground:    #E9EBEE;
+    --surface:   #F8F9FA;
+    --surface-2: #DFE3E7;
+    --ink:       #161B21;
+    --ink-soft:  #3D4750;
+    --muted:     #626D77;
+    --rule:      #CBD1D7;
+    --rule-soft: #DDE1E6;
+    --keep:      #1C6560;
+    --keep-bg:   #DDE8E6;
+    --drop:      #99511C;
+    --drop-bg:   #EFE2D6;
+    --alarm:     #962C2C;
+    --alarm-bg:  #EFDCDC;
+
+    --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --body:    "Source Serif 4", Georgia, "Times New Roman", serif;
+    --mono:    "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:    #12161A;
+      --surface:   #1A1F25;
+      --surface-2: #242B32;
+      --ink:       #E5E9EC;
+      --ink-soft:  #C0C8CF;
+      --muted:     #8D99A3;
+      --rule:      #2C343C;
+      --rule-soft: #232A31;
+      --keep:      #5FB9B1;
+      --keep-bg:   #17302E;
+      --drop:      #D9944F;
+      --drop-bg:   #33261A;
+      --alarm:     #E08279;
+      --alarm-bg:  #35201F;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:    #12161A;
+    --surface:   #1A1F25;
+    --surface-2: #242B32;
+    --ink:       #E5E9EC;
+    --ink-soft:  #C0C8CF;
+    --muted:     #8D99A3;
+    --rule:      #2C343C;
+    --rule-soft: #232A31;
+    --keep:      #5FB9B1;
+    --keep-bg:   #17302E;
+    --drop:      #D9944F;
+    --drop-bg:   #33261A;
+    --alarm:     #E08279;
+    --alarm-bg:  #35201F;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, p, ul, ol, pre, figure { margin: 0; }
+
+  .page { max-width: 1140px; margin: 0 auto; padding: 56px 28px 120px; }
+
+  .band { display: grid; grid-template-columns: 1fr; }
+  @media (min-width: 940px) {
+    .band { grid-template-columns: 108px minmax(0, 1fr); column-gap: 40px; }
+  }
+  .band > .gutter { display: none; }
+  @media (min-width: 940px) { .band > .gutter { display: block; } }
+
+  .col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+  .col > p, .col > ul.plain { max-width: 68ch; }
+
+  /* ── Masthead ── */
+  .masthead { border-bottom: 2px solid var(--ink); padding-bottom: 26px; margin-bottom: 34px; display: flex; flex-direction: column; gap: 16px; }
+  .kicker {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  h1 {
+    font-family: var(--display); font-weight: 700;
+    font-size: clamp(34px, 5.4vw, 58px); line-height: 1.02;
+    letter-spacing: -.025em; text-wrap: balance;
+  }
+  .standfirst { font-size: 20px; line-height: 1.5; color: var(--ink-soft); max-width: 60ch; }
+
+  /* ── Decisions strip ── */
+  .decisions {
+    display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule);
+    margin: 0 0 60px;
+  }
+  @media (min-width: 780px) { .decisions { grid-template-columns: repeat(3, 1fr); } }
+  .decision { background: var(--surface); padding: 18px 20px 20px; display: flex; flex-direction: column; gap: 7px; }
+  .lbl {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .decision .val { font-family: var(--display); font-weight: 600; font-size: 17px; line-height: 1.28; letter-spacing: -.01em; }
+  .decision .note { font-size: 14.5px; color: var(--muted); line-height: 1.45; }
+
+  /* ── Sections ── */
+  section { margin-bottom: 66px; }
+  .gutter .num {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .1em; color: var(--muted);
+    padding-top: 10px; border-top: 1px solid var(--rule); display: block;
+  }
+  h2 {
+    font-family: var(--display); font-weight: 700;
+    font-size: clamp(24px, 3vw, 31px); line-height: 1.12; letter-spacing: -.02em;
+    text-wrap: balance; padding-top: 8px; border-top: 1px solid var(--rule);
+  }
+  h3 { font-family: var(--display); font-weight: 600; font-size: 18.5px; letter-spacing: -.008em; margin-top: 12px; text-wrap: balance; }
+  strong { font-weight: 600; color: var(--ink); }
+
+  code, .path {
+    font-family: var(--mono); font-size: .855em;
+    background: var(--surface-2); padding: .12em .38em; border-radius: 2px;
+    word-break: break-word;
+  }
+
+  .chip {
+    display: inline-block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--drop); border: 1px solid var(--drop);
+    padding: 0 6px; border-radius: 2px; white-space: nowrap; vertical-align: 2px;
+  }
+  .ok { color: var(--keep); font-weight: 600; }
+  .ko { color: var(--alarm); font-weight: 600; }
+
+  /* ── Role list ── */
+  .reasons { display: flex; flex-direction: column; gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .reason { background: var(--surface); padding: 18px 22px; display: grid; gap: 6px; }
+  @media (min-width: 720px) { .reason { grid-template-columns: 170px minmax(0, 1fr); column-gap: 24px; } }
+  .reason .tag { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--keep); padding-top: 4px; }
+  .reason p { font-size: 15.5px; line-height: 1.55; max-width: 64ch; color: var(--ink-soft); }
+  .refs { margin-top: 6px; font-family: var(--mono); font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+  /* ── Figures ── */
+  figure { background: var(--surface); border: 1px solid var(--rule); padding: 26px 24px 18px; overflow-x: auto; margin: 10px 0; }
+  figure svg { display: block; width: 100%; min-width: 640px; height: auto; color: var(--ink); }
+  figcaption {
+    margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--rule-soft);
+    font-size: 14.5px; line-height: 1.5; color: var(--muted); max-width: 70ch;
+  }
+  .d-box { fill: var(--surface); stroke: var(--ink); stroke-width: 1.4; }
+  .d-box-keep { fill: var(--keep-bg); stroke: var(--keep); stroke-width: 1.6; }
+  .d-frame { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 5 5; }
+  .d-rule { stroke: var(--rule); stroke-width: 1; }
+  .d-line { stroke: var(--ink); stroke-width: 1.4; fill: none; }
+  .d-line-keep { stroke: var(--keep); stroke-width: 1.8; fill: none; }
+  .d-txt-s { fill: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .03em; }
+  .d-txt-b { fill: var(--ink); font-family: "Archivo", sans-serif; font-weight: 600; font-size: 13px; }
+  .d-txt-keep { fill: var(--keep); font-family: "IBM Plex Mono", monospace; font-size: 11.5px; letter-spacing: .03em; }
+  .d-panel { fill: var(--muted); font-family: "Archivo", sans-serif; font-weight: 600; font-size: 12px; letter-spacing: .12em; }
+  .m-ink { fill: var(--ink); }
+  .m-keep { fill: var(--keep); }
+
+  /* ── Code ── */
+  pre {
+    background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--keep);
+    padding: 16px 18px; overflow-x: auto;
+    font-family: var(--mono); font-size: 13px; line-height: 1.66; color: var(--ink-soft);
+  }
+  pre .c { color: var(--muted); }
+  pre .k { color: var(--keep); }
+  pre .d { color: var(--drop); }
+
+  /* ── Steps ── */
+  ol.steps { list-style: none; counter-reset: s; display: flex; flex-direction: column; gap: 18px; padding: 0; max-width: 72ch; }
+  ol.steps > li { counter-increment: s; display: grid; grid-template-columns: 34px minmax(0, 1fr); column-gap: 16px; align-items: start; }
+  ol.steps > li::before {
+    content: counter(s); font-family: var(--mono); font-size: 12px; color: var(--keep);
+    border: 1px solid var(--keep); width: 26px; height: 26px;
+    display: grid; place-items: center; border-radius: 50%; margin-top: 2px;
+  }
+  ol.steps .step { display: flex; flex-direction: column; gap: 6px; }
+  ol.steps .step p { font-size: 16px; }
+  ol.steps .step p.sub { font-size: 15px; color: var(--muted); }
+
+  ul.plain { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+  ul.plain li::marker { color: var(--muted); }
+
+  /* ── Fix cards (app corrections) ── */
+  .fixes { display: flex; flex-direction: column; gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .fix { background: var(--surface); padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; }
+  .fix-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+  .fix-head .tag { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--keep); }
+  .fix-head h3 { margin: 0; font-size: 19px; }
+  .fix p { font-size: 15.5px; line-height: 1.58; max-width: 70ch; color: var(--ink-soft); }
+  .fix .tbl-wrap { margin-top: 4px; }
+
+  /* ── Callouts ── */
+  .callout, .note-box {
+    border: 1px solid var(--rule); padding: 18px 20px;
+    display: flex; flex-direction: column; gap: 8px; max-width: 80ch;
+  }
+  .callout { border-left: 3px solid var(--alarm); background: var(--alarm-bg); }
+  .callout .lbl { color: var(--alarm); }
+  .note-box { border-left: 3px solid var(--keep); background: var(--surface); }
+  .note-box .lbl { color: var(--keep); }
+  .callout p, .note-box p { font-size: 15.5px; line-height: 1.55; }
+
+  /* ── Tables ── */
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--rule); }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; background: var(--surface); }
+  th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--rule-soft); font-size: 15px; line-height: 1.5; vertical-align: top; }
+  th {
+    font-family: var(--display); font-weight: 600; font-size: 12px;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--rule);
+  }
+  td:first-child { font-family: var(--mono); font-size: 12.5px; color: var(--ink); white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td .refs { margin-top: 4px; }
+  .tbl-prose td:first-child { font-family: var(--display); font-weight: 600; font-size: 14.5px; white-space: normal; min-width: 150px; }
+  td.num { font-family: var(--mono); font-size: 13.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.num.better { color: var(--keep); font-weight: 500; }
+
+  /* ── Open questions ── */
+  .open { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  @media (min-width: 780px) { .open { grid-template-columns: repeat(2, 1fr); } }
+  .open > div { background: var(--surface); padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; }
+  .open h3 { margin: 0; font-size: 16.5px; }
+  .open p { font-size: 14.5px; color: var(--ink-soft); line-height: 1.5; }
+  .open .reco { font-size: 14px; color: var(--keep); font-family: var(--display); font-weight: 600; }
+
+  footer {
+    margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 12px; color: var(--muted); letter-spacing: .04em;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  footer a { color: var(--keep); }
+  a:focus-visible { outline: 2px solid var(--keep); outline-offset: 2px; }
+</style>
+
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="kicker">Alanya · backend et app · conception · 15/09/2026 · version 3 · code écrit</div>
+    <h1>Des médias plus légers, stockés chez Backblaze</h1>
+    <p class="standfirst">Le chantier poursuit deux buts : libérer le disque du VPS, et accélérer l'envoi et l'affichage des médias, sans ajouter aucun service payant. Backblaze B2 prend en charge le stockage et la purge. La vitesse, elle, vient de l'app : des photos et des vidéos plus légères, et des connexions réutilisées au lieu d'être rouvertes pour chaque média.</p>
+  </header>
+
+  <div class="decisions">
+    <div class="decision">
+      <div class="lbl">Stockage</div>
+      <div class="val">Backblaze B2 · <code>alanyaprivate</code></div>
+      <div class="note">Bucket privé et chiffré, en région EU Central (Amsterdam), confirmée. Aucun autre service n'est ajouté.</div>
+    </div>
+    <div class="decision">
+      <div class="lbl">Vitesse</div>
+      <div class="val">Des fichiers plus légers</div>
+      <div class="note">Trois corrections gratuites dans l'app : taille maximale pour les photos, compression des vidéos, connexion partagée. Elles accélèrent l'envoi comme l'affichage, quel que soit le stockage.</div>
+    </div>
+    <div class="decision">
+      <div class="lbl">Purge</div>
+      <div class="val">Confiée à Backblaze</div>
+      <div class="note">Par des règles de cycle de vie. Deux choses restent à notre charge : la suppression immédiate des médias à vue unique, et la réponse « média expiré ».</div>
+    </div>
+  </div>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">01</span></div>
+    <div class="col">
+      <h2>Ce qui ralentit vraiment</h2>
+      <p>Mesures du 15/09/2026, prises depuis la machine de développement au Cameroun (meilleur de trois essais).</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Serveur</th><th>Connexion prête</th><th>Premier octet</th></tr></thead>
+          <tbody>
+            <tr><td>VPS OVH (aujourd'hui)</td><td class="num">0,57 s</td><td class="num">0,78 s</td></tr>
+            <tr><td>Backblaze, Amsterdam (alanyaprivate)</td><td class="num">0,53 s</td><td class="num">0,75 s</td></tr>
+            <tr><td>Backblaze, États-Unis</td><td class="num">0,65 s</td><td class="num">0,98 s</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><strong>Changer de stockage ne change pas la vitesse</strong> : Amsterdam est aussi loin du Cameroun que le VPS en France. Ce qui détermine le temps d'attente, ce sont deux coûts que l'app paie aujourd'hui en entier.</p>
+      <ul class="plain">
+        <li><strong>La connexion, rouverte pour chaque média.</strong> Environ 0,57 s avant même que le téléchargement commence, et ce, média après média. L'app ne réutilise jamais une connexion déjà ouverte.</li>
+        <li><strong>Le poids des fichiers.</strong> Les photos de la galerie partent en pleine résolution, les vidéos sans aucune compression. Sur un réseau mobile, le temps de transfert est proportionnel au poids du fichier.</li>
+      </ul>
+
+      <div class="tbl-wrap">
+        <table class="tbl-prose">
+          <thead><tr><th>Ordre de grandeur, sur une connexion à 2 Mbit/s</th><th>Aujourd'hui</th><th>Après les corrections</th></tr></thead>
+          <tbody>
+            <tr><td>Photo de la galerie</td><td class="num">≈ 3 Mo · ≈ 12 s</td><td class="num better">≈ 300 Ko · ≈ 1 s</td></tr>
+            <tr><td>Vidéo d'une minute</td><td class="num">jusqu'à 50 Mo · ≈ 3 min 20</td><td class="num better">≈ 15 Mo · ≈ 1 min</td></tr>
+            <tr><td>Chaque média affiché après le premier</td><td class="num">+ 0,57 s de connexion</td><td class="num better">≈ 0 s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="refs">Les tailles sont typiques d'un téléphone récent. Les valeurs réelles seront mesurées à la recette (section 09).</p>
+
+      <div class="note-box">
+        <div class="lbl">Écarté : un relais Cloudflare à Douala</div>
+        <p>Un relais Cloudflare à Douala répondrait en 0,15 s au lieu de 0,78 s. Mais le programme qu'il faudrait y faire tourner n'est gratuit que jusqu'à 100 000 affichages par jour : au-delà, les médias cesseraient de s'afficher, et il faudrait donc payer. Cette piste est écartée, conformément à la règle « aucun service payant ». La conception permet de l'ajouter plus tard sans rien casser (section 11).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">02</span></div>
+    <div class="col">
+      <h2>Accélérer sans rien payer : trois corrections de l'app</h2>
+      <p>Ces trois corrections ne dépendent pas de Backblaze. Elles peuvent partir dans une mise à jour de l'app avant la migration du stockage, et elles réduisent aussi la facture Backblaze, puisqu'on y stockera et téléchargera moins d'octets.</p>
+
+      <div class="fixes">
+
+        <div class="fix">
+          <div class="fix-head"><span class="tag">Correction 1</span><h3>Fixer une taille maximale aux photos</h3></div>
+          <p>Le sélecteur d'images, déjà utilisé par l'app, sait redimensionner lui-même la photo : il suffit de lui passer <code>maxWidth</code> et <code>maxHeight</code>. La proportion est conservée, et aucune nouvelle dépendance n'est nécessaire. <strong>1 600 pixels</strong> sur le grand côté suffisent largement pour un écran de téléphone. Une photo qui pèse plusieurs Mo n'en pèse plus que quelques centaines de Ko.</p>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Appel</th><th>Aujourd'hui</th><th>Proposé</th></tr></thead>
+              <tbody>
+                <tr><td>chat_actions.dart:1172</td><td>vue unique · qualité 80</td><td>+ 1 600 px</td></tr>
+                <tr><td>chat_actions.dart:1182</td><td>album · qualité 80</td><td>+ 1 600 px</td></tr>
+                <tr><td>status_create_screen.dart:224 · :233</td><td>statuts · qualité 80, largeur 1 920 px, <strong>sans hauteur maximale</strong></td><td>+ hauteur 1 920 px (la largeur choisie est gardée)</td></tr>
+                <tr><td>group_detail_screen.dart:260 · create_group_screen.dart:65</td><td>photo de groupe · <strong>aucun réglage</strong></td><td>1 024 px · qualité 85, comme les avatars</td></tr>
+                <tr><td>profile_step.dart:138 · edit_profile_screen.dart:220</td><td>avatar · déjà 1 024 px, qualité 85</td><td>inchangé : déjà limité</td></tr>
+                <tr><td>camera_screen.dart:59</td><td>appareil photo intégré · <code>ResolutionPreset.high</code></td><td>inchangé : c'est déjà raisonnable</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>Une photo envoyée comme <em>document</em> part toujours en qualité originale : c'est précisément le rôle de cette option.</p>
+        </div>
+
+        <div class="fix">
+          <div class="fix-head"><span class="tag">Correction 2</span><h3>Compresser les vidéos avant l'envoi</h3></div>
+          <p>Aujourd'hui, une vidéo choisie dans la galerie part telle quelle (<span class="path">chat_actions.dart:1245</span>), et l'app ne contient aucun outil de compression. La proposition : ramener la vidéo en <strong>720p, autour de 2 Mbit/s</strong>, avec l'encodeur matériel du téléphone, via une bibliothèque libre et gratuite (<code>video_compress</code> 3.1.4, licence MIT). Si la vidéo est déjà petite (moins de 8 Mo, ou déjà en 720p ou moins), on la laisse telle quelle.</p>
+          <ul class="plain">
+            <li><strong>Où la brancher</strong> : dans <code>_composeAndSendMedia</code> (<span class="path">chat_actions.dart:1296</span>), le passage obligé de tous les médias d'une conversation, vue unique comprise. La compression a lieu <em>avant</em> que <code>message_sender</code> enregistre le fichier à envoyer (<span class="path">message_sender.dart:357 · :457 · :559</span>). Ainsi, une nouvelle tentative d'envoi ne recompresse jamais le fichier. Pour les statuts : avant <code>uploadMedia</code>, dans <span class="path">status_provider.dart:246</span>.</li>
+            <li><strong>Ce que voit l'utilisateur</strong> : pendant la compression, la bulle garde l'indicateur d'envoi habituel (un cercle qui tourne), puis affiche la progression d'envoi.</li>
+            <li><strong>Ce qui ne change pas</strong> : la vignette de prévisualisation est déjà générée à partir du fichier local. Elle sera simplement générée à partir du fichier compressé.</li>
+          </ul>
+        </div>
+
+        <div class="fix">
+          <div class="fix-head"><span class="tag">Correction 3</span><h3>Réutiliser la connexion</h3></div>
+          <p><code>MediaCacheService</code> ouvre une connexion neuve à chaque téléchargement. Il appelle <code>http.get</code> et <code>http.head</code> directement (<span class="path">media_cache_service.dart:71 · :277 · :288</span>), qui créent un client puis le jettent. Ailleurs, il crée un <code>http.Client()</code> à chaque appel (<span class="path">:103 · :190</span>). La proposition : <strong>un seul client pour tout le service</strong>, créé une fois et jamais fermé après usage. Les connexions restent alors ouvertes quelques secondes entre deux médias, ce qui correspond exactement à ce qui se passe quand on fait défiler une conversation.</p>
+          <p>L'annulation d'un téléchargement ne change pas : elle se fait déjà en sortant de la boucle de lecture (<code>isCancelled</code>), pas en fermant le client. Côté envoi, <span class="path">media_api.dart</span> appelle <code>request.send()</code>, qui ouvre elle aussi une connexion neuve. Il passera par le client partagé que <code>TalkyApiClient</code> possède déjà (<span class="path">talky_api_client.dart:107</span>).</p>
+          <p>Effet attendu : à partir du deuxième média, les 0,57 s de mise en place disparaissent. La même correction rend presque gratuit le détour par le VPS décrit en section 04.</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">03</span></div>
+    <div class="col">
+      <h2>Envoi : directement chez Backblaze</h2>
+      <p>Aujourd'hui, le fichier va jusqu'au VPS. Désormais, l'app demande au VPS un <strong>lien d'envoi signé</strong>, puis envoie le fichier directement à Backblaze : un seul trajet, sans détour. Le VPS ne voit passer qu'une demande de quelques centaines d'octets.</p>
+
+      <figure>
+        <svg viewBox="0 0 940 480" role="img" aria-label="À l'envoi, le téléphone demande un lien signé au VPS, puis envoie le fichier directement à Backblaze. À la lecture, le téléphone demande la même adresse qu'aujourd'hui au VPS, qui vérifie l'expiration et répond par une redirection vers un lien signé ; le téléphone télécharge alors le fichier directement chez Backblaze.">
+          <defs>
+            <marker id="a-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-ink" d="M 0 0 L 10 5 L 0 10 z"></path></marker>
+            <marker id="a-keep" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-keep" d="M 0 0 L 10 5 L 0 10 z"></path></marker>
+          </defs>
+
+          <!-- ENVOI -->
+          <text class="d-panel" x="0" y="16">ENVOI</text>
+          <line class="d-rule" x1="0" y1="26" x2="940" y2="26"></line>
+
+          <rect class="d-box" x="300" y="40" width="200" height="52"></rect>
+          <text class="d-txt-b" x="400" y="63" text-anchor="middle">VPS · API</text>
+          <text class="d-txt-s" x="400" y="80" text-anchor="middle">signe un lien d'envoi</text>
+
+          <rect class="d-box" x="0" y="118" width="150" height="56"></rect>
+          <text class="d-txt-b" x="75" y="142" text-anchor="middle">Téléphone</text>
+          <text class="d-txt-s" x="75" y="159" text-anchor="middle">fichier allégé</text>
+
+          <rect class="d-box" x="700" y="118" width="240" height="56"></rect>
+          <text class="d-txt-b" x="820" y="142" text-anchor="middle">Backblaze B2</text>
+          <text class="d-txt-s" x="820" y="159" text-anchor="middle">alanyaprivate · Amsterdam</text>
+
+          <path class="d-line" d="M 75 118 L 75 66 L 294 66" marker-start="url(#a-ink)" marker-end="url(#a-ink)"></path>
+          <text class="d-txt-s" x="185" y="58" text-anchor="middle">① lien signé · ≈ 1 Ko</text>
+
+          <line class="d-line-keep" x1="150" y1="146" x2="694" y2="146" marker-end="url(#a-keep)"></line>
+          <text class="d-txt-keep" x="422" y="138" text-anchor="middle">② PUT du fichier, un seul trajet</text>
+          <text class="d-txt-s" x="422" y="164" text-anchor="middle">plus de détour par le VPS</text>
+
+          <!-- LECTURE -->
+          <text class="d-panel" x="0" y="224">LECTURE</text>
+          <line class="d-rule" x1="0" y1="234" x2="940" y2="234"></line>
+
+          <rect class="d-box" x="0" y="278" width="140" height="56"></rect>
+          <text class="d-txt-b" x="70" y="302" text-anchor="middle">Téléphone</text>
+          <text class="d-txt-s" x="70" y="319" text-anchor="middle">même URL qu'avant</text>
+
+          <rect class="d-frame" x="250" y="256" width="410" height="100"></rect>
+          <text class="d-txt-s" x="262" y="272">VPS · www.alanya237.com</text>
+
+          <rect class="d-box" x="268" y="282" width="170" height="52"></rect>
+          <text class="d-txt-b" x="353" y="305" text-anchor="middle">garde d'expiration</text>
+          <text class="d-txt-s" x="353" y="322" text-anchor="middle">410 si expiré</text>
+
+          <rect class="d-box-keep" x="478" y="282" width="164" height="52"></rect>
+          <text class="d-txt-b" x="560" y="305" text-anchor="middle">signature</text>
+          <text class="d-txt-s" x="560" y="322" text-anchor="middle">lien valable 1 h</text>
+
+          <rect class="d-box" x="700" y="404" width="240" height="60"></rect>
+          <text class="d-txt-b" x="820" y="430" text-anchor="middle">Backblaze B2</text>
+          <text class="d-txt-s" x="820" y="447" text-anchor="middle">bucket privé</text>
+
+          <line class="d-line" x1="140" y1="308" x2="262" y2="308" marker-end="url(#a-ink)"></line>
+          <text class="d-txt-s" x="196" y="298" text-anchor="middle">GET /uploads/…</text>
+          <line class="d-line" x1="438" y1="308" x2="472" y2="308" marker-end="url(#a-ink)"></line>
+
+          <path class="d-line" d="M 560 334 L 560 380 L 118 380 L 118 340" marker-end="url(#a-ink)"></path>
+          <text class="d-txt-s" x="339" y="373" text-anchor="middle">302 · Location : lien signé</text>
+
+          <path class="d-line" d="M 76 334 L 76 422 L 694 422" marker-end="url(#a-ink)"></path>
+          <text class="d-txt-s" x="390" y="415" text-anchor="middle">GET lien signé</text>
+
+          <path class="d-line-keep" d="M 700 446 L 40 446 L 40 340" marker-end="url(#a-keep)"></path>
+          <text class="d-txt-keep" x="390" y="468" text-anchor="middle">octets : Backblaze → téléphone</text>
+        </svg>
+        <figcaption>À l'envoi, le fichier ne passe plus par le VPS. À la lecture, le VPS décide (expiration) et signe, Backblaze livre les octets. Les adresses restent celles d'aujourd'hui. Le détour par le VPS coûte un aller-retour, que la correction 3 rend presque gratuit.</figcaption>
+      </figure>
+
+      <pre><span class="c"># ① l'app demande un lien d'envoi au VPS</span>
+POST https://www.alanya237.com/api/upload/ticket
+{ "kind": "media", "mimetype": "video/mp4", "size": 15728640, "viewOnce": false }
+
+<span class="k">200</span>
+{ "uploadUrl": "https://s3.eu-central-003.backblazeb2.com/alanyaprivate/media/2026-09-15/video/media_42_1757900000000_9f2c4e7a1b3d5f60.mp4?X-Amz-Signature=…",
+  "url":       "https://www.alanya237.com/uploads/media/2026-09-15/video/media_42_1757900000000_9f2c4e7a1b3d5f60.mp4",
+  "msgType":   2 }                          <span class="c">← lien d'envoi valable 15 min</span>
+
+<span class="c"># ② l'app envoie le fichier directement à Backblaze</span>
+PUT &lt;uploadUrl&gt;
+Content-Type: video/mp4
+Content-Length: 15728640
+
+<span class="k">200</span></pre>
+
+      <ol class="steps">
+        <li><div class="step">
+          <p><strong>Le VPS vérifie et décide.</strong> Il contrôle l'authentification, la limite d'envois (<code>uploadLimiter</code>), la liste des types autorisés et les plafonds de taille (50 Mo pour un média, 5 Mo pour un avatar), repris tels quels de <span class="path">upload.js</span>. Il fixe la clé une seule fois (partition du jour et nom de fichier), puis signe le lien.</p>
+          <p class="sub">Le type, la taille et l'en-tête de cache font partie de la signature : Backblaze refuse un envoi qui ne correspond pas à ce qui a été autorisé. <span class="chip">à vérifier</span> Il reste à confirmer que Backblaze contrôle bien la taille signée. Sinon, solution de repli : le backend vérifie la taille réelle (<code>HeadObject</code>) avant d'accepter le message qui cite ce fichier.</p>
+        </div></li>
+        <li><div class="step">
+          <p><strong>L'app envoie le fichier directement à Backblaze</strong>, avec le suivi de progression actuel.</p>
+          <p class="sub">Si le lien a expiré (envoi repris plus de 15 minutes après), Backblaze répond <code>403</code>. L'app redemande alors un lien et recommence, comme elle le fait déjà après un envoi raté.</p>
+        </div></li>
+        <li><div class="step">
+          <p><strong>L'app envoie le message avec l'URL</strong>, comme aujourd'hui.</p>
+          <p class="sub">Un fichier envoyé dont le message n'est jamais parti devient orphelin. La règle de cycle de vie le supprime comme les autres, puisqu'elle porte sur tout le préfixe sans consulter la base.</p>
+        </div></li>
+      </ol>
+
+      <h3>Des noms de fichier impossibles à deviner</h3>
+      <p>Les nouveaux noms se terminent par 8 octets aléatoires : <code>media_42_1757900000000_9f2c4e7a1b3d5f60.jpg</code>. Aujourd'hui, un nom se reconstitue à partir de l'identifiant d'un utilisateur et de l'heure d'envoi, alors que l'adresse <code>/uploads</code> est publique. La date reste dans le chemin pour le calcul de l'expiration, et aucun code n'a besoin de décoder le nom des nouveaux fichiers.</p>
+
+      <h3>Les anciennes versions de l'app et l'admin</h3>
+      <p>Les versions déjà installées continueront pendant des mois d'envoyer le fichier au backend par <code>/api/upload/media</code> et <code>/api/upload/avatar</code>. L'admin Next.js fait de même (<span class="path">file-upload.tsx:83</span>). Ces routes restent en place : le backend reçoit le fichier dans un dossier temporaire, le dépose chez Backblaze avec le même schéma de nom, et renvoie la même forme d'URL. C'est plus lent, puisque le fichier fait deux trajets, mais rien ne casse.</p>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">04</span></div>
+    <div class="col">
+      <h2>Lecture : même adresse, redirection vers un lien signé</h2>
+      <p>Le bucket est privé : il n'est lisible qu'avec un lien signé. Les médias gardent donc leur adresse actuelle, <code>https://www.alanya237.com/uploads/&lt;clé&gt;</code>, et le VPS répond à cette adresse par une redirection vers un lien signé valable une heure. Ce choix préserve tout ce qui repose aujourd'hui sur ces adresses :</p>
+
+      <div class="reasons">
+        <div class="reason"><div class="tag">Base de données</div><div><p>Les URL de <code>message</code>, <code>users.avatar_url</code>, <code>conversation.groupPhoto</code>, <code>statut</code> et des blocs d'accueil restent valables. Aucun <code>UPDATE</code>.</p></div></div>
+        <div class="reason"><div class="tag">Base et caches de l'app</div><div><p>L'app enregistre <code>mediaUrl</code> dans sa base Drift, et ses caches nomment les fichiers d'après l'URL. Une adresse stable ne périme jamais et ne force jamais un nouveau téléchargement.</p><div class="refs">media_cache_service.dart:351</div></div></div>
+        <div class="reason"><div class="tag">Expiration</div><div><p>L'app déduit l'expiration du chemin <code>/uploads/media/AAAA-MM-JJ/</code> sans faire de requête. Rien ne change.</p><div class="refs">media_expiry.dart:36</div></div></div>
+        <div class="reason"><div class="tag">Notifications et QR</div><div><p>Le code natif (Android, iOS) télécharge l'avatar au moment d'afficher la notification, et la page QR publique l'affiche dans un <code>&lt;img&gt;</code>. Tous deux suivent la redirection.</p><div class="refs">notificationContract.js:100 · qrLandingController.js:114</div></div></div>
+      </div>
+
+      <pre><span class="c">GET https://www.alanya237.com/uploads/media/2026-09-15/images/media_42_…_9f2c4e7a1b3d5f60.jpg</span>
+
+  partition échue ?          → <span class="d">410 MEDIA_EXPIRED</span>   <span class="c">(mediaExpiryGuard, inchangé)</span>
+  fichier encore sur disque ? → servi comme aujourd'hui    <span class="c">(pendant la transition seulement)</span>
+  sinon                      → <span class="k">302</span> Location : lien signé 1 h, Cache-Control: no-store</pre>
+
+      <ul class="plain">
+        <li><strong>Les requêtes HEAD reçoivent un lien signé pour HEAD.</strong> La méthode fait partie de la signature : un <code>HEAD</code> sur un lien signé pour <code>GET</code> serait refusé. Or l'app envoie un <code>HEAD</code> avant les téléchargements automatiques (<span class="path">media_cache_service.dart:277</span>).</li>
+        <li><strong>Une heure de validité suffit.</strong> L'app télécharge toujours le fichier en entier avant de le lire (<code>VideoPlayerController.file</code>, <code>setFilePath</code>). Elle ne lit jamais une vidéo en continu depuis le réseau.</li>
+        <li><strong>Mise en cache sur le téléphone.</strong> Le fichier est déposé avec <code>Cache-Control: public, max-age=31536000, immutable</code>, ce qui conserve le comportement actuel. <span class="chip">à vérifier</span> Il faut confirmer que Backblaze renvoie bien cet en-tête. Sinon, on le force au moment de signer le lien (<code>ResponseCacheControl</code>).</li>
+        <li><strong>Le coût du détour</strong> : un aller-retour vers le VPS avant d'aller chez Backblaze. Avec la correction 3, les deux connexions sont réutilisées, et ce détour tombe à un aller-retour, environ 0,2 s, au lieu d'environ 0,5 s.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">05</span></div>
+    <div class="col">
+      <h2>Purge : Backblaze supprime, nous décidons</h2>
+      <p>Le bucket <code>alanyaprivate</code> est aujourd'hui réglé sur <strong>« Keep all versions »</strong> : avec ce réglage, rien n'est jamais supprimé. Le réglage se fait en deux temps, depuis l'interface web de Backblaze.</p>
+
+      <h3>Tout de suite : un clic</h3>
+      <ol class="steps">
+        <li><div class="step"><p>Se connecter à Backblaze. Dans le menu de gauche, sous « B2 Cloud Storage », ouvrir <strong>Buckets</strong>.</p></div></li>
+        <li><div class="step"><p>Sur la carte d'<code>alanyaprivate</code>, cliquer sur <strong>Lifecycle Settings</strong>.</p></div></li>
+        <li><div class="step">
+          <p>Choisir <strong>« Keep only the last version of the file »</strong>, puis cliquer sur <strong>Update Bucket</strong>.</p>
+          <p class="sub">Cette option crée exactement la première règle du tableau ci-dessous : préfixe vide, fichier masqué supprimé au bout d'un jour. Le bucket étant vide, il n'y a rien d'autre à faire pour l'instant.</p>
+        </div></li>
+      </ol>
+
+      <h3>Au moment de la migration (section 09, étape 2) : ajouter la règle des médias</h3>
+      <ol class="steps">
+        <li><div class="step"><p>Rouvrir <strong>Lifecycle Settings</strong> et choisir <strong>« Use custom lifecycle rules »</strong>.</p></div></li>
+        <li><div class="step"><p>Première ligne : <strong>File Path</strong> vide, nombre de jours avant masquage vide, nombre de jours avant suppression à <strong>1</strong>. C'est la règle déjà créée par le clic précédent.</p></div></li>
+        <li><div class="step"><p>Ajouter une deuxième ligne : <strong>File Path</strong> <code>media/</code>, jours avant masquage <strong>366</strong>, jours avant suppression <strong>1</strong>.</p></div></li>
+        <li><div class="step">
+          <p>Cliquer sur <strong>Update Bucket</strong>.</p>
+          <p class="sub">Selon l'affichage, les deux champs de jours portent des libellés courts (« Days Till Hide », « Days Till Delete ») ou leurs noms techniques (<code>daysFromUploadingToHiding</code>, <code>daysFromHidingToDeleting</code>).</p>
+        </div></li>
+      </ol>
+
+      <p>Les deux règles, pour référence :</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Préfixe (fileNamePrefix)</th><th>Jours avant masquage</th><th>Jours avant suppression</th><th>Rôle</th></tr></thead>
+          <tbody>
+            <tr><td>(vide)</td><td class="num">—</td><td class="num">1</td><td>Rend les suppressions définitives. Sans elle, un fichier supprimé est seulement masqué, et reste stocké et facturé.</td></tr>
+            <tr><td>media/</td><td class="num">R + 1 = 366</td><td class="num">1</td><td>Supprime les médias des messages et des statuts, qu'un message les utilise encore ou non.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><code>images/</code> (avatars, photos de groupe) n'a pas de règle : ces fichiers sont conservés. Backblaze autorise des règles dont les préfixes se recouvrent, et applique alors la plus petite valeur de chaque réglage.</p>
+
+      <p><strong>Pourquoi R + 1.</strong> La partition du jour D est déclarée expirée à D + 1 + R. Si Backblaze masque chaque fichier R + 1 jours après son dépôt, le fichier survit toujours à cette décision : l'app affiche « expiré » avant que Backblaze ne supprime, jamais l'inverse. Les règles s'appliquent une fois par jour, donc la suppression réelle intervient sous 48 heures. R est la valeur <em>effective</em> du serveur, pas celle écrite dans le code : <code>mediaRetentionPolicy.js</code> porte 365 (valeur temporaire depuis le 25/08), mais le <code>.env</code> la surcharge — celui de ce poste, qui vise la production, pose <code>MEDIA_RETENTION_DAYS=30</code>. <strong>Lire la valeur du serveur avant d'écrire la règle</strong>, et poser R + 1 à partir d'elle (31 si R vaut 30).</p>
+
+      <h3>Ce qui reste à notre charge</h3>
+      <ul class="plain">
+        <li><strong>La vue unique</strong> : dès que le média est ouvert, le backend supprime toutes les versions de la clé (<span class="path">messageController.js:828</span>). Attendre la règle quotidienne serait trop lent.</li>
+        <li><strong>Le « média expiré »</strong> : <code>mediaExpiryGuard</code>, sans changement.</li>
+        <li><strong>La valeur de R</strong>, qui figure à deux endroits : la règle Backblaze (R + 1) et <code>MEDIA_RETENTION_DAYS</code> côté backend (R). Il faut changer les deux le même jour, et commencer par Backblaze si la durée augmente.</li>
+      </ul>
+
+      <h3>Ce qui disparaît du code</h3>
+      <ul class="plain">
+        <li>Le balayage des partitions, la corbeille, l'adoption des entrées abandonnées et le garde-fou contre les sauts d'horloge (<span class="path">mediaPartitions.js:296-424</span>).</li>
+        <li>La purge par la base (<span class="path">mediaRetention.js</span>) et les tâches <code>media</code> et <code>media_partitions</code> du registre des purges, une fois le disque vidé.</li>
+        <li>Le lien matériel du transfert (<code>relinkForForward</code>).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">06</span></div>
+    <div class="col">
+      <h2>Ce qui touchait le disque, et ce que ça devient</h2>
+      <div class="tbl-wrap">
+        <table class="tbl-prose">
+          <thead><tr><th>Opération</th><th>Aujourd'hui</th><th>Demain</th></tr></thead>
+          <tbody>
+            <tr><td>Recevoir un envoi</td><td>multer, sur le disque<div class="refs">upload.js</div></td><td>Lien signé et envoi direct (nouvelle app). Backend, puis Backblaze (anciennes versions, admin).</td></tr>
+            <tr><td>Lire un média</td><td><code>express.static</code><div class="refs">server.js:175</div></td><td>Redirection <code>302</code> vers un lien signé pour la méthode de la requête.</td></tr>
+            <tr><td>Consommer une vue unique</td><td><code>fs.unlink</code><div class="refs">messageController.js:828</div></td><td>Suppression de toutes les versions de la clé.</td></tr>
+            <tr><td>Transférer un message</td><td>lien matériel<div class="refs">mediaPartitions.js:152</div></td><td><code>CopyObject</code> vers la partition du jour, sous un nouveau nom. La copie a lieu chez Backblaze, sans passer par le VPS.</td></tr>
+            <tr><td>Purger</td><td><code>rename</code> puis <code>rm -rf</code><div class="refs">mediaPartitions.js:296</div></td><td>Règles de cycle de vie Backblaze.</td></tr>
+            <tr><td>Vérifier la disponibilité avant un export</td><td><code>fs.statSync</code> par média<div class="refs">mediaAvailabilityController.js</div></td><td>Une liste par partition concernée (31 au plus), avec les tailles.</td></tr>
+            <tr><td>Mesurer le volume (super-admin)</td><td><code>measureDir</code><div class="refs">mediaPartitions.js:227</div></td><td>Somme des tailles listées, ou tableau de bord Backblaze.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Les trois endroits qui analysent chacun de leur côté une URL de média (<span class="path">mediaFile.js</span>, <span class="path">mediaAvailabilityController.js</span>, <code>relinkForForward</code>) sont regroupés en une seule fonction, <code>keyFromUrl</code>, qui reprend la validation la plus stricte des trois.</p>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">07</span></div>
+    <div class="col">
+      <h2>Le bucket, les clés, la configuration</h2>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>alanyaprivate (état au 15/09)</th><th>Valeur</th><th>À faire</th></tr></thead>
+          <tbody>
+            <tr><td>Région</td><td><code>s3.eu-central-003.backblazeb2.com</code></td><td><span class="ok">Bon</span> : EU Central, Amsterdam</td></tr>
+            <tr><td>Type</td><td>Private</td><td><span class="ok">Bon</span></td></tr>
+            <tr><td>Chiffrement</td><td>Enabled</td><td><span class="ok">Bon</span></td></tr>
+            <tr><td>Cycle de vie</td><td>Keep all versions</td><td><span class="ko">À changer</span> : règles de la section 05</td></tr>
+            <tr><td>Object Lock</td><td>Disabled</td><td><span class="ok">Bon</span> : à laisser désactivé, sinon les suppressions deviendraient impossibles</td></tr>
+            <tr><td>CORS</td><td>aucune règle</td><td><span class="ok">Bon</span> : l'app n'est pas un navigateur, aucune règle n'est nécessaire</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><strong>Un second bucket pour le développement</strong>, <code>alanyaprivate-dev</code> (gratuit), avec les mêmes réglages. Il est indispensable : le <code>.env</code> local vise la production (<span class="path">mediaRetentionPolicy.js</span>). Sans lui, le premier test local déposerait ses fichiers dans le bucket de production.</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Clé d'application</th><th>Droits</th><th>Où elle est rangée</th></tr></thead>
+          <tbody>
+            <tr><td>alanya-backend-prod</td><td>Lecture, écriture et suppression, limitée à <code>alanyaprivate</code>, avec « Allow List All Bucket Names » coché (sinon le SDK échoue)</td><td><code>.env</code> du VPS</td></tr>
+            <tr><td>alanya-backend-dev</td><td>Mêmes droits, limitée à <code>alanyaprivate-dev</code></td><td>environnement local</td></tr>
+            <tr><td>alanya-migration</td><td>Lecture et écriture sur <code>alanyaprivate</code></td><td>utilisée par rclone, puis supprimée</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>La clé principale du compte n'est utilisée nulle part (elle ne fonctionne d'ailleurs pas avec l'API compatible S3). Les clés secrètes ne s'affichent qu'une fois, à leur création, et ne doivent jamais apparaître dans un README ni dans un commit.</p>
+
+      <pre><span class="c"># backend — .env</span>
+MEDIA_STORAGE=disk                           <span class="c"># disk | b2 — interrupteur, éteint par défaut</span>
+B2_ENDPOINT=https://s3.eu-central-003.backblazeb2.com
+B2_REGION=eu-central-003
+B2_BUCKET=alanyaprivate
+B2_KEY_ID=…     B2_APP_KEY=…                 <span class="c"># clé alanya-backend-prod</span>
+B2_DOWNLOAD_URL_TTL_S=3600                   <span class="c"># liens de lecture</span>
+B2_UPLOAD_URL_TTL_S=900                      <span class="c"># liens d'envoi</span></pre>
+      <p>Au passage : <code>MEDIA_PARTITIONS_ENABLED</code> apparaît deux fois dans le <code>.env</code> local. Il faut en supprimer un pour qu'il n'y ait aucun doute sur la valeur retenue.</p>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">08</span></div>
+    <div class="col">
+      <h2>Le code, tel qu'il est écrit</h2>
+      <p>Écrit le 15/09/2026 sur la branche <code>partition</code> des deux dépôts, pas encore commité. Une simplification par rapport au plan : un seul module, <code>mediaStorage.js</code>, parle à Backblaze, et les quelques endroits qui touchaient le disque bifurquent selon l'interrupteur, plutôt que deux pilotes interchangeables. Le code disque existant ne bouge pas, ce qui garde la bascule réversible à tout moment.</p>
+
+      <h3>App Flutter</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Fichier</th><th>Changement</th></tr></thead>
+          <tbody>
+            <tr><td>core/services/video_upload_compressor.dart</td><td><strong>Nouveau.</strong> Règle de décision (plus de 8 Mo, et plus grand que 720p ou débit au-delà de 3 Mbit/s), file d'attente (une compression à la fois), retour à l'original en cas d'échec, suffixe <code>_c720</code> contre la double compression.</td></tr>
+            <tr><td>core/services/chat/message_sender.dart</td><td>Compression dans <code>uploadAndEmit</code>, passage obligé de tous les envois. La ligne locale bascule sur le fichier compressé (chemin et poids).</td></tr>
+            <tr><td>core/services/chat/chat_repository.dart</td><td>Le compresseur peut être remplacé par un faux dans les tests.</td></tr>
+            <tr><td>providers/status_provider.dart</td><td>Vidéos de statut compressées avant l'envoi.</td></tr>
+            <tr><td>core/services/media_cache_service.dart</td><td>Un seul client HTTP, partagé par tout le service.</td></tr>
+            <tr><td>api/media_api.dart</td><td>Ticket, puis <code>PUT</code> direct. Retour au formulaire si le serveur répond <code>mode: multipart</code> ou ne connaît pas la route (404). Le formulaire passe lui aussi par le client partagé.</td></tr>
+            <tr><td>chat_actions · status_create_screen · group_detail_screen · create_group_screen</td><td>Tailles maximales des photos (section 02).</td></tr>
+            <tr><td>pubspec.yaml</td><td><code>video_compress</code> 3.1.4 (licence MIT).</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Backend</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Fichier</th><th>Changement</th></tr></thead>
+          <tbody>
+            <tr><td>services/mediaStorage.js</td><td><strong>Nouveau.</strong> Interrupteur, clés (validation, nouveaux noms à suffixe aléatoire), liens signés (lecture GET et HEAD ; envoi PUT avec type, taille et cache signés), dépôt, copie, suppression de toutes les versions, liste.</td></tr>
+            <tr><td>middleware/mediaRead.js</td><td><strong>Nouveau.</strong> Redirection <code>302</code> vers un lien signé. Un fichier encore sur le disque est servi comme avant.</td></tr>
+            <tr><td>middleware/upload.js</td><td>En mode b2, le fichier transite par un dossier temporaire. Listes de types et plafonds exportés. Nettoyage des fichiers de transit abandonnés.</td></tr>
+            <tr><td>controllers/uploadController.js · routes/upload.js</td><td>Route multipart : dépôt chez Backblaze. Nouvelle route <code>POST /api/upload/ticket</code>, qui répond <code>mode: multipart</code> tant que l'interrupteur est éteint.</td></tr>
+            <tr><td>server.js</td><td><code>mediaRead</code> monté entre le garde d'expiration et <code>express.static</code>.</td></tr>
+            <tr><td>middleware/mediaExpiry.js</td><td>Le relais des adresses héritées désigne la clé de partition.</td></tr>
+            <tr><td>utils/mediaFile.js · messageController.js · mediaAvailabilityController.js</td><td>Vue unique (toutes les versions), transfert (<code>CopyObject</code>), disponibilité (une liste par dossier).</td></tr>
+            <tr><td>docs/error-codes.md · .env.example</td><td><code>STORAGE_UNAVAILABLE</code> ; variables B2 documentées.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Tests</h3>
+      <p>App : 17 tests pour la compression (dont 3 envois de bout en bout dans une conversation) et 6 pour l'envoi direct (ticket, retour au formulaire, refus). Backend : 11 tests pour <code>mediaStorage</code> (signatures réelles, calculées hors ligne ; réseau simulé) et 7 pour la lecture, ajoutés à <code>npm run test:media</code>, qui passe en entier. Deux points d'attention sans lien avec ce chantier : <code>mediaRetention.test.js</code> échoue quand le <code>.env</code> local pose <code>MEDIA_RETENTION_DAYS</code> (lancer la suite avec <code>MEDIA_RETENTION_DAYS=</code>), et 2 tests de <code>forward_message_test.dart</code> échouaient déjà.</p>
+      <p>Une précaution pour plus tard : l'épinglage de certificat est désactivé (<span class="path">main.dart:115-125</span>). S'il est réactivé un jour, il devra accepter l'hôte <code>backblazeb2.com</code>.</p>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">09</span></div>
+    <div class="col">
+      <h2>Ordre de mise en œuvre</h2>
+
+      <div class="note-box">
+        <div class="lbl">État au 15/09/2026</div>
+        <p><strong>Écrit et testé</strong> : les trois corrections de l'app, l'envoi direct avec son repli, et tout le backend derrière l'interrupteur <code>MEDIA_STORAGE</code>, éteint par défaut. Rien n'est commité. <strong>Reste</strong> : essayer l'app sur un téléphone, régler le cycle de vie du bucket (un clic), créer <code>alanyaprivate-dev</code> et les clés, faire la recette, puis basculer.</p>
+      </div>
+
+      <ol class="steps">
+        <li><div class="step">
+          <p><strong>Publier les trois corrections de l'app.</strong></p>
+          <p class="sub">Elles ne dépendent pas du stockage et apportent tout de suite le gain de vitesse. On mesure avant et après depuis un téléphone au Cameroun.</p>
+        </div></li>
+        <li><div class="step"><p>Régler le cycle de vie d'<code>alanyaprivate</code> (section 05), créer <code>alanyaprivate-dev</code> et les clés.</p></div></li>
+        <li><div class="step">
+          <p>Déployer le backend avec <code>MEDIA_STORAGE=disk</code>.</p>
+          <p class="sub">Aucun changement de comportement, sur le même principe que le déploiement des partitions avec l'interrupteur éteint.</p>
+        </div></li>
+        <li><div class="step"><p>Faire la recette sur le bucket de dev, avec un serveur local configuré en <code>b2</code>.</p></div></li>
+        <li><div class="step">
+          <p>Basculer en production : <code>MEDIA_STORAGE=b2</code>, puis publier la version de l'app qui envoie directement à Backblaze.</p>
+          <p class="sub">Dès la bascule, tous les nouveaux fichiers vont chez Backblaze, y compris ceux des anciennes versions de l'app. Les anciens fichiers restent servis depuis le disque.</p>
+        </div></li>
+        <li><div class="step">
+          <p>Copier l'existant chez Backblaze, puis vérifier la copie.</p>
+          <p class="sub">La copie vient <em>après</em> la bascule : ainsi, plus aucun fichier nouveau n'arrive sur le disque pendant qu'on le recopie.</p>
+        </div></li>
+        <li><div class="step">
+          <p>Déplacer <code>uploads/media</code> et <code>uploads/images</code> dans une archive locale, sans rien supprimer.</p>
+          <p class="sub">Toutes les lectures passent alors par Backblaze. On surveille les 404 pendant une semaine. En cas de problème, il suffit de remettre l'archive en place.</p>
+        </div></li>
+        <li><div class="step"><p>Supprimer l'archive et la clé de migration. Dans la version suivante du backend, retirer la lecture sur disque, le balayage et la corbeille.</p></div></li>
+      </ol>
+
+      <pre><span class="c"># étape 6 — « copy », jamais « sync » : sync supprimerait côté destination</span>
+rclone copy ~/Alanya-backend/uploads b2-alanya:alanyaprivate \
+  --exclude ".trash/**" --exclude "exports/**" --transfers 8 --checksum
+
+<span class="c"># chaque fichier local doit exister chez Backblaze avec la même empreinte ;</span>
+<span class="c"># --one-way ignore les fichiers déposés depuis la bascule</span>
+rclone check ~/Alanya-backend/uploads b2-alanya:alanyaprivate \
+  --exclude ".trash/**" --exclude "exports/**" --one-way</pre>
+
+      <div class="note-box">
+        <div class="lbl">Le calendrier joue pour nous</div>
+        <p>Vérifier <code>MEDIA_RETENTION_DAYS</code> sur le serveur avant de commencer. Le code porte 365 depuis le 25/08, mais le <code>.env</code> peut dire autre chose : celui de ce poste, qui vise la production, pose 30. À 30 jours, des partitions tombent pendant la migration — ce n'est pas un problème en soi (la copie ne fait que suivre), mais il faut le savoir : un média copié le matin peut avoir disparu du disque le lendemain, et <code>rclone check</code> le signalera. À 365 jours, rien ne tombe pendant la bascule.</p>
+      </div>
+
+      <h3>Recette</h3>
+      <div class="tbl-wrap">
+        <table class="tbl-prose">
+          <thead><tr><th>Vérification</th><th>Ce qu'on attend</th></tr></thead>
+          <tbody>
+            <tr><td>Vitesse, depuis un téléphone au Cameroun</td><td>C'est le critère de réussite. On mesure l'envoi d'une photo et d'une vidéo d'une minute, puis l'affichage de dix médias à la suite, avant et après les corrections, en Wi-Fi et en données mobiles.</td></tr>
+            <tr><td>Poids des fichiers envoyés</td><td>Photo de la galerie : 1 600 px au plus. Vidéo : 720p, avec une petite vidéo laissée intacte. Document : fichier d'origine.</td></tr>
+            <tr><td>Envoi direct à Backblaze</td><td>Lien, puis <code>PUT</code> accepté, puis message affiché chez le destinataire. Un envoi plus gros que la taille autorisée est refusé.</td></tr>
+            <tr><td>Lien d'envoi expiré</td><td>L'app redemande un lien et l'envoi aboutit.</td></tr>
+            <tr><td>Ancienne version de l'app, admin</td><td>La route multipart dépose chez Backblaze et l'URL renvoyée a la même forme.</td></tr>
+            <tr><td>HEAD avant un téléchargement automatique</td><td><code>200</code> avec <code>Content-Length</code>.</td></tr>
+            <tr><td>En-tête <code>Cache-Control</code> <span class="chip">à vérifier</span></td><td>Renvoyé par Backblaze. Sinon, on le force à la signature.</td></tr>
+            <tr><td>Média d'une partition échue</td><td><code>410</code> avant toute redirection (tester avec <code>MEDIA_RETENTION_DAYS=1</code> sur le dev).</td></tr>
+            <tr><td>Vue unique</td><td>Une fois ouverte, la clé n'existe plus, versions comprises.</td></tr>
+            <tr><td>Avatar dans une notification Android et iOS, page QR, aperçus de l'admin</td><td>S'affichent normalement.</td></tr>
+            <tr><td>Backblaze injoignable</td><td>L'envoi échoue en <code>503 STORAGE_UNAVAILABLE</code>, l'app réessaie. Les médias déjà présents sur le téléphone restent visibles.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">10</span></div>
+    <div class="col">
+      <h2>Coûts</h2>
+      <p>Aucun nouveau service. Seule la facture Backblaze évolue, avec l'usage :</p>
+      <ul class="plain">
+        <li><strong>Stockage</strong> : 6,95 $ par To et par mois, les 10 premiers Go gratuits. Avec 30 jours de conservation, on stocke environ un mois d'envois plus les avatars.</li>
+        <li><strong>Téléchargements</strong> : gratuits jusqu'à trois fois le volume stocké chaque mois, puis 0,01 $ par Go. C'est la ligne à surveiller, parce qu'une photo envoyée dans un groupe est téléchargée par chaque membre.</li>
+        <li><strong>Appels à l'API</strong> : chaque affichage coûte un appel, avec un quota gratuit chaque jour. À contrôler sur le tableau de bord le premier mois.</li>
+        <li><strong>L'effet des corrections de l'app</strong> : des fichiers cinq fois plus légers se stockent et se téléchargent cinq fois moins cher. Les corrections 1 et 2 réduisent directement les deux premières lignes.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">11</span></div>
+    <div class="col">
+      <h2>Décisions encore ouvertes</h2>
+      <div class="open">
+        <div>
+          <h3>Le réglage de rétention du super-admin</h3>
+          <p>Il ne modifie que le backend. Laissé tel quel, il ferait diverger la valeur du backend de celle de la règle Backblaze (section 05).</p>
+          <p class="reco">Recommandé : l'afficher en lecture seule pour l'instant, et le relier plus tard à l'API de Backblaze si le besoin se confirme.</p>
+        </div>
+        <div>
+          <h3>Les médias officiels vont expirer</h3>
+          <p>Les médias de l'accueil, des diffusions et du profil officiel passent par <code>/upload/media</code>, et donc par <code>media/&lt;jour&gt;/</code>. Ils disparaîtront quand R reviendra à 30.</p>
+          <p class="reco">Recommandé : une route admin qui dépose sous <code>official/</code>, sans règle d'expiration.</p>
+        </div>
+        <div>
+          <h3>Un relais proche des utilisateurs, plus tard</h3>
+          <p>Si un budget est un jour accordé, un relais Cloudflare à Douala diviserait par cinq le temps de connexion. La redirection du VPS pointerait alors vers ce relais au lieu de Backblaze : un seul changement, sans toucher aux adresses.</p>
+          <p class="reco">Recommandé : écarté pour l'instant (service payant au-delà de 100 000 affichages par jour).</p>
+        </div>
+        <div>
+          <h3>Ce qui reste sur le VPS</h3>
+          <p>Le coffre des pièces d'identité (<code>VAULT_DIR</code>, chiffré, volontairement hors de <code>uploads/</code>) et les exports de compte au format JSON (<code>uploads/exports</code>). Les vignettes <code>mediaThumb</code> restent en base.</p>
+          <p class="reco">Recommandé : hors périmètre de ce chantier.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div>Version 3 · 15/09/2026 · bucket alanyaprivate · backend et app sur la branche partition · suite de « Partitions média Alanya » (25/08/2026)</div>
+    <div>Références : <a href="https://www.backblaze.com/docs/cloud-storage-lifecycle-rules">règles de cycle de vie</a> · <a href="https://www.backblaze.com/docs/cloud-storage-s3-compatible-api">API compatible S3 (liens signés)</a> · <a href="https://www.backblaze.com/docs/cloud-storage-s3-compatible-app-keys">clés d'application</a> · <a href="https://www.backblaze.com/cloud-storage/pricing">tarifs B2</a></div>
+  </footer>
+</div>
+
+</body>
+</html>
