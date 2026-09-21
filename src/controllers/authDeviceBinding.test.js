@@ -236,10 +236,13 @@ async function main() {
     journal.some((j) => j.appel === 'recordLogin'), false,
     'un refus n’enrôle pas l’appareil qu’il vient de refuser',
   );
-  // La tentative laisse une trace, distinguable d'une connexion réussie.
+  // La tentative laisse une trace, distinguable d'une connexion réussie — non
+  // par un préfixe dans le libellé, mais par la colonne `origine` (migration
+  // 085). Ordre des paramètres : alanyaID, device, ipAdress, os_system, origine.
   const trace = requetes.find((r) => /INSERT INTO userAccess/.test(r.sql));
   assert.ok(trace, 'la tentative refusée est journalisée');
-  assert.match(trace.params[1], /^REFUS appareil non reconnu/);
+  assert.strictEqual(trace.params[4], 'refus');
+  assert.strictEqual(trace.params[1], CORPS_LOGIN.device_model);
 
   /* ── 5. Mot de passe faux : 401, la garde ne parle pas avant bcrypt ── */
   // Répondre DEVICE_NOT_TRUSTED sans mot de passe valide dirait à un inconnu

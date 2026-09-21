@@ -16,6 +16,7 @@ const { isOfficialAccount } = require('../utils/officialAccountGuard');
 const { ensureDefaultContactLists } = require('../utils/defaultContactLists');
 const { invalidateSenderIdentity } = require('../utils/senderIdentityCache');
 const { entitlementsOrNull } = require('../services/billing/entitlements');
+const { journaliserAcces } = require('../services/userAccessLog');
 
 const SALT_ROUNDS = 10;
 
@@ -79,34 +80,20 @@ const _clientIp = (req) =>
   req.connection?.remoteAddress ||
   'INDEFINI';
 
-// Journalise une connexion (login, inscription, refresh) dans userAccess.
-// Best-effort : ne fait jamais échouer la requête appelante.
-// `device` doit être un libellé lisible (marque + modèle, ex. "Samsung SM-A715F").
-const logUserAccess = async (req, alanyaID, { device, osSystem } = {}) => {
-  try {
-    const ipAdress = _clientIp(req);
-    const ua = req.headers['user-agent'] || '';
-    const os = osSystem || _osFromUserAgent(ua) || 'INDEFINI';
-    await pool.execute(
-      `INSERT INTO userAccess (alanyaID, device, dateLogin, ipAdress, os_system)
-       VALUES (?, ?, NOW(), ?, ?)`,
-      [alanyaID, device || 'INDEFINI', ipAdress, os]
-    );
-  } catch (error) {
-    console.warn('[userAccess] insert failed:', error.message);
-  }
-};
-
-const _osFromUserAgent = (ua) => {
-  if (!ua) return null;
-  const s = ua.toLowerCase();
-  if (s.includes('android')) return 'Android';
-  if (s.includes('iphone') || s.includes('ipad') || s.includes('ios')) return 'iOS';
-  if (s.includes('mac os')) return 'macOS';
-  if (s.includes('windows')) return 'Windows';
-  if (s.includes('linux')) return 'Linux';
-  return null;
-};
+// Journalise un accès dans `userAccess`, best-effort. Quatre portes d'entrée
+// partent d'ici — inscription, connexion par mot de passe, tentative refusée,
+// enrôlement de secours après réinitialisation — et chacune dit laquelle par
+// son `origine`. La cinquième, l'approbation par QR, est dans qrAuthController.
+//
+// Le renouvellement de jeton (`/auth/refresh`) n'écrit RIEN ici, contrairement
+// à ce que ce commentaire a longtemps annoncé : l'activité d'un appareil se lit
+// dans `appareils.last_active_at`, que le refresh tient à jour.
+const _journaliserAcces = (req, alanyaID, opts) =>
+  journaliserAcces(alanyaID, {
+    ...opts,
+    ipAddress: _clientIp(req),
+    userAgent: req.headers['user-agent'] || '',
+  });
 
 // Génération d'un alanyaPhone unique à 8 chiffres
 const generateAlanyaPhone = async () => generateUniquePhone(8);
@@ -252,10 +239,12 @@ const register = async (req, res) => {
       [result.insertId]
     );
 
-    // Journalise l'inscription comme premier "login" dans userAccess.
-    logUserAccess(req, result.insertId, {
+    // L'inscription est le premier accès au compte, et se distingue des
+    // suivants par son `origine`.
+    _journaliserAcces(req, result.insertId, {
       device: device_model || device_ID,
       osSystem: os_system,
+      origine: 'inscription',
     });
 
     // `recoveryCode` en clair : unique occasion de le transmettre en dehors du
@@ -354,12 +343,13 @@ const login = async (req, res) => {
         : (await deviceSessionService.countActiveDevices(user.alanyaID)) === 0;
 
       if (!appareilConnu && !sansAppareil) {
-        // La tentative refusée est tracée dans userAccess, qui n'a pas de
-        // colonne d'issue : le préfixe du libellé est ce qui la distingue d'une
-        // connexion réussie dans l'écran d'administration.
-        logUserAccess(req, user.alanyaID, {
-          device: `REFUS appareil non reconnu — ${device_model || device_ID || 'INDEFINI'}`,
+        // La tentative refusée est tracée, mais `origine = 'refus'` : une
+        // tentative n'est pas une connexion. L'écran d'administration la
+        // distingue par là, et l'agrégat des analytics l'exclut de son total.
+        _journaliserAcces(req, user.alanyaID, {
+          device: device_model || device_ID,
           osSystem: os_system,
+          origine: 'refus',
         });
         return res.status(403).json({
           error: 'Cet appareil n\'est pas reconnu. Ajoutez-le en scannant le QR depuis un appareil déjà connecté, ou réinitialisez votre mot de passe.',
@@ -406,9 +396,10 @@ const login = async (req, res) => {
     delete user.exclus;
 
     // Journalise la connexion dans userAccess (best-effort).
-    logUserAccess(req, user.alanyaID, {
+    _journaliserAcces(req, user.alanyaID, {
       device: device_model || device_ID,
       osSystem: os_system,
+      origine: 'login',
     });
 
     // Signale aux autres appareils déjà connectés qu'une nouvelle connexion
@@ -770,9 +761,10 @@ const completePasswordReset = async (req, res) => {
       delete user.password;
       delete user.exclus;
 
-      logUserAccess(req, user.alanyaID, {
+      _journaliserAcces(req, user.alanyaID, {
         device: device_model || 'INDEFINI',
         osSystem: os_system,
+        origine: 'recovery',
       });
 
       return res.json({ message, user, accessToken, refreshToken });
