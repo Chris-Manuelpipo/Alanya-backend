@@ -15,7 +15,7 @@
 const PLAY_URL = process.env.QR_PLAY_STORE_URL || '';
 const APPSTORE_URL = process.env.QR_APP_STORE_URL || '';
 
-const SUPPORT = 'support@alanya237.com';
+const SUPPORT = 'alanyapro64@gmail.com';
 const HOST = 'https://www.alanya237.com';
 const MAJ = '21 septembre 2026';
 const MAJ_EN = '21 September 2026';

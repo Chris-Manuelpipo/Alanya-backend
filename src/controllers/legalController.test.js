@@ -90,7 +90,7 @@ test('politique : scope drive.file, dossier Alanya, pas de bout en bout', () => 
   assert.match(res.corps, />Alanya</);
   assert.match(res.corps, /bout en bout/);
   assert.match(res.corps, /Limited Use/);
-  assert.match(res.corps, /support@alanya237\.com/);
+  assert.match(res.corps, /alanyapro64@gmail\.com/);
   assert.match(res.corps, /AES-256-GCM/);
 });
 
