@@ -20,6 +20,10 @@ const FEATURE = Object.freeze({
   LIST_RINGTONES: 'list_ringtones',
   STYLE: 'style',
   VERIFIED_BADGE: 'verified_badge',
+  // Déclaré au catalogue avec `is_paid = 0` (migration 087) : le code existe
+  // pour que la bascule au payant soit un réglage, pas une migration. Aucun
+  // `requireFeature` ne s'en sert aujourd'hui.
+  VOICEMAIL: 'voicemail',
 });
 
 /** `subscription_period.source` */
