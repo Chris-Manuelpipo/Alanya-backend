@@ -1,5 +1,11 @@
 const pool = require('../../config/db');
-const { notifyIncomingCall, notifyGroupCall, notifyCallEnded } = require('../../services/notificationService');
+const {
+  notifyIncomingCall,
+  notifyGroupCall,
+  notifyCallEnded,
+  notifyVoicemailActive,
+} = require('../../services/notificationService');
+const { shouldInterceptCall } = require('../../services/voicemailScheduleService');
 const { maxParticipants, maxInvitees } = require('../../constants/participantLimits');
 const { isBlockedEitherWay } = require('../../utils/blockUtils');
 const { isOfficialAccount } = require('../../utils/officialAccountGuard');
@@ -844,6 +850,88 @@ const callUser = (io, socket, userSockets) => {
           reason: 'Un appel est déjà en cours de votre côté',
           code: 'CALLER_BUSY',
         });
+        return;
+      }
+
+      // ── RÉPONDEUR ────────────────────────────────────────────────────────
+      //
+      // Placement : APRÈS `CALLER_BUSY`, AVANT `TARGET_BUSY`.
+      //
+      // Après `CALLER_BUSY`, parce que cette garde-là protège l'APPELANT : la
+      // court-circuiter laisserait quelqu'un déjà en communication ouvrir une
+      // seconde branche sortante dans sa machine à états. Avant `TARGET_BUSY`,
+      // parce que c'est précisément la garde que le répondeur remplace — le
+      // destinataire n'est pas « occupé », il est injoignable par choix, et
+      // l'appelant ne doit pas recevoir `call_busy` mais l'invitation à laisser
+      // un message.
+      //
+      // Ce qui suit ne fait RIEN d'autre que ce qui est écrit. Pas de
+      // `callState.setRinging`, pas de `callDeviceOwnership`, pas de
+      // `scheduleNoAnswer`, pas de `pendingCalls.set`, pas d'`incoming_call`,
+      // et surtout pas de `notifyIncomingCall` : c'est l'absence de ce dernier
+      // appel qui garantit qu'aucun FCM ne part, donc qu'aucun CallKit ne
+      // s'ouvre, donc que le téléphone ne sonne pas. C'est la promesse même de
+      // la fonctionnalité, et `voicemailIntercept.test.js` la vérifie ligne à
+      // ligne.
+      const verdictRepondeur = await shouldInterceptCall(targetID, callerID).catch((err) => {
+        // Une planification illisible ne doit jamais faire échouer un appel :
+        // le défaut penche toujours du côté « le téléphone sonne ».
+        console.warn('[Socket call_user] répondeur: évaluation impossible:', err.message);
+        return { intercept: false };
+      });
+
+      if (verdictRepondeur.intercept) {
+        console.log(`[Socket call_user] 📼 Répondeur: ${callerID} → ${targetID}`);
+
+        let voicemailCallID = null;
+        try {
+          // Inséré directement avec `status = 4`, jamais 0 puis UPDATE : entre
+          // les deux écritures, un crash laisserait une ligne « appel manqué »
+          // parfaitement crédible dans les deux journaux — alors que le
+          // téléphone n'a jamais sonné.
+          const [result] = await pool.execute(
+            `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, ip)
+             VALUES (?, ?, ?, 4, NOW(), ?)`,
+            [callerID, targetID, isVideo ? 1 : 0, getClientIp(socket)]
+          );
+          voicemailCallID = result.insertId;
+        } catch (dbErr) {
+          console.warn('[Socket call_user] répondeur: insert échoué:', dbErr.message);
+        }
+
+        // La conversation est résolue ici et transmise à l'appelant : sans
+        // elle, son app devrait faire un aller-retour `createConversation`
+        // avant de pouvoir ouvrir le micro.
+        let conversID = null;
+        try {
+          conversID = await getOrCreateDirectConversation(callerID, targetID);
+        } catch (convErr) {
+          console.warn('[Socket call_user] répondeur: conversation échouée:', convErr.message);
+        }
+
+        // À la socket seule, comme `call_ringing` : les autres appareils de
+        // l'appelant n'ont pas cet appel.
+        socket.emit('call_voicemail', {
+          callId:         voicemailCallID != null ? String(voicemailCallID) : null,
+          targetId:       String(targetID),
+          reason:         'voicemail',
+          isVideo:        !!isVideo,
+          conversationID: conversID,
+        });
+
+        // Fait apparaître l'entrée « Répondeur » en direct dans le journal des
+        // DEUX parties. Sans lui, le destinataire ne découvrirait l'appel qu'au
+        // prochain rechargement complet.
+        if (voicemailCallID != null) {
+          finalizeCallAndNotify(io, userSockets, voicemailCallID)
+            .catch((err) => console.warn('[Socket call_user] répondeur finalize:', err.message));
+        }
+
+        notifyVoicemailActive(targetID, callerName, {
+          activeUntil: verdictRepondeur.activeUntil,
+          timeZone: verdictRepondeur.schedule?.resolvedTimezone,
+        }).catch((err) => console.warn('[Socket call_user] répondeur notify:', err.message));
+
         return;
       }
 
