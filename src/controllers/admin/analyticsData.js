@@ -30,6 +30,7 @@ async function fetchAnalyticsData(fromInput, toInput) {
     [usersByRole],
     [[userGrowth]],
     [devices],
+    [activeDevices],
     [[convAgg]],
     [heatmap],
     [[comparison]],
@@ -155,6 +156,14 @@ async function fetchAnalyticsData(fromInput, toInput) {
          (SELECT COUNT(*) FROM users) AS totalUsers`,
       [from, to, from, to],
     ),
+    // Connexions par système : un FLUX d'authentifications sur la période, pas
+    // un parc. L'application ne se reconnecte pas — elle renouvelle son jeton —
+    // donc un utilisateur actif tous les jours depuis trois mois ne compte ici
+    // qu'une fois. C'est la requête suivante qui donne le parc.
+    //
+    // `origine <> 'refus'` : une tentative rejetée par le verrouillage
+    // d'appareil est justement une connexion qui n'a PAS eu lieu. La compter
+    // gonflerait le camembert le jour où le verrou sera armé.
     pool.execute(
       `SELECT
          CASE
@@ -166,7 +175,32 @@ async function fetchAnalyticsData(fromInput, toInput) {
          END AS os,
          COUNT(*) AS n
        FROM userAccess
-       WHERE dateLogin BETWEEN ? AND ?
+       WHERE dateLogin BETWEEN ? AND ? AND origine <> 'refus'
+       GROUP BY os ORDER BY n DESC LIMIT 10`,
+      [from, to],
+    ),
+    // Parc d'appareils actifs sur la période. `last_active_at` est rafraîchi à
+    // chaque renouvellement de jeton (`touchLastActive`), c'est donc la seule
+    // mesure d'activité réelle dont on dispose — et elle existait déjà, sans
+    // que rien ne l'affiche.
+    //
+    // `platform` suit le vocabulaire fermé et minuscule de `normalizePlatform`,
+    // d'où un CASE d'égalité et non le LIKE de la requête précédente, qui doit
+    // composer avec un champ libre.
+    pool.execute(
+      `SELECT
+         CASE platform
+           WHEN 'android' THEN 'Android'
+           WHEN 'ios'     THEN 'iOS'
+           WHEN 'macos'   THEN 'macOS'
+           WHEN 'windows' THEN 'Windows'
+           WHEN 'linux'   THEN 'Linux'
+           WHEN 'web'     THEN 'Web'
+           ELSE 'Inconnu'
+         END AS os,
+         COUNT(*) AS n
+       FROM appareils
+       WHERE revoked_at IS NULL AND last_active_at BETWEEN ? AND ?
        GROUP BY os ORDER BY n DESC LIMIT 10`,
       [from, to],
     ),
@@ -276,6 +310,7 @@ async function fetchAnalyticsData(fromInput, toInput) {
       totalUsers: _num(userGrowth.totalUsers),
     },
     devices: devices.map((r) => ({ os: r.os, count: _num(r.n) })),
+    activeDevices: activeDevices.map((r) => ({ os: r.os, count: _num(r.n) })),
     conversations: {
       total: _num(convAgg.total),
       groups: _num(convAgg.groupCount),

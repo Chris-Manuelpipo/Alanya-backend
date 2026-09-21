@@ -301,12 +301,22 @@ async function buildAnalyticsPdf({ data, sections, meta }) {
       ]);
     }
 
+    // Deux tableaux, deux mesures qu'on confond facilement : le nombre
+    // d'authentifications de la période, et le nombre d'appareils qui s'y sont
+    // manifestés. Le second est toujours le plus proche du parc réel.
     if (sections.has('devices')) {
       drawSectionTitle(doc, 'Appareils (connexions)');
       drawTable(doc, {
         headers: ['OS', 'Connexions'],
         colWidths: [200, 100],
         rows: data.devices.map((d) => [d.os, d.count]),
+      });
+
+      drawSectionTitle(doc, 'Parc d\'appareils actifs');
+      drawTable(doc, {
+        headers: ['OS', 'Appareils'],
+        colWidths: [200, 100],
+        rows: data.activeDevices.map((d) => [d.os, d.count]),
       });
     }
 
