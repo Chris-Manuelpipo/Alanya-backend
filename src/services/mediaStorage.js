@@ -50,7 +50,21 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const CACHE_IMMUABLE = 'public, max-age=31536000, immutable';
 
 /** Préfixes servis par `/uploads`. `exports/` et le reste ne le sont jamais. */
-const PREFIXES_SERVIS = [MEDIA_ROOT, 'images'];
+/**
+ * `voicemail` : les annonces de répondeur.
+ *
+ * Elles ont leur propre préfixe, et pas par coquetterie — deux purges
+ * l'imposent. `mediaRetention` ne voit que ce que `message.mediaUrl` désigne,
+ * et une annonce n'est jamais un message ; mais surtout `sweepPartitions`
+ * SUPPRIME le répertoire daté entier sous `uploads/media/`, sans consulter
+ * aucune table. Une annonce rangée là disparaîtrait toute seule, à terme, sans
+ * que rien ne l'explique.
+ *
+ * ⚠ Oublier ce préfixe ici casse le service en mode B2 — `isSafeKey` refuse la
+ * clé — et silencieusement, puisque B2 est éteint par défaut : personne ne le
+ * verrait avant de l'allumer.
+ */
+const PREFIXES_SERVIS = [MEDIA_ROOT, 'images', 'voicemail'];
 
 const SEGMENT_SUR = /^[A-Za-z0-9._-]+$/;
 const EXTENSION_SURE = /^\.[a-z0-9]{1,8}$/;
@@ -189,6 +203,21 @@ function newMediaKey({ kind, alanyaID, ext = '', instant = Date.now() }) {
 /** Clé d'une nouvelle image de profil ou de groupe : `images/img_<id>_<ms>_<hasard><ext>`. */
 function newImageKey({ alanyaID, ext = '', instant = Date.now() }) {
   return `images/img_${Number(alanyaID)}_${instant}_${suffixeAleatoire()}${ext}`;
+}
+
+/**
+ * Clé d'une nouvelle annonce de répondeur : `voicemail/vm_<id>_<ms>_<hasard><ext>`.
+ *
+ * Le suffixe aléatoire n'est pas seulement une protection contre les URL
+ * devinables, comme pour les images : ici il fait office d'EMPREINTE. Le cache
+ * média de l'application indexe par le dernier segment de l'URL, sans aucune
+ * invalidation par contenu ni durée de vie. Une annonce servie sous un nom
+ * stable serait donc jouée éternellement dans sa première version, même
+ * réenregistrée. En changeant de nom à chaque enregistrement, on obtient
+ * l'invalidation gratuitement — et l'ancien fichier est supprimé.
+ */
+function newVoicemailGreetingKey({ alanyaID, ext = '', instant = Date.now() }) {
+  return `voicemail/vm_${Number(alanyaID)}_${instant}_${suffixeAleatoire()}${ext}`;
 }
 
 /** Adresse publique d'une clé. */
@@ -389,6 +418,7 @@ module.exports = {
   safeExt,
   newMediaKey,
   newImageKey,
+  newVoicemailGreetingKey,
   publicUrl,
   diskPathForKey,
   contentTypeForKey,

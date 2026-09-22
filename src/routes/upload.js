@@ -6,7 +6,16 @@ const {
   uploadMedia: uploadMediaCtrl,
   uploadTicket: uploadTicketCtrl,
 } = require('../controllers/uploadController');
-const { uploadAvatar: multerAvatar, uploadMedia: multerMedia, handleMulterError } = require('../middleware/upload');
+const {
+  uploadAvatar: multerAvatar,
+  uploadMedia: multerMedia,
+  uploadVoicemailGreeting: multerGreeting,
+  handleMulterError,
+} = require('../middleware/upload');
+const {
+  putVoicemailGreeting,
+  deleteVoicemailGreeting,
+} = require('../controllers/voicemailGreetingController');
 const { uploadLimiter } = require('../middleware/rateLimiter');
 
 /**
@@ -106,6 +115,37 @@ router.post(
   handleMulterError,
   uploadMediaCtrl
 );
+
+/**
+ * @swagger
+ * /api/upload/voicemail-greeting:
+ *   post:
+ *     summary: Déposer l'annonce vocale de son répondeur (10 s max)
+ *     description: >
+ *       Remplace l'annonce précédente, qui est supprimée. Le nom du fichier
+ *       change à chaque dépôt : le cache client indexe par nom, une annonce
+ *       servie sous un nom stable serait jouée éternellement dans sa première
+ *       version. Route distincte de /upload/media, dont le répertoire est
+ *       balayé par la purge des partitions.
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ *   delete:
+ *     summary: Supprimer son annonce vocale
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/voicemail-greeting',
+  auth,
+  uploadLimiter,
+  multerGreeting.single('file'),
+  handleMulterError,
+  putVoicemailGreeting,
+);
+
+router.delete('/voicemail-greeting', auth, deleteVoicemailGreeting);
 
 /**
  * @swagger

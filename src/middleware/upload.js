@@ -2,18 +2,21 @@ const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
 const os      = require('os');
+const crypto  = require('crypto');
 
 const { resolveUploadDirSync } = require('../services/mediaPartitions');
 const {
   isB2Enabled,
   newMediaKey,
   newImageKey,
+  newVoicemailGreetingKey,
   safeExt,
 } = require('../services/mediaStorage');
 
 /** Plafonds d'envoi, partagés avec la route de ticket (envoi direct). */
 const AVATAR_MAX_BYTES = 5 * 1024 * 1024;   // 5 MB
 const MEDIA_MAX_BYTES  = 50 * 1024 * 1024;  // 50 MB
+const GREETING_MAX_BYTES = 2 * 1024 * 1024; // 2 MB — dix secondes de voix
 
 /**
  * Dossier de transit quand les médias vont chez Backblaze : multer y écrit,
@@ -183,6 +186,43 @@ const MEDIA_MIME_TYPES = [
 ];
 
 // Filtres de fichiers
+/**
+ * Sauvegarde : annonces de répondeur.
+ *
+ * Répertoire à part, et c'est la raison d'être de ce troisième stockage.
+ * `uploads/media/` est balayé par `sweepPartitions`, qui SUPPRIME le répertoire
+ * daté entier sans consulter aucune table : une annonce rangée là disparaîtrait
+ * d'elle-même au bout de la rétention, sans qu'aucune ligne `message` ne soit
+ * en cause. `uploads/voicemail/`, comme `uploads/images/`, n'est balayé par
+ * rien.
+ */
+const greetingStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    try {
+      if (isB2Enabled()) {
+        file.storageKey = newVoicemailGreetingKey({
+          alanyaID: req.user.alanyaID,
+          ext: safeExt(file.originalname),
+        });
+        ensureDir(UPLOAD_TMP_DIR);
+        return cb(null, UPLOAD_TMP_DIR);
+      }
+      const dir = path.join(__dirname, '../../uploads/voicemail');
+      ensureDir(dir);
+      return cb(null, dir);
+    } catch (e) {
+      return cb(e);
+    }
+  },
+  filename: (req, file, cb) => {
+    if (file.storageKey) return cb(null, path.basename(file.storageKey));
+    // Le hasard fait ici office d'empreinte : le cache client indexe par nom de
+    // fichier, donc réenregistrer DOIT produire un autre nom.
+    const ext = safeExt(file.originalname) || '.m4a';
+    return cb(null, `vm_${req.user.alanyaID}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}${ext}`);
+  },
+});
+
 const imageFilter = (req, file, cb) => {
   if (IMAGE_MIME_TYPES.includes(file.mimetype)) return cb(null, true);
   cb(new Error('Seuls les formats d\'image suivants sont autorisés (jpeg, png, webp, gif)'), false);
@@ -204,6 +244,25 @@ const uploadMedia = multer({
   storage: mediaStorage,
   limits:  { fileSize: MEDIA_MAX_BYTES },
   fileFilter: mediaFilter,
+});
+
+/**
+ * Annonce de répondeur : dix secondes de voix, deux mégaoctets de plafond.
+ *
+ * Le plafond est volontairement écrasant pour la durée visée — dix secondes en
+ * mono à débit réduit pèsent une quarantaine de kilooctets. Il n'est là que
+ * pour refuser un envoi manifestement absurde, pas pour arbitrer la qualité.
+ */
+const uploadVoicemailGreeting = multer({
+  storage: greetingStorage,
+  limits:  { fileSize: GREETING_MAX_BYTES },
+  fileFilter: (req, file, cb) => {
+    if (String(file.mimetype || '').startsWith('audio/')
+      || file.mimetype === 'video/mp4' /* certains .m4a se déclarent ainsi */) {
+      return cb(null, true);
+    }
+    cb(new Error('L\'annonce doit être un fichier audio'), false);
+  },
 });
 
 // Middleware de gestion des erreurs Multer
@@ -228,12 +287,14 @@ const handleMulterError = (err, req, res, next) => {
 module.exports = {
   uploadAvatar,
   uploadMedia,
+  uploadVoicemailGreeting,
   handleMulterError,
   mediaSubDir,
   IMAGE_MIME_TYPES,
   MEDIA_MIME_TYPES,
   AVATAR_MAX_BYTES,
   MEDIA_MAX_BYTES,
+  GREETING_MAX_BYTES,
   UPLOAD_TMP_DIR,
   cleanStaleUploadTmp,
 };
