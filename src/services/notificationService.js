@@ -146,8 +146,12 @@ const sendDataOnlyNotification = async (fcmToken, data = {}, meta = {}) => {
       ),
       android: {
         priority: isCall || isVisible ? 'high' : 'normal',
+        // `meta.ttlMs` permet à l'appelant d'imposer une validité plus courte —
+        // c'est le cas d'un destinataire dont le répondeur bascule à 27 s au
+        // lieu de 45 : un push délivré après la bascule ferait sonner un appel
+        // qui n'existe plus. Absent, on garde CALL_TTL_MS.
         ttl: isCall
-          ? CALL_TTL_MS
+          ? (Number.isFinite(meta.ttlMs) && meta.ttlMs > 0 ? meta.ttlMs : CALL_TTL_MS)
           : (resolveTripPush(data.type)?.ttlMs ?? 86400000),
       },
       apns: _buildApnsConfig(data),
@@ -443,7 +447,7 @@ const sendToUserDevices = async (alanyaID, data = {}, options = {}) => {
 /**
  * Appels : multi-appareil + VoIP APNs iOS si IOS_VOIP_V2 (sinon FCM data-only).
  */
-const sendCallToUser = async (alanyaID, data = {}) => {
+const sendCallToUser = async (alanyaID, data = {}, options = {}) => {
   if (!DEVICE_REGISTRY_V2) {
     return sendToUserLegacy(alanyaID, data, {});
   }
@@ -483,7 +487,10 @@ const sendCallToUser = async (alanyaID, data = {}) => {
       }
 
       if (!sentViaVoip && target.fcmToken && target.fcmToken !== 'INDEFINI') {
-        await sendDataOnlyNotification(target.fcmToken, data, { platform });
+        await sendDataOnlyNotification(target.fcmToken, data, {
+          platform,
+          ttlMs: options.ttlMs,
+        });
       }
     }
   } catch (error) {
@@ -762,10 +769,14 @@ const notifyIncomingCall = async (
   isVideo,
   callId,
   extras = null,
+  options = {},
 ) => {
   await sendCallToUser(
     idReceiver,
     buildIncomingCallPayload(callerID, callerName, callerPhoto, isVideo, callId, extras),
+    // `options.ttlMs` : validité du push, quand elle doit être plus courte que
+    // les 45 s par défaut — répondeur qui bascule à 27 s.
+    options,
   );
 };
 

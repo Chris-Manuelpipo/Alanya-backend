@@ -59,12 +59,19 @@ const fakeNotifications = {
 let verdict = { intercept: false };
 let verdictAppels = 0;
 let verdictJette = false;
+/** Vrai quand le destinataire a armé le filet « sans réponse / refus / occupé ». */
+let filetArme = false;
+
 const fakeVoicemail = {
   shouldInterceptCall: async () => {
     verdictAppels += 1;
     if (verdictJette) throw new Error('planification illisible');
     return verdict;
   },
+  shouldFallBackToVoicemail: async () => ({ fallback: filetArme, schedule: {} }),
+  // Le délai réel est vérifié par `voicemailScheduleService.test.js` ; ici on
+  // veut seulement que `call_user` passe bien UNE valeur à `scheduleNoAnswer`.
+  noAnswerDelayMs: (schedule, defaut) => (filetArme ? 27000 : defaut),
 };
 
 let bloque = false;

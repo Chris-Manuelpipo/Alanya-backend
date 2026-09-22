@@ -5,7 +5,11 @@ const {
   notifyCallEnded,
   notifyVoicemailActive,
 } = require('../../services/notificationService');
-const { shouldInterceptCall } = require('../../services/voicemailScheduleService');
+const {
+  shouldInterceptCall,
+  shouldFallBackToVoicemail,
+  noAnswerDelayMs,
+} = require('../../services/voicemailScheduleService');
 const { maxParticipants, maxInvitees } = require('../../constants/participantLimits');
 const { isBlockedEitherWay } = require('../../utils/blockUtils');
 const { isOfficialAccount } = require('../../utils/officialAccountGuard');
@@ -374,22 +378,59 @@ async function onNoAnswer(io, userSockets, callID, callerID, targetID) {
   await callState.clear(targetID);
   await callState.clear(callerID);
 
-  if (callID) {
-    try {
-      // status 3 = appel manqué / sans réponse.
-      await pool.execute('UPDATE callHistory SET status = 3 WHERE IDcall = ?', [callID]);
-    } catch (dbErr) {
-      console.warn('[Socket call_user] no-answer DB update failed:', dbErr.message);
+  // Répondeur ou « sans réponse » : la décision se prend ICI, à l'échéance, et
+  // pas au moment d'armer le minuteur.
+  //
+  // Ce n'est pas un choix de style. Côté Redis, l'échéance devient une ligne de
+  // `job_queue` et le rappel de fonction passé à `scheduleNoAnswer` est jeté en
+  // route : le worker reconstruit l'action en appelant `onNoAnswer` en dur. Le
+  // seul paramètre qui traverse est le DÉLAI. La variante d'action doit donc se
+  // décider de ce côté-ci.
+  //
+  // Bénéfice inattendu : c'est correct même si le destinataire a basculé son
+  // réglage pendant que son téléphone sonnait.
+  const { fallback, schedule } = await shouldFallBackToVoicemail(targetID).catch((err) => {
+    console.warn('[Socket call_user] no-answer: répondeur illisible:', err.message);
+    return { fallback: false, schedule: null };
+  });
+
+  if (fallback) {
+    console.log(`[Socket call_user] 📼 Répondeur après sonnerie: callId=${callID}`);
+    // Pas de socket sous la main : l'appelant est joint par son compte. Ses
+    // autres appareils ignoreront l'événement, leur statut ne l'autorise pas.
+    await basculerVersRepondeur({
+      io,
+      userSockets,
+      callerID,
+      targetID,
+      isVideo: !!entry.isVideo,
+      status: CALL_STATUS.VOICEMAIL_AFTER_RING,
+      callID,
+      schedule,
+    });
+  } else {
+    if (callID) {
+      try {
+        await pool.execute('UPDATE callHistory SET status = ? WHERE IDcall = ?', [
+          CALL_STATUS.NO_ANSWER,
+          callID,
+        ]);
+      } catch (dbErr) {
+        console.warn('[Socket call_user] no-answer DB update failed:', dbErr.message);
+      }
+      finalizeCallAndNotify(io, userSockets, callID)
+        .catch((err) => console.warn('[Socket call_user] no-answer finalize error:', err.message));
     }
-    finalizeCallAndNotify(io, userSockets, callID)
-      .catch((err) => console.warn('[Socket call_user] no-answer finalize error:', err.message));
+
+    emitToUser(io, callerID, 'call_no_answer', {
+      callId:   callID != null ? String(callID) : null,
+      targetId: String(targetID),
+      reason:   'no_answer',
+    });
   }
 
-  emitToUser(io, callerID, 'call_no_answer', {
-    callId:   callID != null ? String(callID) : null,
-    targetId: String(targetID),
-    reason:   'no_answer',
-  });
+  // Ce qui suit vaut dans les DEUX cas : le destinataire doit cesser de sonner,
+  // qu'on renvoie l'appelant au répondeur ou qu'on classe l'appel sans réponse.
 
   // Coupe de façon DÉTERMINISTE la sonnerie/l'écran entrant d'une cible au premier
   // plan (socket ouvert) : le FCM ci-dessous ne couvre que l'arrière-plan et peut
@@ -1103,7 +1144,17 @@ const callUser = (io, socket, userSockets) => {
       // `ringing` ne soit posé et recevoir CALL_NOT_RINGING.
       await callState.setRinging(targetID, { callId: callID, peerId: callerID, isVideo: !!isVideo });
       await callState.setRinging(callerID, { callId: callID, peerId: targetID, isVideo: !!isVideo });
-      await callState.scheduleNoAnswer(targetID, () => onNoAnswer(io, userSockets, callID, callerID, targetID));
+
+      // Le destinataire qui a armé le filet bascule plus tôt : 27 s au lieu de
+      // 45. Le créneau a déjà été chargé quelques lignes plus haut par
+      // `shouldInterceptCall` — on le réutilise plutôt que de rouvrir la base
+      // sur un chemin traversé par chaque appel.
+      const delaiSansReponse = noAnswerDelayMs(verdictRepondeur.schedule, NO_ANSWER_MS);
+      await callState.scheduleNoAnswer(
+        targetID,
+        () => onNoAnswer(io, userSockets, callID, callerID, targetID),
+        delaiSansReponse,
+      );
 
       // L'appelant apprend l'identifiant de son appel AVANT le décrochage.
       //
@@ -1150,8 +1201,18 @@ const callUser = (io, socket, userSockets) => {
         console.warn(`[Socket call_user] ** Utilisateur ${targetID} non trouvé en socket — fallback FCM + rejeu à la reconnexion`);
       }
 
-      notifyIncomingCall(targetID, callerID, callerName, callerPhoto, isVideo, callID)
-        .catch((err) => console.warn('[Socket call_user] FCM error:', err.message));
+      // Le push d'appel ne doit pas survivre au délai qui le classe.
+      //
+      // Sa durée de validité était calée en dur sur les 45 secondes, « pour
+      // qu'un push délivré après le timeout ne fasse pas sonner un appel déjà
+      // classé ». Pour un destinataire qui bascule à 27 s, 45 s est devenu trop
+      // long : un push délivré à 40 s ferait sonner un téléphone dont l'appel
+      // est parti au répondeur treize secondes plus tôt. On passe donc le même
+      // délai aux deux. (`call_ended` garde le sien : c'est l'ordre d'ARRÊT, il
+      // doit survivre — voir le commentaire de CALL_TTL_MS.)
+      notifyIncomingCall(targetID, callerID, callerName, callerPhoto, isVideo, callID, null, {
+        ttlMs: delaiSansReponse,
+      }).catch((err) => console.warn('[Socket call_user] FCM error:', err.message));
     } catch (error) {
       console.error('[Socket call_user]', error.message);
       socket.emit('call_failed', { reason: error.message });
