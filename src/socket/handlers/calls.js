@@ -114,6 +114,25 @@ const {
 // Délai serveur avant de déclarer un appel « sans réponse » (marge > sonnerie CallKit 30 s).
 const NO_ANSWER_MS = 45 * 1000;
 
+/**
+ * Les valeurs de `callHistory.status`.
+ *
+ * Elles étaient écrites en chiffres nus un peu partout. Deux conventions ont
+ * cohabité pour « manqué » — le schéma déclare 0, le timeout serveur écrit 3 —
+ * et c'est exactement le genre de chose qu'un nombre isolé dans une requête ne
+ * dit pas. Miroir de `call_history_rules.dart` côté application.
+ */
+const CALL_STATUS = Object.freeze({
+  INITIATED: 0,
+  ANSWERED: 1,
+  REJECTED: 2,
+  NO_ANSWER: 3,
+  /** Renvoyé au répondeur SANS avoir sonné : créneau de silence, ou ligne occupée. */
+  VOICEMAIL_SILENT: 4,
+  /** A sonné, puis répondeur : délai sans réponse écoulé, ou refus explicite. */
+  VOICEMAIL_AFTER_RING: 5,
+});
+
 // Refus de `callSessions.addPending`, dans le vocabulaire de `call_add_rejected`.
 const REFUS_DE_GREFFE = {
   PENDING: 'ADD_ALREADY_USED',
@@ -228,6 +247,115 @@ async function finalizeCallAndNotify(io, userSockets, callID) {
   } catch (err) {
     console.warn('[finalizeCallAndNotify]', err.message);
   }
+}
+
+/**
+ * Envoie un appel au répondeur du destinataire.
+ *
+ * Quatre chemins y mènent, et ils n'ont en commun que leur issue :
+ *   1. un créneau de silence est actif      → `call_user`, statut 4
+ *   2. la ligne du destinataire est occupée → `call_user`, statut 4
+ *   3. personne n'a décroché à temps        → `onNoAnswer`, statut 5
+ *   4. le destinataire a refusé             → `processRejectCall`, statut 5
+ *
+ * L'axe des deux statuts est « le téléphone a-t-il sonné ? ». Le 4 dit non — le
+ * destinataire était indisponible par choix, il n'y avait rien à rater, et les
+ * statistiques l'excluent du taux de réussite. Le 5 dit oui — il avait une
+ * chance de prendre l'appel.
+ *
+ * @param {object|null} socket socket de l'APPELANT si on l'a sous la main
+ *   (chemin `call_user`). Sinon on émet à toutes ses sockets : les autres
+ *   appareils ignorent l'événement, leur statut d'appel ne l'autorise pas.
+ * @param {number|null} callID ligne d'historique existante (chemins 3 et 4) ou
+ *   `null` s'il faut la créer (chemins 1 et 2).
+ * @returns {Promise<number|null>} l'identifiant de l'appel, ou `null` si
+ *   l'historique n'a pas pu être écrit.
+ */
+async function basculerVersRepondeur({
+  io,
+  userSockets,
+  socket = null,
+  callerID,
+  targetID,
+  isVideo = false,
+  status,
+  callID = null,
+  ip = null,
+  callerName = '',
+  schedule = null,
+  activeUntil = null,
+}) {
+  let voicemailCallID = callID;
+
+  if (voicemailCallID == null) {
+    try {
+      // Inséré directement au bon statut, jamais 0 puis UPDATE : entre les deux
+      // écritures, un crash laisserait une ligne « appel manqué » parfaitement
+      // crédible dans les deux journaux — alors que le téléphone n'a jamais
+      // sonné.
+      const [result] = await pool.execute(
+        `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, ip)
+         VALUES (?, ?, ?, ?, NOW(), ?)`,
+        [callerID, targetID, isVideo ? 1 : 0, status, ip],
+      );
+      voicemailCallID = result.insertId;
+    } catch (dbErr) {
+      console.warn('[Répondeur] insert échoué:', dbErr.message);
+    }
+  } else {
+    try {
+      await pool.execute('UPDATE callHistory SET status = ? WHERE IDcall = ?', [
+        status,
+        voicemailCallID,
+      ]);
+    } catch (dbErr) {
+      console.warn('[Répondeur] update échoué:', dbErr.message);
+    }
+  }
+
+  // La conversation est résolue ici et transmise à l'appelant : sans elle, son
+  // app devrait faire un aller-retour `createConversation` avant de pouvoir
+  // ouvrir le micro.
+  let conversID = null;
+  try {
+    conversID = await getOrCreateDirectConversation(callerID, targetID);
+  } catch (convErr) {
+    console.warn('[Répondeur] conversation échouée:', convErr.message);
+  }
+
+  const payload = {
+    callId: voicemailCallID != null ? String(voicemailCallID) : null,
+    targetId: String(targetID),
+    reason: 'voicemail',
+    isVideo: !!isVideo,
+    conversationID: conversID,
+    // Dit à l'appelant s'il a laissé sonner ou non : sa feuille annonce
+    // « n'a pas répondu » ou « est indisponible », ce n'est pas la même chose.
+    didRing: status === CALL_STATUS.VOICEMAIL_AFTER_RING,
+  };
+
+  if (socket) {
+    // À la socket seule, comme `call_ringing` : les autres appareils de
+    // l'appelant n'ont pas cet appel.
+    socket.emit('call_voicemail', payload);
+  } else {
+    emitToUser(io, callerID, 'call_voicemail', payload);
+  }
+
+  // Fait apparaître l'entrée « Répondeur » en direct dans le journal des DEUX
+  // parties. Sans lui, le destinataire ne découvrirait l'appel qu'au prochain
+  // rechargement complet.
+  if (voicemailCallID != null) {
+    finalizeCallAndNotify(io, userSockets, voicemailCallID)
+      .catch((err) => console.warn('[Répondeur] finalize:', err.message));
+  }
+
+  notifyVoicemailActive(targetID, callerName, {
+    activeUntil,
+    timeZone: schedule?.resolvedTimezone,
+  }).catch((err) => console.warn('[Répondeur] notify:', err.message));
+
+  return voicemailCallID;
 }
 
 // Déclenché par le timer NO_ANSWER_MS : l'appel est resté « ringing » sans réponse.
@@ -895,56 +1023,19 @@ const callUser = (io, socket, userSockets) => {
 
       if (verdictRepondeur.intercept) {
         console.log(`[Socket call_user] 📼 Répondeur: ${callerID} → ${targetID}`);
-
-        let voicemailCallID = null;
-        try {
-          // Inséré directement avec `status = 4`, jamais 0 puis UPDATE : entre
-          // les deux écritures, un crash laisserait une ligne « appel manqué »
-          // parfaitement crédible dans les deux journaux — alors que le
-          // téléphone n'a jamais sonné.
-          const [result] = await pool.execute(
-            `INSERT INTO callHistory (idCaller, idReceiver, type, status, created_at, ip)
-             VALUES (?, ?, ?, 4, NOW(), ?)`,
-            [callerID, targetID, isVideo ? 1 : 0, getClientIp(socket)]
-          );
-          voicemailCallID = result.insertId;
-        } catch (dbErr) {
-          console.warn('[Socket call_user] répondeur: insert échoué:', dbErr.message);
-        }
-
-        // La conversation est résolue ici et transmise à l'appelant : sans
-        // elle, son app devrait faire un aller-retour `createConversation`
-        // avant de pouvoir ouvrir le micro.
-        let conversID = null;
-        try {
-          conversID = await getOrCreateDirectConversation(callerID, targetID);
-        } catch (convErr) {
-          console.warn('[Socket call_user] répondeur: conversation échouée:', convErr.message);
-        }
-
-        // À la socket seule, comme `call_ringing` : les autres appareils de
-        // l'appelant n'ont pas cet appel.
-        socket.emit('call_voicemail', {
-          callId:         voicemailCallID != null ? String(voicemailCallID) : null,
-          targetId:       String(targetID),
-          reason:         'voicemail',
-          isVideo:        !!isVideo,
-          conversationID: conversID,
-        });
-
-        // Fait apparaître l'entrée « Répondeur » en direct dans le journal des
-        // DEUX parties. Sans lui, le destinataire ne découvrirait l'appel qu'au
-        // prochain rechargement complet.
-        if (voicemailCallID != null) {
-          finalizeCallAndNotify(io, userSockets, voicemailCallID)
-            .catch((err) => console.warn('[Socket call_user] répondeur finalize:', err.message));
-        }
-
-        notifyVoicemailActive(targetID, callerName, {
+        await basculerVersRepondeur({
+          io,
+          userSockets,
+          socket,
+          callerID,
+          targetID,
+          isVideo,
+          status: CALL_STATUS.VOICEMAIL_SILENT,
+          ip: getClientIp(socket),
+          callerName,
+          schedule: verdictRepondeur.schedule,
           activeUntil: verdictRepondeur.activeUntil,
-          timeZone: verdictRepondeur.schedule?.resolvedTimezone,
-        }).catch((err) => console.warn('[Socket call_user] répondeur notify:', err.message));
-
+        });
         return;
       }
 

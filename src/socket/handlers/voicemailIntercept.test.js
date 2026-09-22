@@ -22,12 +22,17 @@ const TARGET = 802;
 // ── Doublures ───────────────────────────────────────────────────────────────
 
 const inserts = [];
+const updates = [];
 const fakePool = {
   execute: async (sql, params) => {
     const texte = sql.replace(/\s+/g, ' ').trim();
     if (/^INSERT INTO callHistory/.test(texte)) {
       inserts.push({ sql: texte, params });
       return [{ insertId: 4242 }, []];
+    }
+    if (/^UPDATE callHistory SET status/.test(texte)) {
+      updates.push({ sql: texte, params });
+      return [{ affectedRows: 1 }, []];
     }
     if (/FROM callHistory/.test(texte)) return [[], []]; // finalizeCallAndNotify
     if (/^INSERT INTO conversation/.test(texte)) return [{ insertId: 77 }, []];
@@ -135,6 +140,7 @@ async function repartirDeZero() {
   await pendingCalls.clear(TARGET);
   await callDeviceOwnership.release('4242');
   inserts.length = 0;
+  updates.length = 0;
   notifs.length = 0;
   verdictAppels = 0;
   bloque = false;
@@ -194,11 +200,16 @@ async function main() {
 
   // ── Le journal, et le rappel ──
   assert.strictEqual(inserts.length, 1, 'une seule écriture d’historique');
-  assert.ok(
-    /VALUES \(\?, \?, \?, 4, NOW\(\), \?\)/.test(inserts[0].sql),
-    'statut 4 écrit directement, jamais 0 puis UPDATE',
+  assert.deepStrictEqual(
+    inserts[0].params.slice(0, 4),
+    [CALLER, TARGET, 0, 4],
+    'statut 4 écrit directement, jamais 0 puis UPDATE : le créneau de silence n’a pas laissé sonner',
   );
-  assert.deepStrictEqual(inserts[0].params.slice(0, 3), [CALLER, TARGET, 0]);
+  assert.strictEqual(
+    updates.length,
+    0,
+    'aucune réécriture de statut : la ligne naît au bon statut',
+  );
 
   const rappel = notifs.find((n) => n.fn === 'notifyVoicemailActive');
   assert.ok(rappel, 'le propriétaire du répondeur est rappelé à l’ordre');
