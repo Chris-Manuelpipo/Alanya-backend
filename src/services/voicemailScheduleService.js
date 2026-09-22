@@ -21,21 +21,34 @@
  */
 
 const pool = require('../config/db');
+const slots = require('./voicemailSlots');
 
 const DEFAULT_SCHEDULE = Object.freeze({
+  /** Les plages programmées s'appliquent-elles ? */
   enabled: 0,
-  startTime: '22:00:00',
-  endTime: '07:00:00',
-  daysBitmask: 127,
+  /** Bascule au répondeur sur non-réponse, refus, ou ligne occupée. */
+  no_answer_enabled: 0,
   untilAt: null,
   timezone: null,
   bypassListId: null,
+  greeting_url: null,
+  greeting_seconds: null,
+  slots: [],
 });
 
 /** Dernier recours de la cascade : le fuseau du marché principal. */
 const FALLBACK_TIMEZONE = 'Africa/Douala';
 
-const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
+/**
+ * Plafond de l'activation ponctuelle.
+ *
+ * Vingt-quatre heures, pas davantage. Ce n'est pas une limite technique : c'est
+ * la même règle que « aucune activation sans échéance ». Une durée qu'on peut
+ * pousser à une semaine redevient un réglage qu'on oublie, et son propriétaire
+ * croit son téléphone joignable. Qui veut une indisponibilité durable passe par
+ * les plages, qui s'éteignent d'elles-mêmes chaque jour.
+ */
+const MAX_UNTIL_MS = 24 * 60 * 60 * 1000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Fuseau
@@ -143,14 +156,6 @@ const _wallToInstant = (y, m, d, hour, minute, timeZone) => {
 //  Règles pures
 // ─────────────────────────────────────────────────────────────────────────────
 
-const timeToMinutes = (value) => {
-  const parts = String(value || '').split(':');
-  const h = Number(parts[0]);
-  const m = Number(parts[1]);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
-  return h * 60 + m;
-};
-
 const _untilInstant = (schedule) => {
   if (schedule?.untilAt == null) return null;
   const t = new Date(schedule.untilAt);
@@ -164,70 +169,60 @@ const isUntilActive = (schedule, now = new Date()) => {
 };
 
 /**
- * La règle récurrente couvre-t-elle cet instant ?
+ * Les plages programmées couvrent-elles cet instant ?
  *
- * Sémantique reprise telle quelle de `isDndActive`, y compris pour la fenêtre
- * qui franchit minuit : le bit testé est TOUJOURS celui du jour courant. Une
- * fenêtre 22 h–7 h réglée du lundi au vendredi couvre donc le vendredi de 22 h
- * à minuit, puis s'arrête — le samedi matin n'est pas coché. C'est déjà le
- * comportement du « Ne pas déranger », et deux écrans qui se ressemblent
- * doivent se comporter pareil.
+ * Le calendrier lui-même vit dans `voicemailSlots`, qui ne connaît aucun
+ * fuseau : on lui passe une heure murale déjà résolue. Ici on ne fait que
+ * résoudre le fuseau, une fois, au même endroit que tout le reste.
+ *
+ * `schedule.slots` est attaché par `loadUserVoicemailSchedule`. Un appelant qui
+ * construit un créneau à la main sans plages obtient simplement « inactif ».
  */
-const isRecurringActive = (schedule, now = new Date(), timeZone = FALLBACK_TIMEZONE) => {
+const isSlotActive = (schedule, now = new Date(), timeZone = FALLBACK_TIMEZONE) => {
   if (!schedule?.enabled) return false;
-
-  const mask = Number(schedule.daysBitmask);
-  if (!Number.isInteger(mask) || mask === 0) return false;
-
-  const { dayBit, minutes } = civilPartsInZone(now, timeZone);
-  if ((mask & (1 << dayBit)) === 0) return false;
-
-  const start = timeToMinutes(schedule.startTime);
-  const end = timeToMinutes(schedule.endTime);
-
-  if (start === end) return true; // journée entière
-  if (start < end) return minutes >= start && minutes < end;
-  return minutes >= start || minutes < end;
+  return slots.isAnySlotActive(schedule.slots, civilPartsInZone(now, timeZone));
 };
 
-/** Le répondeur intercepte-t-il, à cet instant ? */
+/**
+ * Le répondeur intercepte-t-il AVANT toute sonnerie, à cet instant ?
+ *
+ * Ne concerne que les deux modes qui rendent le téléphone muet. L'interrupteur
+ * « sans réponse » n'entre PAS ici : il laisse sonner, et ne se décide qu'à
+ * l'expiration du délai — voir `noAnswerDelayMs`.
+ */
 const isVoicemailActive = (schedule, now = new Date(), timeZone = FALLBACK_TIMEZONE) =>
-  isUntilActive(schedule, now) || isRecurringActive(schedule, now, timeZone);
+  isUntilActive(schedule, now) || isSlotActive(schedule, now, timeZone);
 
 /**
  * Jusqu'à quand, en instant absolu — ce que le bandeau affiche et ce sur quoi
  * le client arme son minuteur pour se masquer tout seul.
  *
  * `null` veut dire « actif, mais sans échéance calculable » : c'est le cas
- * `startTime === endTime` (journée entière, qui recommence chaque jour coché).
- * Le bandeau affiche alors « Répondeur actif » sans heure, plutôt qu'une
- * échéance inventée.
+ * d'une plage couvrant la journée entière. Le bandeau affiche alors
+ * « Répondeur actif » sans heure, plutôt qu'une échéance inventée.
  */
 const activeUntil = (schedule, now = new Date(), timeZone = FALLBACK_TIMEZONE) => {
   const candidats = [];
 
   if (isUntilActive(schedule, now)) candidats.push(_untilInstant(schedule));
 
-  if (isRecurringActive(schedule, now, timeZone)) {
-    const start = timeToMinutes(schedule.startTime);
-    const end = timeToMinutes(schedule.endTime);
-    if (start === end) return null; // aucune fin dans la journée
-
+  if (schedule?.enabled) {
     const c = civilPartsInZone(now, timeZone);
-    // Fenêtre qui franchit minuit et qu'on aborde avant minuit : la fin est
-    // demain. Dans tous les autres cas, l'heure de fin est encore devant nous
-    // aujourd'hui.
-    const demain = start > end && c.minutes >= start;
-    candidats.push(
-      _wallToInstant(
-        c.y,
-        c.m,
-        c.d + (demain ? 1 : 0),
-        Math.floor(end / 60),
-        end % 60,
-        timeZone,
-      ),
-    );
+    const actif = slots.activeSlot(schedule.slots, c);
+    if (actif) {
+      if (actif.allDay) return null; // aucune fin dans la journée
+      const end = slots.timeToMinutes(actif.slot.endTime);
+      candidats.push(
+        _wallToInstant(
+          c.y,
+          c.m,
+          c.d + (actif.endsTomorrow ? 1 : 0),
+          Math.floor(end / 60),
+          end % 60,
+          timeZone,
+        ),
+      );
+    }
   }
 
   if (candidats.length === 0) return null;
@@ -235,16 +230,29 @@ const activeUntil = (schedule, now = new Date(), timeZone = FALLBACK_TIMEZONE) =
   return new Date(Math.max(...candidats.map((d) => d.getTime())));
 };
 
+/**
+ * Le délai avant de déclarer un appel sans réponse, pour CE destinataire.
+ *
+ * C'est le seul paramètre que l'interrupteur « sans réponse » fait varier — et
+ * c'est tout ce dont on a besoin, parce que la DÉCISION (répondeur ou « sans
+ * réponse ») est reprise à l'échéance par `onNoAnswer`, qui relit le réglage.
+ *
+ * Pourquoi 27 s quand l'étiquette dit 30 : la sonnerie CallKit dure 40 s
+ * (`callkit_service.dart`). Basculer nettement avant évite la course avec le
+ * système qui arrête la sonnerie de son côté — selon qui gagne, l'appelant
+ * tomberait tantôt sur le répondeur, tantôt sur « pas de réponse ».
+ */
+const NO_ANSWER_VOICEMAIL_MS = 27 * 1000;
+
+const noAnswerDelayMs = (schedule, defaultMs) =>
+  schedule?.no_answer_enabled ? NO_ANSWER_VOICEMAIL_MS : defaultMs;
+
+/** L'interrupteur « sans réponse / refus / occupé » est-il armé ? */
+const isNoAnswerEnabled = (schedule) => !!schedule?.no_answer_enabled;
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Accès base
 // ─────────────────────────────────────────────────────────────────────────────
-
-const _normalizeTime = (value, fallback) => {
-  if (value == null || value === '') return fallback;
-  const match = String(value).trim().match(TIME_RE);
-  if (!match) return null;
-  return `${match[1]}:${match[2]}:${match[3] != null ? match[3] : '00'}`;
-};
 
 /**
  * Le créneau d'un compte, fuseau résolu compris.
@@ -262,8 +270,8 @@ const loadUserVoicemailSchedule = async (alanyaID) => {
   let row = null;
   try {
     const [rows] = await pool.execute(
-      `SELECT v.enabled, v.startTime, v.endTime, v.daysBitmask,
-              v.untilAt, v.timezone, v.bypassListId,
+      `SELECT v.enabled, v.no_answer_enabled, v.untilAt, v.timezone,
+              v.bypassListId, v.greeting_url, v.greeting_seconds,
               p.timeZone AS countryTimezone
          FROM users u
          LEFT JOIN user_voicemail_schedule v ON v.alanyaID = u.alanyaID
@@ -284,13 +292,21 @@ const loadUserVoicemailSchedule = async (alanyaID) => {
     ? { ...DEFAULT_SCHEDULE }
     : {
         enabled: row.enabled ? 1 : 0,
-        startTime: row.startTime,
-        endTime: row.endTime,
-        daysBitmask: Number(row.daysBitmask),
+        no_answer_enabled: row.no_answer_enabled ? 1 : 0,
         untilAt: row.untilAt,
         timezone: row.timezone,
         bypassListId: row.bypassListId,
+        greeting_url: row.greeting_url,
+        greeting_seconds: row.greeting_seconds == null ? null : Number(row.greeting_seconds),
+        slots: [],
       };
+
+  // Les plages ne sont lues que si elles servent. Un compte sans plages
+  // programmées — le cas de l'immense majorité — n'y coûte aucune requête, et
+  // ce chemin est traversé par CHAQUE appel entrant.
+  if (schedule.enabled) {
+    schedule.slots = await slots.loadSlots(alanyaID);
+  }
 
   return {
     ...schedule,
@@ -305,22 +321,27 @@ const upsertUserVoicemailSchedule = async (alanyaID, patch = {}) => {
   const current = await loadUserVoicemailSchedule(alanyaID);
   const next = { ...current, ...patch };
 
-  const startTime = _normalizeTime(next.startTime, DEFAULT_SCHEDULE.startTime);
-  const endTime = _normalizeTime(next.endTime, DEFAULT_SCHEDULE.endTime);
-  if (startTime == null || endTime == null) {
-    throw new Error('Format horaire invalide (attendu HH:MM ou HH:MM:SS)');
-  }
-
-  const daysBitmask = Number(next.daysBitmask);
-  if (!Number.isInteger(daysBitmask) || daysBitmask < 0 || daysBitmask > 127) {
-    throw new Error('daysBitmask doit être un entier entre 0 et 127');
-  }
-
   let untilAt = null;
   if (next.untilAt != null && next.untilAt !== '') {
     const t = new Date(next.untilAt);
     if (Number.isNaN(t.getTime())) throw new Error('untilAt invalide (attendu une date ISO)');
+    // Le plafond se mesure depuis MAINTENANT, pas depuis la valeur précédente :
+    // sinon on prolongerait indéfiniment par petits pas.
+    if (t.getTime() - Date.now() > MAX_UNTIL_MS) {
+      throw new Error('untilAt doit être dans les 24 heures');
+    }
     untilAt = t;
+  }
+
+  // Durée et plages sont EXCLUSIVES, et l'exclusivité se tient ici plutôt que
+  // dans l'écran : deux appareils qui écrivent chacun leur mode laisseraient
+  // sinon un compte avec les deux armés, et plus personne ne saurait lequel
+  // s'applique. Le dernier geste gagne, et il éteint l'autre.
+  let enabled = next.enabled ? 1 : 0;
+  if (patch.untilAt != null && patch.untilAt !== '') {
+    enabled = 0;
+  } else if (patch.enabled) {
+    untilAt = null;
   }
 
   if (next.timezone != null && next.timezone !== '' && !isValidTimezone(next.timezone)) {
@@ -337,26 +358,27 @@ const upsertUserVoicemailSchedule = async (alanyaID, patch = {}) => {
 
   await pool.execute(
     `INSERT INTO user_voicemail_schedule
-       (alanyaID, enabled, startTime, endTime, daysBitmask, untilAt, timezone, bypassListId)
+       (alanyaID, enabled, no_answer_enabled, untilAt, timezone, bypassListId,
+        greeting_url, greeting_seconds)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
-       enabled      = VALUES(enabled),
-       startTime    = VALUES(startTime),
-       endTime      = VALUES(endTime),
-       daysBitmask  = VALUES(daysBitmask),
-       untilAt      = VALUES(untilAt),
-       timezone     = VALUES(timezone),
-       bypassListId = VALUES(bypassListId),
-       updatedAt    = NOW()`,
+       enabled           = VALUES(enabled),
+       no_answer_enabled = VALUES(no_answer_enabled),
+       untilAt           = VALUES(untilAt),
+       timezone          = VALUES(timezone),
+       bypassListId      = VALUES(bypassListId),
+       greeting_url      = VALUES(greeting_url),
+       greeting_seconds  = VALUES(greeting_seconds),
+       updatedAt         = NOW()`,
     [
       alanyaID,
-      next.enabled ? 1 : 0,
-      startTime,
-      endTime,
-      daysBitmask,
+      enabled,
+      next.no_answer_enabled ? 1 : 0,
       untilAt,
       timezone,
       bypassListId,
+      next.greeting_url ?? null,
+      next.greeting_seconds ?? null,
     ],
   );
 
@@ -407,22 +429,40 @@ const shouldInterceptCall = async (targetID, callerID, now = new Date()) => {
   };
 };
 
+/**
+ * Le répondeur doit-il rattraper cet appel après coup ?
+ *
+ * Question des TROIS déclencheurs qui laissent d'abord sonner : délai sans
+ * réponse, refus explicite, ligne occupée. Un seul interrupteur les commande.
+ *
+ * La liste d'exception n'intervient PAS ici, et c'est délibéré : elle dit qui
+ * peut faire sonner malgré le silence. Sur ces trois chemins le téléphone a
+ * sonné — ou aurait sonné — pour tout le monde, il n'y a rien à contourner.
+ */
+const shouldFallBackToVoicemail = async (targetID) => {
+  const schedule = await loadUserVoicemailSchedule(targetID);
+  return { fallback: isNoAnswerEnabled(schedule), schedule };
+};
+
 module.exports = {
   DEFAULT_SCHEDULE,
   FALLBACK_TIMEZONE,
+  MAX_UNTIL_MS,
+  NO_ANSWER_VOICEMAIL_MS,
   isValidTimezone,
   resolveTimezone,
   civilPartsInZone,
   civilDayKey,
-  timeToMinutes,
   isUntilActive,
-  isRecurringActive,
+  isSlotActive,
   isVoicemailActive,
+  isNoAnswerEnabled,
+  noAnswerDelayMs,
   activeUntil,
   loadUserVoicemailSchedule,
   upsertUserVoicemailSchedule,
   isCallerAllowedToRing,
   shouldInterceptCall,
-  _normalizeTime,
+  shouldFallBackToVoicemail,
   _wallToInstant,
 };
