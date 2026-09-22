@@ -60,6 +60,17 @@ async function fetchAnalyticsData(fromInput, toInput) {
     // restant dans `total`, ce qui est précisément le défaut que la note
     // ci-dessus décrit pour le statut 3.
     //
+    // `voicemailAfterRing` (statut 5) est le CINQUIÈME, et il ne se confond pas
+    // avec le quatrième. L'axe est « le téléphone a-t-il sonné ? » :
+    //   4 — non. Créneau de silence ou ligne occupée. Le destinataire était
+    //       indisponible, l'appel n'avait aucune chance d'aboutir.
+    //   5 — oui. Délai sans réponse écoulé, ou refus explicite. Le destinataire
+    //       a eu l'appel sous les yeux.
+    // La distinction n'est pas cosmétique : seul le 4 sort du dénominateur du
+    // taux de réussite. Fondre les deux ferait chuter cet indicateur à mesure
+    // que le répondeur est adopté, ou au contraire dissimulerait de vrais
+    // appels ratés.
+    //
     // `totalDuration` filtre sur le décrochage : sans ce filtre, il comptait le
     // temps de SONNERIE des appels sans réponse comme du temps d'appel —
     // 3 143 heures au 31/08/2026. La moyenne juste en dessous filtrait déjà.
@@ -72,6 +83,7 @@ async function fetchAnalyticsData(fromInput, toInput) {
          SUM(status = 0 OR status = 3) AS missed,
          SUM(status = 2)      AS rejected,
          SUM(status = 4)      AS voicemail,
+         SUM(status = 5)      AS voicemailAfterRing,
          SUM(mode = 0)        AS relay,
          SUM(mode = 1)        AS p2p,
          SUM(mode IS NULL)    AS modeUnknown,
@@ -244,12 +256,17 @@ async function fetchAnalyticsData(fromInput, toInput) {
   const callsTotal = _num(callAgg.total);
   const callsAnswered = _num(callAgg.answered);
   const callsVoicemail = _num(callAgg.voicemail);
-  // Dénominateur du taux de réussite : le total MOINS les renvois au
-  // répondeur. Un appel intercepté n'avait aucune chance d'être décroché — ce
-  // n'est pas une défaillance de la plateforme, c'est le réglage qui a
-  // fonctionné. Le laisser au dénominateur ferait chuter un indicateur de
-  // santé technique à mesure que la fonctionnalité est adoptée, ce qui est
+  const callsVoicemailAfterRing = _num(callAgg.voicemailAfterRing);
+  // Dénominateur du taux de réussite : le total MOINS les seuls renvois qui
+  // n'ont pas sonné (statut 4). Ces appels-là n'avaient aucune chance d'être
+  // décrochés — ce n'est pas une défaillance de la plateforme, c'est le réglage
+  // qui a fonctionné. Les laisser au dénominateur ferait chuter un indicateur
+  // de santé technique à mesure que la fonctionnalité est adoptée, ce qui est
   // exactement le contraire de ce qu'il doit mesurer.
+  //
+  // Le statut 5 reste au dénominateur, lui, et c'est délibéré : le téléphone a
+  // sonné, l'appel était joignable, et personne ne l'a pris. C'est bien un
+  // appel qui n'a pas abouti.
   const callsJoignables = Math.max(0, callsTotal - callsVoicemail);
   const callsRelay = _num(callAgg.relay);
   const callsP2p = _num(callAgg.p2p);
@@ -277,7 +294,8 @@ async function fetchAnalyticsData(fromInput, toInput) {
       answered: callsAnswered,
       missed: _num(callAgg.missed),
       rejected: _num(callAgg.rejected),
-      voicemail: _num(callAgg.voicemail),
+      voicemail: callsVoicemail,
+      voicemailAfterRing: callsVoicemailAfterRing,
       avgDuration: _num(callAgg.avgDuration),
       totalDuration: _num(callAgg.totalDuration),
       relay: callsRelay,
