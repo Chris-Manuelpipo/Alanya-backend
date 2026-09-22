@@ -9,6 +9,7 @@ const {
   shouldInterceptCall,
   shouldFallBackToVoicemail,
   noAnswerDelayMs,
+  isNoAnswerEnabled,
 } = require('../../services/voicemailScheduleService');
 const { maxParticipants, maxInvitees } = require('../../constants/participantLimits');
 const { isBlockedEitherWay } = require('../../utils/blockUtils');
@@ -1082,6 +1083,34 @@ const callUser = (io, socket, userSockets) => {
 
       if (await callState.isBusyForNewCall(targetID, callerID, pendingCalls)) {
         console.log(`[Socket call_user] ⛔ Cible occupée: target=${targetID} (${await callState.get(targetID)})`);
+
+        // Ligne occupée et filet armé : le répondeur plutôt que « occupé ».
+        //
+        // Statut 4 et non 5 : le téléphone n'a pas sonné — il était déjà pris.
+        // Le destinataire n'a rien raté, l'appel n'avait aucune chance
+        // d'aboutir, et le taux de réussite des appels ne doit pas s'en
+        // alourdir.
+        //
+        // Le créneau est celui que `shouldInterceptCall` vient de charger, une
+        // quinzaine de lignes plus haut : aucune requête de plus sur un chemin
+        // que chaque appel entrant traverse.
+        if (isNoAnswerEnabled(verdictRepondeur.schedule)) {
+          console.log(`[Socket call_user] 📼 Répondeur (ligne occupée): ${callerID} → ${targetID}`);
+          await basculerVersRepondeur({
+            io,
+            userSockets,
+            socket,
+            callerID,
+            targetID,
+            isVideo,
+            status: CALL_STATUS.VOICEMAIL_SILENT,
+            ip: getClientIp(socket),
+            callerName,
+            schedule: verdictRepondeur.schedule,
+          });
+          return;
+        }
+
         socket.emit('call_busy', {
           callId:   null,
           targetId: String(targetID),
@@ -1540,16 +1569,83 @@ async function processRejectCall({
       );
     }
     if (rejectedCallID) {
-      await pool.execute('UPDATE callHistory SET status = 2 WHERE IDcall = ?', [rejectedCallID]);
+      await pool.execute('UPDATE callHistory SET status = ? WHERE IDcall = ?', [
+        CALL_STATUS.REJECTED,
+        rejectedCallID,
+      ]);
     }
   } catch (dbErr) {
     console.warn('[processRejectCall] DB update failed:', dbErr.message);
   }
 
+  const rejectedCallIdStr = rejectedCallID != null ? String(rejectedCallID) : null;
+
+  /**
+   * Les AUTRES appareils du destinataire doivent cesser de sonner.
+   *
+   * Extrait en fermeture parce que les deux issues — refus sec et bascule au
+   * répondeur — en ont besoin à l'identique. Le refus vient d'un appareil ; les
+   * autres n'ont rien vu et sonneraient jusqu'au bout sans cet avis.
+   */
+  const _prevenirAppareilsFreres = async () => {
+    const siblingPayload = {
+      callId: rejectedCallIdStr,
+      reason: 'rejected_elsewhere',
+      claimedByAnotherDevice: true,
+    };
+    if (rejectingDeviceId) {
+      await emitToUserExceptDevice(io, receiverID, rejectingDeviceId, 'call_ended', siblingPayload);
+      notifyCallEnded(receiverID, callerID, 'Appel refusé sur un autre appareil', rejectedCallID, {
+        excludeDeviceId: rejectingDeviceId,
+        reason: 'rejected_elsewhere',
+        claimedByAnotherDevice: true,
+      }).catch((err) => console.warn('[processRejectCall] FCM siblings:', err.message));
+    } else {
+      emitToUser(io, receiverID, 'call_ended', siblingPayload);
+    }
+  };
+
+  // Refus explicite et filet armé : le répondeur plutôt qu'un refus sec.
+  //
+  // C'est le geste le plus courant pour dire « pas maintenant, laisse-moi un
+  // message », et sur un téléphone ordinaire il mène au répondeur.
+  //
+  // Ce point d'insertion est le seul possible. Plus haut, deux sorties
+  // anticipées l'auraient détourné : la branche CONFÉRENCE, où un refus
+  // d'invitation à trois n'a rien à voir avec un appel entrant, et la garde de
+  // refus TARDIF, qui solde un vieil appel déjà remplacé. Ici, et seulement
+  // ici, le refus est celui d'un appel entrant que l'appelant mène encore.
+  //
+  // Statut 5 : le téléphone A sonné, le destinataire a vu l'appel et l'a
+  // écarté. Il compte donc dans le taux de réussite, contrairement au 4.
+  if (callerMatchesReject && rejectedCallID) {
+    const { fallback, schedule } = await shouldFallBackToVoicemail(receiverID).catch((err) => {
+      console.warn('[processRejectCall] répondeur illisible:', err.message);
+      return { fallback: false, schedule: null };
+    });
+
+    if (fallback) {
+      console.log(`[processRejectCall] 📼 Répondeur après refus: callId=${rejectedCallIdStr}`);
+      await basculerVersRepondeur({
+        io,
+        userSockets,
+        callerID,
+        targetID: receiverID,
+        status: CALL_STATUS.VOICEMAIL_AFTER_RING,
+        callID: rejectedCallID,
+        schedule,
+      });
+      // Les appareils frères du destinataire sont prévenus plus bas, comme
+      // dans le cas ordinaire : leur sonnerie doit cesser quoi qu'il arrive.
+      await _prevenirAppareilsFreres();
+      console.log(`[processRejectCall] !! Refus receiver=${receiverID} → répondeur callId=${rejectedCallIdStr}`);
+      return { ok: true, callId: rejectedCallID, voicemail: true };
+    }
+  }
+
   finalizeCallAndNotify(io, userSockets, rejectedCallID)
     .catch((err) => console.warn('[processRejectCall] finalizeCallAndNotify error:', err.message));
 
-  const rejectedCallIdStr = rejectedCallID != null ? String(rejectedCallID) : null;
   // Même règle pour l'avis que pour l'état : on ne prévient l'appelant que si
   // ce refus concerne l'appel qu'il mène. Le client a désormais sa propre garde
   // (B4), mais elle ne doit pas être la seule.
@@ -1561,21 +1657,7 @@ async function processRejectCall({
     }).catch((err) => console.warn('[processRejectCall] FCM notifyCallEnded error:', err.message));
   }
 
-  const siblingPayload = {
-    callId: rejectedCallIdStr,
-    reason: 'rejected_elsewhere',
-    claimedByAnotherDevice: true,
-  };
-  if (rejectingDeviceId) {
-    await emitToUserExceptDevice(io, receiverID, rejectingDeviceId, 'call_ended', siblingPayload);
-    notifyCallEnded(receiverID, callerID, 'Appel refusé sur un autre appareil', rejectedCallID, {
-      excludeDeviceId: rejectingDeviceId,
-      reason: 'rejected_elsewhere',
-      claimedByAnotherDevice: true,
-    }).catch((err) => console.warn('[processRejectCall] FCM siblings:', err.message));
-  } else {
-    emitToUser(io, receiverID, 'call_ended', siblingPayload);
-  }
+  await _prevenirAppareilsFreres();
 
   console.log(`[processRejectCall] !! Refus receiver=${receiverID} → caller=${callerID} callId=${rejectedCallIdStr}`);
   return { ok: true, callId: rejectedCallID };
