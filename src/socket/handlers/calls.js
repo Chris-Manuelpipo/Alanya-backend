@@ -60,14 +60,21 @@ const {
 //                 code CALL_SELF : la cible est l'appelant lui-même.
 //                 code CALL_ID_UNAVAILABLE : pas d'appel sans callId serveur.
 //   call_busy     { callId, targetId, reason:'busy' }   — cible déjà ringing / in_call
-//   call_voicemail{ callId, targetId, reason:'voicemail', isVideo, conversationID }
-//                 — à l'APPELANT seul, EN LIEU ET PLACE de call_ringing : le
-//                 répondeur de la cible est actif, rien n'a sonné et rien n'a
-//                 été armé côté serveur. L'appelant démonte son sortant et se
-//                 voit proposer de laisser un message vocal dans la
-//                 conversation transmise. Pas de texte d'annonce dans le
-//                 payload : le client le compose depuis ses propres
-//                 traductions.
+//   call_voicemail{ callId, targetId, reason:'voicemail', isVideo, conversationID,
+//                   didRing, greetingUrl, greetingSeconds }
+//                 — à l'APPELANT seul. Le répondeur du destinataire prend
+//                 l'appel. Quatre chemins y mènent : créneau de silence et
+//                 ligne occupée (avant toute sonnerie, EN LIEU ET PLACE de
+//                 call_ringing ou call_busy), délai sans réponse écoulé et
+//                 refus explicite (après la sonnerie, en lieu et place de
+//                 call_no_answer ou call_rejected).
+//                 `didRing` distingue les deux familles : la feuille de
+//                 l'appelant dit « n'a pas répondu » ou « est indisponible ».
+//                 `greetingUrl` est l'annonce du destinataire, à télécharger et
+//                 à jouer ; le nom du fichier change à chaque enregistrement,
+//                 ce qui tient lieu d'empreinte pour le cache client.
+//                 Pas de texte d'annonce dans le payload : le client le compose
+//                 depuis ses propres traductions.
 //   call_resume   { callId, peerId, status, isVideo, role, answer? }
 //
 // Ownership média : callDeviceOwnership (par callId/sessionId/roomId + userId → device).
@@ -337,6 +344,18 @@ async function basculerVersRepondeur({
     // Dit à l'appelant s'il a laissé sonner ou non : sa feuille annonce
     // « n'a pas répondu » ou « est indisponible », ce n'est pas la même chose.
     didRing: status === CALL_STATUS.VOICEMAIL_AFTER_RING,
+    // L'annonce enregistrée par le destinataire, s'il en a une.
+    //
+    // Une URL, pas les octets : le client la télécharge PENDANT qu'il démonte
+    // déjà l'appel — plusieurs centaines de millisecondes de CallKit à rendre
+    // et de connexion pair-à-pair à fermer — donc sans rien allonger. Et son
+    // cache la sert instantanément dès le deuxième appel vers la même personne.
+    //
+    // Le nom du fichier porte un suffixe aléatoire : c'est lui qui fait office
+    // d'empreinte, puisque le cache client indexe par nom et n'invalide rien.
+    greetingUrl: schedule?.greeting_url ?? null,
+    greetingSeconds:
+      schedule?.greeting_seconds == null ? null : Number(schedule.greeting_seconds),
   };
 
   if (socket) {
