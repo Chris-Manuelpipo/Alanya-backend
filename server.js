@@ -126,7 +126,7 @@ const {
   startTripStaleSweeper, stopTripStaleSweeper,
 } = require('./src/services/tripStaleWorkers');
 const { runNightlyTripPurge } = require('./src/services/tripRetention');
-const { runNightlyMediaPurge } = require('./src/services/mediaRetention');
+const { runNightlyMediaPurge, plafondMedias, rafraichirPlafond } = require('./src/services/mediaRetention');
 const { mediaExpiryGuard, staticHeaders } = require('./src/middleware/mediaExpiry');
 const { mediaRead } = require('./src/middleware/mediaRead');
 const { cleanStaleUploadTmp } = require('./src/middleware/upload');
@@ -176,13 +176,19 @@ app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // `staticHeaders` plafonne en outre le `max-age` à la vie restante de la
 // partition : sans ça un cache intermédiaire garderait un an une URL qui meurt
 // dans trois jours, et le 410 n'atteindrait jamais le client.
-app.use('/uploads', mediaExpiryGuard());
+//
+// La durée est le plafond de conservation : la standard, ou celle d'Alanya
+// Plus en phase payante. Une URL ne dit pas qui la demande, donc le serveur
+// ne tranche qu'au-delà de la plus longue ; c'est au téléphone d'un compte
+// non abonné de s'arrêter plus tôt (`mediaRetentionDays` dans ses droits).
+// Relu depuis la base au plus une fois par minute, sans bloquer la requête.
+app.use('/uploads', mediaExpiryGuard({ retentionDays: plafondMedias }));
 // Stockage objet (MEDIA_STORAGE=b2) : redirection vers un lien signé
 // Backblaze, sauf pour un fichier encore présent sur le disque pendant la
 // transition. Sur disque seul, ce middleware ne fait rien.
 app.use('/uploads', mediaRead());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-  setHeaders: staticHeaders(),
+  setHeaders: staticHeaders({ retentionDays: plafondMedias }),
 }));
 // Fichiers de transit laissés par un envoi interrompu (stockage objet).
 cleanStaleUploadTmp().catch(() => {});
@@ -360,6 +366,13 @@ async function start() {
   } else {
     console.log('[Redis] REDIS_URL absent — adapter en mémoire (mono-instance uniquement)');
   }
+
+  // Plafond de conservation des médias lu AVANT d'accepter des requêtes : sans
+  // lui, le garde 410 prend la durée la plus longue possible, par prudence, et
+  // laisse passer des médias déjà expirés (404 du stockage au lieu de 410).
+  await rafraichirPlafond().catch((e) => {
+    console.warn('[Media] plafond de conservation illisible au démarrage:', e.message);
+  });
 
   server.listen(PORT, () => {
     console.log(`Serveur en marche sur le port ${PORT}`);

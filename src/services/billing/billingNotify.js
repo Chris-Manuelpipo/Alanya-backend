@@ -72,7 +72,8 @@ const messages = {
   purgeWarning: ({ purgeAfter }) => ({
     type: 'billing_purge_warning',
     title: `Vos données Alanya Plus seront effacées le ${fmtDay(purgeAfter)}`,
-    body: 'Historique des trajets et sonneries par liste. Réabonnez-vous d\'ici là pour les garder.',
+    body: 'Historique des trajets, sonneries par liste et anciens médias gardés sur le serveur. '
+      + 'Réabonnez-vous d\'ici là pour les garder.',
   }),
   paymentSucceeded: ({ until }) => ({
     type: 'payment_succeeded',

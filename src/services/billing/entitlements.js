@@ -10,6 +10,7 @@ const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
 const { getBillingSettings } = require('./settings');
 const { listFeatures, featuresOfPlan } = require('./catalog');
 const { decideEntitlements, isBillingTester } = require('./rules');
+const { lireDureesMedias } = require('../mediaRetention');
 
 /**
  * @param {number} alanyaID
@@ -48,6 +49,8 @@ async function entitlementsFor(alanyaID, now = new Date()) {
     'SELECT auto_renew, current_end, purge_after, purged_at FROM subscriber WHERE alanyaID = ?',
     [alanyaID],
   );
+  // Réglées depuis l'espace des purges ; relues au plus une fois par minute.
+  const mediaDays = await lireDureesMedias();
 
   const decided = decideEntitlements({
     settings: effective,
@@ -59,6 +62,7 @@ async function entitlementsFor(alanyaID, now = new Date()) {
     lastEnd: sub?.current_end ?? null,
     purgeAfter: sub?.purge_after ?? null,
     purgedAt: sub?.purged_at ?? null,
+    mediaDays,
     now,
   });
   return {

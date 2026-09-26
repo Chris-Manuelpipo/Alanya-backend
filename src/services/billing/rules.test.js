@@ -3,6 +3,8 @@ const {
   phaseAt,
   resolvePeriods,
   decideEntitlements,
+  mediaRetentionCovered,
+  mediaRetentionDays,
   dueSchedule,
   reminderApplies,
   autoRenewApplies,
@@ -149,6 +151,53 @@ assert.deepStrictEqual(resolvePeriods([], NOW), { current: null, upcoming: null,
     decideEntitlements({ settings: PAID, periods, catalog: CATALOG, lastEnd: day(-4), now: NOW }).lapsedAt,
     null,
   );
+}
+
+// ── Conservation des médias ────────────────────────────────────────────────
+{
+  const covered = (phase, sub, exempt = false) => mediaRetentionCovered({ phase, exempt, sub, now: NOW });
+  const abonne = { current_end: day(30), purge_after: null, purged_at: null };
+
+  // Hors phase payante, personne n'a la durée longue — pas même un abonné.
+  assert.strictEqual(covered('free', abonne), false);
+  assert.strictEqual(covered('grace', abonne), false);
+  assert.strictEqual(covered('free', null, true), false, 'exempté, mais tout le monde est à la durée standard');
+
+  // Phase payante.
+  assert.strictEqual(covered('paid', abonne), true);
+  assert.strictEqual(covered('paid', null), false, 'jamais abonné');
+  assert.strictEqual(covered('paid', { current_end: null, purge_after: null, purged_at: null }), false);
+  assert.strictEqual(covered('paid', null, true), true, 'administrateur ou compte officiel');
+  // Échu, échéance pas encore traitée : couvert, un jour de trop plutôt qu'un de moins.
+  assert.strictEqual(covered('paid', { current_end: day(-1), purge_after: null, purged_at: null }), true);
+  // Échu, dans le délai commun avant purge : couvert.
+  assert.strictEqual(covered('paid', { current_end: day(-10), purge_after: day(20), purged_at: null }), true);
+  // Délai passé, purge des données payantes pas encore faite : plus couvert.
+  assert.strictEqual(covered('paid', { current_end: day(-40), purge_after: day(-1), purged_at: null }), false);
+  // Données payantes purgées : plus couvert.
+  assert.strictEqual(covered('paid', { current_end: day(-40), purge_after: day(-10), purged_at: day(-10) }), false);
+
+  assert.strictEqual(mediaRetentionDays({ covered: true, standardDays: 30, plusDays: 365 }), 365);
+  assert.strictEqual(mediaRetentionDays({ covered: false, standardDays: 30, plusDays: 365 }), 30);
+  // Mal réglée depuis l'admin, la durée longue ne descend pas sous la standard.
+  assert.strictEqual(mediaRetentionDays({ covered: true, standardDays: 60, plusDays: 30 }), 60);
+
+  // Transmise au téléphone avec ses droits.
+  const mediaDays = { standardDays: 30, plusDays: 365 };
+  assert.strictEqual(decideEntitlements({ settings: OFF, catalog: CATALOG, mediaDays, now: NOW }).mediaRetentionDays, 30);
+  const periods = [{ plan_code: 'plus_annuel', starts_at: day(-3), ends_at: day(362), source: 0 }];
+  assert.strictEqual(
+    decideEntitlements({ settings: PAID, periods, catalog: CATALOG, lastEnd: day(362), mediaDays, now: NOW })
+      .mediaRetentionDays,
+    365,
+  );
+  assert.strictEqual(
+    decideEntitlements({ settings: PAID, catalog: CATALOG, exempt: true, mediaDays, now: NOW }).mediaRetentionDays,
+    365,
+  );
+  assert.strictEqual(decideEntitlements({ settings: PAID, catalog: CATALOG, mediaDays, now: NOW }).mediaRetentionDays, 30);
+  // Sans les durées, le champ reste vide plutôt que d'inventer une valeur.
+  assert.strictEqual(decideEntitlements({ settings: PAID, catalog: CATALOG, now: NOW }).mediaRetentionDays, null);
 }
 
 // ── Activation ─────────────────────────────────────────────────────────────

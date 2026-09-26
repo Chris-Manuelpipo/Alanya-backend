@@ -32,46 +32,73 @@ function clampInt(value, { min, max, fallback }) {
   return Math.min(max, Math.max(min, n));
 }
 
+/**
+ * Rétention appliquée aux tranches du disque : jamais en deçà du plafond de
+ * conservation des médias. Jette si l'état des abonnements est illisible —
+ * le balayage échoue alors sans rien supprimer.
+ */
+async function retentionDesPartitions(opts) {
+  const { rafraichirPlafond } = require('./mediaRetention');
+  return Math.max(opts.mediaDays, await rafraichirPlafond());
+}
+
 // ── Descripteurs ────────────────────────────────────────────────────────────
 //
 // `knobs` : réglages surchargeables depuis l'admin. Une purge sans knob a ses
 // durées figées dans son SQL — c'est signalé à l'écran plutôt que masqué.
 // `stats(opts)` : ce qui serait supprimé MAINTENANT, avec les réglages courants.
-// `run(opts)`   : exécution réelle.
+// `run(opts, { trigger })` : exécution réelle ; `trigger` vaut `auto` ou `manual`.
 
 const DESCRIPTORS = {
   media: {
     label: 'Médias expirés',
     description:
-      "Vide `message.mediaUrl` et supprime le fichier du disque au-delà de la "
-      + 'rétention. Le message lui-même est conservé : seule la pièce jointe disparaît.',
+      "Vide `message.mediaUrl` et supprime le fichier (disque et Backblaze) au-delà "
+      + 'de la rétention. Le message lui-même est conservé : seule la pièce jointe '
+      + 'disparaît. En phase payante, un média garde la durée Alanya Plus tant '
+      + "qu'une personne de sa discussion y a droit. La nuit, la purge s'arrête "
+      + "sans rien supprimer si elle dépasse le seuil d'arrêt : la lancer à la main "
+      + 'vaut confirmation.',
     knobs: [{
       key: 'mediaDays',
-      label: 'Rétention des médias',
+      label: 'Rétention des médias — standard',
       unit: 'jours',
       min: 1,
       max: 365,
       default: () => mediaPolicy.RETENTION.mediaDays,
+    }, {
+      key: 'plusDays',
+      label: 'Rétention des médias — Alanya Plus',
+      unit: 'jours',
+      min: 1,
+      // Pas au-delà : le filet du bucket masque `media/` à 366 jours.
+      max: 365,
+      default: () => mediaPolicy.RETENTION.plusDays,
+    }, {
+      key: 'alertFloor',
+      label: "Seuil d'arrêt automatique",
+      unit: 'fichiers par nuit',
+      min: 1,
+      max: 1_000_000,
+      default: () => mediaPolicy.RETENTION.alertFloor,
     }],
     async stats(opts) {
-      const [rows] = await pool.execute(
-        `SELECT COUNT(*) AS fichiers,
-                COALESCE(SUM(m.mediaSize), 0) AS octets,
-                MIN(m.sendAt) AS plusAncien
-           FROM message m
-          WHERE m.mediaUrl IS NOT NULL AND m.mediaUrl <> ''
-            AND m.sendAt < DATE_SUB(NOW(), INTERVAL ? DAY)`,
-        [opts.mediaDays],
-      );
+      const { lireContexte, countPurgeable, plafondDe } = require('./mediaRetention');
+      const ctx = await lireContexte({ standardDays: opts.mediaDays, plusDays: opts.plusDays });
       return {
-        fichiers: Number(rows[0].fichiers) || 0,
-        octets: Number(rows[0].octets) || 0,
-        plusAncien: rows[0].plusAncien,
+        ...(await countPurgeable(pool, ctx)),
+        paliers: ctx.paliers,
+        plafondJours: plafondDe(ctx),
       };
     },
-    async run(opts) {
+    async run(opts, { trigger } = {}) {
       const { runNightlyMediaPurge } = require('./mediaRetention');
-      return runNightlyMediaPurge(undefined, { mediaDays: opts.mediaDays });
+      return runNightlyMediaPurge(undefined, {
+        mediaDays: opts.mediaDays,
+        plusDays: opts.plusDays,
+        alertFloor: opts.alertFloor,
+        trigger,
+      });
     },
   },
 
@@ -89,6 +116,11 @@ const DESCRIPTORS = {
   // charge tout ce qui est déposé dans une tranche datée. Le vrai interrupteur
   // reste la variable d'environnement `MEDIA_PARTITIONS_ENABLED` : tant qu'elle
   // est éteinte, ce balayage ne supprime rien et `stats()` l'annonce.
+  //
+  // Une tranche ne tombe qu'au plafond de conservation (`plafondDe`) : en
+  // phase payante, elle peut contenir des médias d'abonnés, gardés jusqu'à la
+  // durée Alanya Plus. Les autres fichiers de la tranche sont supprimés un à un
+  // par la purge `media`, au terme de leur propre rétention.
   media_partitions: {
     label: 'Partitions de médias échues',
     description:
@@ -105,11 +137,11 @@ const DESCRIPTORS = {
     }],
     async stats(opts) {
       const { partitionStats } = require('./mediaPartitions');
-      return partitionStats({ retentionDays: opts.mediaDays });
+      return partitionStats({ retentionDays: await retentionDesPartitions(opts) });
     },
     async run(opts) {
       const { sweepPartitions } = require('./mediaPartitions');
-      return sweepPartitions({ retentionDays: opts.mediaDays });
+      return sweepPartitions({ retentionDays: await retentionDesPartitions(opts) });
     },
   },
 
@@ -440,7 +472,9 @@ async function runPurge(name, { trigger = 'auto', by = null } = {}) {
   const options = await resolveOptions(name);
   const t0 = Date.now();
   try {
-    const result = await desc.run(options);
+    // Le déclencheur est transmis : une exécution manuelle vaut confirmation
+    // pour les purges qui s'arrêtent d'elles-mêmes la nuit (`media`).
+    const result = await desc.run(options, { trigger });
     await recordRun(name, { trigger, by, ok: true, result, durationMs: Date.now() - t0 });
     return { ok: true, result };
   } catch (e) {

@@ -166,4 +166,33 @@ function passer(chemin, { now = MAINTENANT, relayLegacy = true } = {}) {
   assert.strictEqual(res.code, 410);
 }
 
+// ── Une durée relue à chaque requête ────────────────────────────────
+// En service, la durée est le plafond de conservation : il passe à la durée
+// Alanya Plus quand l'offre payante s'active, sans redémarrage.
+{
+  let plafond = RETENTION;
+  const guard = mediaExpiryGuard({ retentionDays: () => plafond, now: () => MAINTENANT });
+  const demander = () => {
+    const res = fausseReponse();
+    let suivant = false;
+    guard({ path: '/media/2026-07-20/images/x.jpg' }, res, () => { suivant = true; });
+    return { res, suivant };
+  };
+
+  const avant = demander();
+  assert.strictEqual(avant.res.code, 410);
+  assert.strictEqual(avant.res.corps.retentionDays, RETENTION);
+
+  plafond = 365;
+  const apres = demander();
+  assert.strictEqual(apres.suivant, true, 'un abonné peut encore en avoir besoin');
+  assert.strictEqual(apres.res.code, null);
+
+  // Les en-têtes de cache suivent le même plafond.
+  const entetes = staticHeaders({ retentionDays: () => plafond, now: () => MAINTENANT });
+  const r = fausseReponse();
+  entetes(r, '/srv/uploads/media/2026-07-20/images/x.jpg');
+  assert.notStrictEqual(r.entetes['Cache-Control'], 'public, max-age=0, immutable');
+}
+
 console.log('mediaExpiry: OK');

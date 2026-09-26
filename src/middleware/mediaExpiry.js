@@ -84,13 +84,24 @@ function repondreExpire(res, partition, retentionDays) {
     });
 }
 
+/** Une durée fixe, ou une fonction relue à chaque requête. */
+const joursDe = (retentionDays) => (
+  typeof retentionDays === 'function' ? retentionDays() : retentionDays
+);
+
 /**
  * Middleware à monter sur `/uploads`, avant `express.static`.
+ *
+ * `retentionDays` peut être une fonction : en service, c'est le plafond de
+ * conservation (`plafondMedias`), qui passe à la durée Alanya Plus en phase
+ * payante et se règle depuis l'admin sans redémarrage. Une URL ne dit pas qui
+ * la demande : le garde ne répond donc 410 qu'au-delà de la durée la plus
+ * longue que QUICONQUE puisse avoir.
  *
  * `now` est injectable pour les tests ; en service il n'est jamais fourni.
  */
 function mediaExpiryGuard({
-  retentionDays = RETENTION.mediaDays,
+  retentionDays: retention = RETENTION.mediaDays,
   now = () => Date.now(),
   // Le relais des anciennes adresses est TOUJOURS actif, indépendamment de
   // `MEDIA_PARTITIONS_ENABLED`.
@@ -119,6 +130,7 @@ function mediaExpiryGuard({
   return function guard(req, res, next) {
     // `req.path` est relatif au point de montage (`/uploads`).
     const chemin = req.path || '';
+    const retentionDays = joursDe(retention);
 
     // ── 1. Chemin partitionné : juger sur l'URL, sans toucher au disque ──
     // `req.path` vaut déjà `/media/<partition>/<kind>/<fichier>` sous le point
@@ -204,7 +216,7 @@ function relaisHerite(req, res, next, { kind, nom, retentionDays, maintenant }) 
  * cache intermédiaire continuerait de servir un fichier que le serveur a
  * supprimé, et le 410 n'arriverait jamais jusqu'au client.
  */
-function staticHeaders({ retentionDays = RETENTION.mediaDays, now = () => Date.now() } = {}) {
+function staticHeaders({ retentionDays: retention = RETENTION.mediaDays, now = () => Date.now() } = {}) {
   const UN_AN = 31536000;
   return (res, cheminFichier) => {
     const partition = partitionFromPath(cheminFichier);
@@ -213,7 +225,7 @@ function staticHeaders({ retentionDays = RETENTION.mediaDays, now = () => Date.n
       res.setHeader('Cache-Control', `public, max-age=${UN_AN}, immutable`);
       return;
     }
-    const restant = secondsUntilPartitionExpiry(partition, { retentionDays, now: now() });
+    const restant = secondsUntilPartitionExpiry(partition, { retentionDays: joursDe(retention), now: now() });
     res.setHeader('Cache-Control', `public, max-age=${Math.min(UN_AN, restant)}, immutable`);
   };
 }

@@ -51,6 +51,22 @@ const RETENTION = {
   // demander de redéploiement. La valeur est aussi surchargeable depuis
   // l'espace super-admin des purges (réglage « Rétention des médias »).
   mediaDays: readInt('MEDIA_RETENTION_DAYS', 365, { min: 1, max: 365 }),
+
+  // Durée longue, celle d'Alanya Plus. Un média la garde tant qu'au moins une
+  // personne de sa discussion (expéditeur compris) y a droit — voir
+  // `mediaRetentionCovered` dans billing/rules.js. Hors phase payante, elle
+  // ne s'applique à personne.
+  //
+  // Plafonnée à 365 : la règle de cycle de vie du bucket, filet de sécurité,
+  // masque les objets de `media/` à 366 jours. Une durée plus longue ici
+  // serait démentie par Backblaze sans que personne ne le voie.
+  plusDays: readInt('MEDIA_PLUS_RETENTION_DAYS', 365, { min: 1, max: 365 }),
+
+  // Au-delà de ce nombre de fichiers en une nuit, la purge automatique
+  // s'arrête et attend qu'un super-admin la lance à la main. Le seuil réel
+  // est le plus grand de cette valeur et de trois fois la moyenne des
+  // dernières nuits : il suit la croissance de l'application.
+  alertFloor: readInt('MEDIA_PURGE_ALERT_FLOOR', 1000, { min: 1, max: 1_000_000 }),
 };
 
 /**

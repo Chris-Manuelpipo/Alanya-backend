@@ -93,6 +93,8 @@ function resolvePeriods(periods, now = new Date()) {
  * @param {Date|string} [p.lastEnd]    fin de la dernière chaîne (subscriber.current_end)
  * @param {Date|string} [p.purgeAfter] données payantes conservées jusque-là
  * @param {Date|string} [p.purgedAt]   … puis effacées à cette date
+ * @param {{standardDays: number, plusDays: number}} [p.mediaDays]
+ *        durées de conservation des médias (réglages de la purge `media`)
  * @param {Date}     [p.now]
  */
 function decideEntitlements({
@@ -105,6 +107,7 @@ function decideEntitlements({
   lastEnd = null,
   purgeAfter = null,
   purgedAt = null,
+  mediaDays = null,
   now = new Date(),
 }) {
   const phase = phaseAt(settings, now);
@@ -153,7 +156,60 @@ function decideEntitlements({
     // Au-delà, le téléphone doit redemander ses droits : la fin de
     // l'abonnement, la fin de la grâce, ou une semaine au plus.
     validUntil: iso(earliest(chainEnd, graceUntil, new Date(now.getTime() + OFFLINE_TRUST_DAYS * DAY_MS))),
+    // Durée pendant laquelle CE compte peut télécharger un média depuis le
+    // serveur. Le fichier peut vivre plus longtemps, gardé par un autre membre
+    // abonné de la discussion : c'est au téléphone de s'arrêter à cette durée,
+    // le serveur ne sachant pas qui télécharge.
+    mediaRetentionDays: mediaDays
+      ? mediaRetentionDays({
+        covered: mediaRetentionCovered({
+          phase,
+          exempt,
+          sub: { current_end: lastEnd, purge_after: purgeAfter, purged_at: purgedAt },
+          now,
+        }),
+        ...mediaDays,
+      })
+      : null,
   };
+}
+
+/**
+ * Le compte garde-t-il ses médias la durée longue (Alanya Plus) ?
+ *
+ * Seulement en phase payante : tant que l'offre est gratuite ou en grâce,
+ * tout le monde est à la durée standard. Ensuite, un compte exempté, ou un
+ * abonné jusqu'à la purge de ses données payantes — le délai commun après
+ * l'échéance, annoncé par la notification d'avertissement, vaut aussi pour
+ * les médias. Tant que l'échéance n'a pas encore été traitée (`purge_after`
+ * vide), le compte reste couvert : mieux vaut garder un jour de trop.
+ *
+ * ⚠ Recopiée en SQL dans `mediaRetention.js` (`compteCouvert`) : la purge
+ * nocturne l'applique à des milliers de messages d'un coup. Toute
+ * modification ici doit y être reportée.
+ *
+ * @param {object} p
+ * @param {string} p.phase
+ * @param {boolean} [p.exempt]  administrateur ou compte officiel
+ * @param {{current_end, purge_after, purged_at}|null} [p.sub] ligne subscriber
+ */
+function mediaRetentionCovered({ phase, exempt = false, sub = null, now = new Date() }) {
+  if (phase !== PHASE.PAID) return false;
+  if (exempt) return true;
+  if (!sub || sub.purged_at) return false;
+  const end = toDate(sub.current_end);
+  if (!end) return false;
+  if (end > now) return true;
+  const due = toDate(sub.purge_after);
+  return !due || due > now;
+}
+
+/**
+ * Durée de conservation qui s'applique à un compte. La durée longue ne peut
+ * pas être plus courte que la standard, même mal réglée depuis l'admin.
+ */
+function mediaRetentionDays({ covered, standardDays, plusDays }) {
+  return covered ? Math.max(standardDays, plusDays) : standardDays;
 }
 
 /** Fournisseur de paiement actif (variable d'environnement, secrets à côté). */
@@ -508,6 +564,8 @@ module.exports = {
   phaseAt,
   resolvePeriods,
   decideEntitlements,
+  mediaRetentionCovered,
+  mediaRetentionDays,
   paymentProvider,
   activationBlocker,
   purchaseBlocker,
