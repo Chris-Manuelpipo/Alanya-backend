@@ -6,6 +6,7 @@
  */
 
 const crypto = require('crypto');
+const { PAYMENT_PURPOSE } = require('../../constants/billing');
 
 const PAYMENT_STATUS_NAME = Object.freeze({
   0: 'created',
@@ -15,6 +16,15 @@ const PAYMENT_STATUS_NAME = Object.freeze({
   4: 'expired',
   5: 'refunded',
 });
+
+/**
+ * Ce qu'un paiement achète : un abonnement (il a un plan) ou un numéro
+ * Alanya choisi. Les écrans qui listent les paiements l'affichent à la place
+ * du plan, qu'un achat de numéro n'a pas.
+ */
+function paymentProduct(purpose) {
+  return Number(purpose) === PAYMENT_PURPOSE.PHONE_NUMBER ? 'phone' : 'plus';
+}
 
 /**
  * Numéro mobile money, normalisé en chiffres avec indicatif.
@@ -95,6 +105,7 @@ function nextPeriodStart({ now = new Date(), currentEnd = null, graceUntil = nul
 
 module.exports = {
   PAYMENT_STATUS_NAME,
+  paymentProduct,
   normalizeMsisdn,
   simulatedOutcome,
   signSimulated,

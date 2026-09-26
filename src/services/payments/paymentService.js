@@ -53,19 +53,7 @@ async function checkout({ alanyaID, planCode, channel, msisdn, autoRenew, now = 
   const [[plan]] = await pool.execute('SELECT * FROM plan WHERE code = ? AND is_active = 1', [String(planCode || '')]);
   if (!plan) throw new BillingError('PLAN_NOT_FOUND', 404, 'Plan introuvable');
 
-  const provider = providers.active();
-  if (!provider.channels.includes(channel)) {
-    throw new BillingError('INVALID_CHANNEL', 400, 'Moyen de paiement non proposé');
-  }
-  const number = normalizeMsisdn(msisdn);
-  if (!number) throw new BillingError('INVALID_MSISDN', 400, 'Numéro de téléphone invalide');
-
-  // Un seul paiement en attente à la fois : deux demandes simultanées
-  // feraient composer deux codes au même utilisateur.
-  const pending = await pendingPaymentId(alanyaID, now);
-  if (pending) {
-    throw new BillingError('PAYMENT_PENDING', 409, 'Un paiement est déjà en attente', { paymentId: pending });
-  }
+  const { provider, number } = await preparePayment({ alanyaID, channel, msisdn, now });
 
   if (typeof autoRenew === 'boolean') {
     await pool.execute(
@@ -78,6 +66,27 @@ async function checkout({ alanyaID, planCode, channel, msisdn, autoRenew, now = 
   return startPayment({
     alanyaID, plan, provider, channel, number, purpose: PAYMENT_PURPOSE.SUBSCRIBE,
   });
+}
+
+/**
+ * Ce que vérifie toute demande de paiement, quel que soit l'achat : un moyen
+ * que le fournisseur propose, un numéro mobile money valable, et aucun autre
+ * paiement en attente pour ce compte — deux demandes simultanées feraient
+ * composer deux codes au même utilisateur.
+ */
+async function preparePayment({ alanyaID, channel, msisdn, now = new Date() }) {
+  const provider = providers.active();
+  if (!provider.channels.includes(channel)) {
+    throw new BillingError('INVALID_CHANNEL', 400, 'Moyen de paiement non proposé');
+  }
+  const number = normalizeMsisdn(msisdn);
+  if (!number) throw new BillingError('INVALID_MSISDN', 400, 'Numéro de téléphone invalide');
+
+  const pending = await pendingPaymentId(alanyaID, now);
+  if (pending) {
+    throw new BillingError('PAYMENT_PENDING', 409, 'Un paiement est déjà en attente', { paymentId: pending });
+  }
+  return { provider, number };
 }
 
 async function pendingPaymentId(alanyaID, now = new Date()) {
@@ -118,21 +127,35 @@ async function initiateRenewal({ alanyaID, now = new Date() }) {
   return { ...started, channel: sub.renew_channel };
 }
 
-/** Enregistre la demande, puis la confie au fournisseur. */
-async function startPayment({ alanyaID, plan, provider, channel, number, purpose }) {
-  const [ins] = await pool.execute(
+/**
+ * Enregistre la demande, au statut « créé ». `conn` est la transaction de
+ * l'appelant quand la demande doit naître avec autre chose — une commande de
+ * numéro qu'elle rattache, par exemple.
+ *
+ * @param {number|null} planId  null pour un achat qui n'est pas un abonnement
+ */
+async function insertPayment(conn, {
+  alanyaID, planId = null, provider, channel, number, amount, currency, purpose,
+}) {
+  const [ins] = await conn.execute(
     `INSERT INTO payment
        (alanyaID, plan_id, provider, channel, msisdn, amount, currency, purpose, status, idempotency_key)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [alanyaID, plan.id, provider.name, channel, number, plan.price_amount, plan.currency,
+    [alanyaID, planId, provider.name, channel, number, amount, currency,
       purpose, P.CREATED, crypto.randomUUID()],
   );
-  const paymentId = ins.insertId;
+  return ins.insertId;
+}
 
+/**
+ * Confie une demande enregistrée au fournisseur. S'il ne répond pas, le
+ * paiement échoue par `settlePayment`, comme toute autre issue : un seul
+ * chemin vers un état final, pour que ce qui dépend du paiement (une commande
+ * de numéro) se solde avec lui.
+ */
+async function initiatePayment({ paymentId, provider, number, amount, currency }) {
   try {
-    const r = await provider.initiate({
-      paymentId, amount: plan.price_amount, currency: plan.currency, msisdn: number,
-    });
+    const r = await provider.initiate({ paymentId, amount, currency, msisdn: number });
     await pool.execute(
       'UPDATE payment SET provider_ref = ?, status = ? WHERE id = ? AND status = ?',
       [r.providerRef, P.PENDING, paymentId, P.CREATED],
@@ -140,20 +163,26 @@ async function startPayment({ alanyaID, plan, provider, channel, number, purpose
     return {
       paymentId,
       status: 'pending',
-      plan: plan.code,
-      amount: plan.price_amount,
-      currency: plan.currency,
+      amount,
+      currency,
       provider: provider.name,
       nextAction: r.nextAction ?? null,
     };
   } catch (err) {
     console.error('[paiement] fournisseur injoignable :', err.message);
-    await pool.execute(
-      'UPDATE payment SET status = ?, failure_code = ? WHERE id = ?',
-      [P.FAILED, 'PROVIDER_ERROR', paymentId],
-    );
+    await settlePayment(paymentId, { outcome: 'failed', failureCode: 'PROVIDER_ERROR' });
     throw new BillingError('PAYMENT_PROVIDER_ERROR', 502, 'Le fournisseur de paiement n\'a pas répondu');
   }
+}
+
+/** Une période d'abonnement : enregistre la demande, puis la confie au fournisseur. */
+async function startPayment({ alanyaID, plan, provider, channel, number, purpose }) {
+  const amount = Number(plan.price_amount);
+  const paymentId = await insertPayment(pool, {
+    alanyaID, planId: plan.id, provider, channel, number, amount, currency: plan.currency, purpose,
+  });
+  const started = await initiatePayment({ paymentId, provider, number, amount, currency: plan.currency });
+  return { ...started, plan: plan.code };
 }
 
 /**
@@ -320,6 +349,9 @@ function registerPaymentJobHandlers() {
 
 module.exports = {
   checkout,
+  preparePayment,
+  insertPayment,
+  initiatePayment,
   initiateRenewal,
   settlePayment,
   handleWebhook,

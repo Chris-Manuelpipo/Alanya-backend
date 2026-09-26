@@ -12,7 +12,7 @@ const { BillingError } = require('../../services/billing/errors');
 const { entitlementsFor } = require('../../services/billing/entitlements');
 const { grantGift } = require('../../services/billing/subscriptions');
 const { parseReason } = require('../../services/billing/rules');
-const { PAYMENT_STATUS_NAME } = require('../../services/payments/paymentRules');
+const { PAYMENT_STATUS_NAME, paymentProduct } = require('../../services/payments/paymentRules');
 
 function sendError(res, err, tag) {
   if (err instanceof BillingError) return fail(res, err.status, err.code, err.message, err.extra);
@@ -28,6 +28,7 @@ const paymentRow = (p) => ({
   id: p.id,
   alanya_id: p.alanyaID,
   user_name: p.nom || p.pseudo || null,
+  product: paymentProduct(p.purpose),
   plan: p.plan_code,
   provider: p.provider,
   channel: p.channel,
@@ -63,7 +64,7 @@ const listBillingPayments = async (req, res) => {
       `SELECT p.*, u.nom, u.pseudo, pl.code AS plan_code
          FROM payment p
          JOIN users u ON u.alanyaID = p.alanyaID
-         JOIN plan pl ON pl.id = p.plan_id
+         LEFT JOIN plan pl ON pl.id = p.plan_id
         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
         ORDER BY p.id DESC
         LIMIT ${limitOf(req.query.limit)}`,
@@ -128,7 +129,7 @@ async function userBillingPayload(alanyaID) {
     ),
     pool.execute(
       `SELECT p.*, NULL AS nom, NULL AS pseudo, pl.code AS plan_code
-         FROM payment p JOIN plan pl ON pl.id = p.plan_id
+         FROM payment p LEFT JOIN plan pl ON pl.id = p.plan_id
         WHERE p.alanyaID = ? ORDER BY p.id DESC LIMIT 50`,
       [alanyaID],
     ),

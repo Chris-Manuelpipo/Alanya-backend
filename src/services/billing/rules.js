@@ -174,6 +174,20 @@ function activationBlocker(env = process.env) {
   return null;
 }
 
+/**
+ * Ce qui empêche un compte d'acheter hors abonnement (le numéro choisi), ou
+ * null.
+ *
+ * Ces achats n'ont pas d'interrupteur : ils sont en vente dès qu'un
+ * fournisseur encaisse vraiment. Reste la règle du simulateur — en
+ * production il confirme sans rien encaisser, il ne sert donc qu'aux comptes
+ * testeurs. Brancher un agrégateur ouvre la vente à tous, sans autre geste.
+ */
+function purchaseBlocker(alanyaID, env = process.env) {
+  if (isBillingTester(alanyaID, env)) return null;
+  return activationBlocker(env);
+}
+
 /** Entier strict : nombre entier, ou chaîne de chiffres. */
 function toStrictInt(v) {
   if (typeof v === 'number') return Number.isInteger(v) ? v : NaN;
@@ -496,6 +510,7 @@ module.exports = {
   decideEntitlements,
   paymentProvider,
   activationBlocker,
+  purchaseBlocker,
   parseSettingsPatch,
   parsePlanPayload,
   parseFeaturePatch,

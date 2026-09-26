@@ -1,6 +1,7 @@
 const assert = require('assert');
 const {
   PAYMENT_STATUS_NAME,
+  paymentProduct,
   normalizeMsisdn,
   simulatedOutcome,
   signSimulated,
@@ -18,6 +19,12 @@ assert.strictEqual(normalizeMsisdn('237599123400'), null, 'un mobile camerounais
 assert.strictEqual(normalizeMsisdn('12345'), null);
 assert.strictEqual(normalizeMsisdn('abc'), null);
 assert.strictEqual(normalizeMsisdn('+33 6 12 34 56 78'), '33612345678', 'ailleurs, avec indicatif');
+
+// ── Ce qu'un paiement achète ───────────────────────────────────────────────
+assert.strictEqual(paymentProduct(0), 'plus');
+assert.strictEqual(paymentProduct(2), 'plus', 'renouvellement automatique');
+assert.strictEqual(paymentProduct(3), 'phone');
+assert.strictEqual(paymentProduct('3'), 'phone', 'valeur lue en base');
 
 // ── Simulateur ─────────────────────────────────────────────────────────────
 assert.deepStrictEqual(simulatedOutcome('237699123400'), { outcome: 'succeeded' });

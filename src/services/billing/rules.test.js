@@ -12,6 +12,7 @@ const {
   compensationDays,
   effectivePhase,
   activationBlocker,
+  purchaseBlocker,
   parseSettingsPatch,
   parsePlanPayload,
   parseFeaturePatch,
@@ -155,6 +156,15 @@ assert.strictEqual(activationBlocker({ NODE_ENV: 'production' }), 'BILLING_PROVI
 assert.strictEqual(activationBlocker({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'simulated' }), 'BILLING_PROVIDER_SIMULATED');
 assert.strictEqual(activationBlocker({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'cinetpay' }), null);
 assert.strictEqual(activationBlocker({ NODE_ENV: 'development' }), null, 'le simulateur sert aux essais hors production');
+
+// Achats hors abonnement : pas d'interrupteur, seulement la règle du simulateur.
+{
+  const PROD_SIM = { NODE_ENV: 'production', BILLING_TEST_USERS: '11,105' };
+  assert.strictEqual(purchaseBlocker(42, PROD_SIM), 'BILLING_PROVIDER_SIMULATED', 'le simulateur n\'encaisse pas en prod');
+  assert.strictEqual(purchaseBlocker(105, PROD_SIM), null, 'sauf pour les testeurs');
+  assert.strictEqual(purchaseBlocker(42, { ...PROD_SIM, PAYMENT_PROVIDER: 'cinetpay' }), null, 'un vrai fournisseur ouvre la vente à tous');
+  assert.strictEqual(purchaseBlocker(42, { NODE_ENV: 'development' }), null);
+}
 
 // ── Réglages ───────────────────────────────────────────────────────────────
 assert.deepStrictEqual(parseSettingsPatch({ trial_days: 0, retention_days: '45' }).value,

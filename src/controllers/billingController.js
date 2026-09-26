@@ -5,7 +5,7 @@ const { entitlementsFor } = require('../services/billing/entitlements');
 const { listPlans, listFeatures } = require('../services/billing/catalog');
 const payments = require('../services/payments/paymentService');
 const providers = require('../services/payments/providers');
-const { PAYMENT_STATUS_NAME } = require('../services/payments/paymentRules');
+const { PAYMENT_STATUS_NAME, paymentProduct } = require('../services/payments/paymentRules');
 
 function sendError(res, err, tag) {
   if (err instanceof BillingError) return fail(res, err.status, err.code, err.message, err.extra);
@@ -90,9 +90,9 @@ const getPayment = async (req, res) => {
   if (!Number.isInteger(id) || id <= 0) return fail(res, 404, 'PAYMENT_NOT_FOUND', 'Paiement introuvable');
   try {
     const [[p]] = await pool.execute(
-      `SELECT p.id, p.status, p.amount, p.currency, p.channel, p.failure_code,
+      `SELECT p.id, p.status, p.amount, p.currency, p.channel, p.failure_code, p.purpose,
               p.created_at, p.confirmed_at, pl.code AS plan_code
-         FROM payment p JOIN plan pl ON pl.id = p.plan_id
+         FROM payment p LEFT JOIN plan pl ON pl.id = p.plan_id
         WHERE p.id = ? AND p.alanyaID = ?`,
       [id, req.user.alanyaID],
     );
@@ -100,6 +100,7 @@ const getPayment = async (req, res) => {
     res.json({
       id: p.id,
       status: PAYMENT_STATUS_NAME[p.status],
+      product: paymentProduct(p.purpose),
       plan: p.plan_code,
       amount: Number(p.amount),
       currency: p.currency,
@@ -124,8 +125,9 @@ const getHistory = async (req, res) => {
       [alanyaID],
     );
     const [rows] = await pool.execute(
-      `SELECT p.id, p.status, p.amount, p.currency, p.channel, p.created_at, pl.code AS plan_code
-         FROM payment p JOIN plan pl ON pl.id = p.plan_id
+      `SELECT p.id, p.status, p.amount, p.currency, p.channel, p.purpose, p.created_at,
+              pl.code AS plan_code
+         FROM payment p LEFT JOIN plan pl ON pl.id = p.plan_id
         WHERE p.alanyaID = ? ORDER BY p.id DESC LIMIT 50`,
       [alanyaID],
     );
@@ -134,7 +136,7 @@ const getHistory = async (req, res) => {
         plan: p.plan_code, startsAt: p.starts_at, endsAt: p.ends_at, source: Number(p.source),
       })),
       payments: rows.map((p) => ({
-        id: p.id, status: PAYMENT_STATUS_NAME[p.status], plan: p.plan_code,
+        id: p.id, status: PAYMENT_STATUS_NAME[p.status], product: paymentProduct(p.purpose), plan: p.plan_code,
         amount: Number(p.amount), currency: p.currency, channel: p.channel, createdAt: p.created_at,
       })),
     });
