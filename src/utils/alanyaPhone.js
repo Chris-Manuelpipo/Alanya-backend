@@ -108,6 +108,58 @@ const validateReservedCandidate = (canonical) => {
   return { ok: true, tier: v.tier };
 };
 
+/**
+ * Ce qui peut s'acheter : tout numéro à 8 chiffres, quel que soit son format —
+ * un XXYYZZTT compris. Les 3 et 4 chiffres restent attribués par
+ * l'administration.
+ */
+const PURCHASABLE_LENGTH = 8;
+
+const validatePurchasable = (canonical) => {
+  const v = validate(canonical);
+  if (!v.ok) return v;
+  if (v.tier !== PURCHASABLE_LENGTH) {
+    return {
+      ok: false,
+      error: 'Seuls les numéros à 8 chiffres peuvent être choisis',
+      code: 'PHONE_NOT_PURCHASABLE',
+    };
+  }
+  return { ok: true };
+};
+
+/** Pourquoi un numéro à 8 chiffres ne peut pas être acheté (`reason` de l'API). */
+const PURCHASE_REFUSAL = Object.freeze({
+  SAME: 'same',
+  TAKEN: 'taken',
+  SET_ASIDE: 'set_aside',
+  HELD: 'held',
+  QUARANTINE: 'quarantine',
+});
+
+/**
+ * La raison du refus, ou null si le numéro est à vendre.
+ *
+ * L'ordre est celui qui renseigne le mieux : « c'est déjà le vôtre » avant
+ * « déjà utilisé », et un refus définitif (porté, mis de côté par
+ * l'administration) avant un refus qui passera (retenu, en quarantaine).
+ *
+ * @param {object} faits
+ * @param {boolean} faits.isOwn        le numéro actuel du compte
+ * @param {boolean} faits.taken        porté par un compte
+ * @param {boolean} faits.setAside     inscrit dans la liste de l'administration
+ * @param {boolean} faits.heldByOther  retenu ou en cours de paiement par un autre compte
+ * @param {boolean} faits.quarantined  quitté récemment par un autre compte
+ */
+const purchaseRefusal = ({ isOwn, taken, setAside, heldByOther, quarantined }) => {
+  if (isOwn) return PURCHASE_REFUSAL.SAME;
+  if (taken) return PURCHASE_REFUSAL.TAKEN;
+  if (setAside) return PURCHASE_REFUSAL.SET_ASIDE;
+  if (heldByOther) return PURCHASE_REFUSAL.HELD;
+  if (quarantined) return PURCHASE_REFUSAL.QUARANTINE;
+  return null;
+};
+
 const isNumericQuery = (q) => /^\d+$/.test(normalize(q));
 
 module.exports = {
@@ -121,5 +173,9 @@ module.exports = {
   isXxyyzztt,
   isPatternReserved,
   validateReservedCandidate,
+  PURCHASABLE_LENGTH,
+  validatePurchasable,
+  PURCHASE_REFUSAL,
+  purchaseRefusal,
   isNumericQuery,
 };
