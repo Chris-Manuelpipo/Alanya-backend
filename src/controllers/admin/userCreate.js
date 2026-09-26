@@ -7,10 +7,12 @@ const {
 } = require('../../utils/alanyaPhone');
 const {
   isReserved,
-  isPhoneAvailable,
+  isHeld,
   generateUniquePhone,
   phoneExists,
 } = require('../../services/alanyaPhoneService');
+const { recordPhoneChange } = require('../../services/alanyaPhoneOrders');
+const { PHONE_CHANGE_SOURCE } = require('../../constants/billing');
 const { sendMail, renderHtmlEmail, escapeHtml } = require('../../services/mailService');
 const { sendToUser } = require('../../services/notificationService');
 const { mailPhoneChange } = require('../../services/phoneChangeNotify');
@@ -80,6 +82,13 @@ const _notifyPhoneChange = async ({ user, oldPhone, newPhone }) => {
   });
 };
 
+/**
+ * Un utilisateur est en train de payer ce numéro. Le lui prendre ferait
+ * échouer un changement déjà payé : l'administration attend, comme tout le
+ * monde, la fin de la mise de côté ou du paiement.
+ */
+const PHONE_HELD_MESSAGE = 'Un utilisateur est en train d\'acheter ce numéro';
+
 const _resolvePhoneForCreate = async (req, body) => {
   const isAdmin = (req.user.typeCompte ?? 0) >= 1;
   const manual = body.alanyaPhone != null && String(body.alanyaPhone).trim() !== '';
@@ -87,14 +96,17 @@ const _resolvePhoneForCreate = async (req, body) => {
   if (manual) {
     const canonical = normalize(body.alanyaPhone);
     const v = validate(canonical);
-    if (!v.ok) return { error: v.error, status: 400 };
+    if (!v.ok) return { error: v.error, code: v.code, status: 400 };
 
     const reserved = await isReserved(canonical);
     if (reserved && !isAdmin) {
-      return { error: 'Ce numéro est réservé', status: 403 };
+      return { error: 'Ce numéro est réservé', code: 'FORBIDDEN', status: 403 };
     }
     if (await phoneExists(canonical)) {
-      return { error: 'Ce numéro est déjà utilisé', status: 409 };
+      return { error: 'Ce numéro est déjà utilisé', code: 'PHONE_ALREADY_EXISTS', status: 409 };
+    }
+    if (await isHeld(canonical)) {
+      return { error: PHONE_HELD_MESSAGE, code: 'PHONE_HELD', status: 409 };
     }
 
     return { canonical, tier: v.tier };
@@ -148,7 +160,7 @@ const createUser = async (req, res) => {
 
     const phoneResult = await _resolvePhoneForCreate(req, req.body);
     if (phoneResult.error) {
-      return res.status(phoneResult.status).json({ error: phoneResult.error });
+      return res.status(phoneResult.status).json({ error: phoneResult.error, code: phoneResult.code });
     }
     const { canonical, tier } = phoneResult;
 
@@ -261,53 +273,69 @@ const createUser = async (req, res) => {
   }
 };
 
+/**
+ * PUT /admin/users/:id/phone — l'administration attribue un numéro.
+ *
+ * Elle passe outre les motifs réservés et la quarantaine (c'est une décision
+ * humaine, et l'écran l'en avertit), jamais une mise de côté. Le changement
+ * entre dans l'historique comme un achat : l'ancien numéro part en
+ * quarantaine de la même façon.
+ */
 const updateUserPhone = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { alanyaPhone } = req.body || {};
-    const canonical = normalize(alanyaPhone);
-    const v = validate(canonical);
-    if (!v.ok) {
-      return res.status(400).json({ error: v.error, code: v.code });
-    }
+  const { id } = req.params;
+  const canonical = normalize(req.body?.alanyaPhone);
+  const v = validate(canonical);
+  if (!v.ok) {
+    return res.status(400).json({ error: v.error, code: v.code });
+  }
 
-    const [users] = await pool.execute(
-      'SELECT alanyaID, nom, email, alanyaPhone, fcm_token FROM users WHERE alanyaID = ?',
+  const conn = await pool.getConnection();
+  let user;
+  try {
+    await conn.beginTransaction();
+    const [users] = await conn.execute(
+      'SELECT alanyaID, nom, email, alanyaPhone FROM users WHERE alanyaID = ? FOR UPDATE',
       [id]
     );
-    if (users.length === 0) {
+    user = users[0];
+    if (!user) {
+      await conn.rollback();
       return res.status(404).json({ error: 'Utilisateur introuvable', code: 'USER_NOT_FOUND' });
     }
-    const user = users[0];
     if (user.alanyaPhone === canonical) {
+      await conn.rollback();
       return res.json({ message: 'Numéro inchangé', alanyaPhone: canonical });
     }
-
-    const reserved = await isReserved(canonical);
-    if (reserved) {
-      if (await phoneExists(canonical)) {
-        return res.status(409).json({ error: 'Ce numéro est déjà utilisé', code: 'PHONE_ALREADY_EXISTS' });
-      }
-    } else if (!(await isPhoneAvailable(canonical))) {
-      return res.status(409).json({ error: 'Ce numéro est déjà utilisé', code: 'PHONE_ALREADY_EXISTS' });
+    if (await isHeld(canonical, { conn })) {
+      await conn.rollback();
+      return res.status(409).json({ error: PHONE_HELD_MESSAGE, code: 'PHONE_HELD' });
     }
 
-    const oldPhone = user.alanyaPhone;
-    await pool.execute(
-      'UPDATE users SET alanyaPhone = ? WHERE alanyaID = ?',
-      [canonical, id]
-    );
-
-    const updatedUser = { ...user, alanyaID: user.alanyaID };
-    _notifyPhoneChange({ user: updatedUser, oldPhone, newPhone: canonical }).catch(
-      (err) => console.error('[Admin] updateUserPhone notify error:', err.message)
-    );
-
-    res.json({ message: 'Numéro mis à jour', alanyaPhone: canonical });
+    // Porté par un autre compte : la contrainte `uq_phone` tranche, sans
+    // fenêtre entre un contrôle et l'écriture.
+    await recordPhoneChange(conn, {
+      alanyaID: user.alanyaID,
+      oldPhone: user.alanyaPhone,
+      newPhone: canonical,
+      source: PHONE_CHANGE_SOURCE.ADMIN,
+      changedBy: req.user.alanyaID,
+    });
+    await conn.commit();
   } catch (error) {
+    await conn.rollback();
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Ce numéro est déjà utilisé', code: 'PHONE_ALREADY_EXISTS' });
+    }
     console.error('[Admin] updateUserPhone error:', error.message);
-    res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
+    return res.status(500).json({ error: 'Erreur serveur', code: 'INTERNAL' });
+  } finally {
+    conn.release();
   }
+
+  _notifyPhoneChange({ user, oldPhone: user.alanyaPhone, newPhone: canonical }).catch(
+    (err) => console.error('[Admin] updateUserPhone notify error:', err.message)
+  );
+  res.json({ message: 'Numéro mis à jour', alanyaPhone: canonical });
 };
 
 module.exports = {

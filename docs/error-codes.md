@@ -157,8 +157,8 @@ et c'est normal.
 
 ## Tous les codes HTTP émis
 
-Le backend émet **261 codes** en réponse HTTP. 56 d'entre eux ont
-une phrase dédiée dans l'application ; les 205 suivants sont valides et rendus par
+Le backend émet **262 codes** en réponse HTTP. 56 d'entre eux ont
+une phrase dédiée dans l'application ; les 206 suivants sont valides et rendus par
 le repli lié au statut. Leur donner une phrase est une amélioration, pas un
 correctif — un code non traduit ne fait rien afficher de brut.
 
@@ -216,6 +216,7 @@ correctif — un code non traduit ne fait rien afficher de brut.
 - `OTP_EXPIRED` · `OTP_INVALID` · `OTP_NOT_REQUESTED`
 - `PARTICIPANT_IDS_REQUIRED` · `PASSWORD_INCORRECT` · `PASSWORD_REQUIRED`
 - `PAYMENT_NOT_FOUND` · `PAYMENT_PROVIDER_UNKNOWN` · `PHONE_ALREADY_EXISTS`
+- `PHONE_HELD`
 - `PHONE_NOT_FOUND` · `PHONE_NOT_NUMERIC` · `PHONE_NOT_RESERVABLE`
 - `PHONE_REQUIRED` · `PLAN_CODE_TAKEN` · `POLL_TOKEN_REQUIRED`
 - `PROFILE_NOT_FOUND` · `PURGE_UNKNOWN` · `QR_UNKNOWN_OR_EXPIRED`

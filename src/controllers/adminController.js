@@ -8,6 +8,7 @@ module.exports = {
   ...require('./admin/users'),
   ...require('./admin/userCreate'),
   ...require('./admin/reservedAlanyaPhone'),
+  ...require('./admin/phoneHistory'),
   ...require('./admin/media'),
   ...require('./admin/groups'),
   ...require('./admin/meetings'),

@@ -8,7 +8,13 @@ const {
 const {
   phoneExists,
   isInReservedTable,
+  isHeld,
+  quarantineUntil,
 } = require('../../services/alanyaPhoneService');
+
+const fmtDay = (d) => new Date(d).toLocaleDateString('fr-FR', {
+  day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Africa/Douala',
+});
 
 const _mapRow = (row) => ({
   id: row.id,
@@ -78,14 +84,20 @@ const checkAssignablePhone = async (req, res) => {
     const taken = await phoneExists(canonical);
     const inTable = await isInReservedTable(canonical);
     const pattern = isPatternReserved(canonical);
+    // Retenu : un utilisateur paie ce numéro, l'attribuer ferait échouer son
+    // achat. En quarantaine : l'attribution reste possible, l'écran avertit.
+    const held = !taken && await isHeld(canonical);
+    const quarantine = taken ? null : await quarantineUntil(canonical);
 
     let source = 'standard';
     if (pattern) source = 'pattern';
     else if (inTable) source = 'table';
 
     let hint = null;
-    if (taken) {
+    if (taken || held) {
       hint = null;
+    } else if (quarantine) {
+      hint = `Libéré récemment — en quarantaine jusqu'au ${fmtDay(quarantine)}`;
     } else if (pattern) {
       hint = 'Pattern réservé — attribution directe autorisée';
     } else if (v.tier === 8) {
@@ -98,8 +110,12 @@ const checkAssignablePhone = async (req, res) => {
       is_pattern_reserved: pattern,
       in_reserved_table: inTable,
       is_taken: taken,
-      assignable: !taken,
-      reason: taken ? 'Ce numéro est déjà utilisé' : null,
+      is_held: held,
+      quarantine_until: quarantine,
+      assignable: !taken && !held,
+      reason: taken
+        ? 'Ce numéro est déjà utilisé'
+        : held ? 'Un utilisateur est en train d\'acheter ce numéro' : null,
       source,
       hint,
     });
@@ -174,6 +190,9 @@ const addReservedPhone = async (req, res) => {
     }
     if (await phoneExists(canonical)) {
       return res.status(409).json({ error: 'Ce numéro est déjà assigné à un utilisateur', code: 'USER_ALREADY_EXISTS' });
+    }
+    if (await isHeld(canonical)) {
+      return res.status(409).json({ error: 'Un utilisateur est en train d\'acheter ce numéro', code: 'PHONE_HELD' });
     }
 
     await pool.execute(

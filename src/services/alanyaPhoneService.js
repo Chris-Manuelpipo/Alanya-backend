@@ -82,12 +82,6 @@ const quarantineUntil = (canonical, { exceptUser = null, now = new Date(), conn 
     return new Date(new Date(last.changed_at).getTime() + days * DAY_MS);
   }, null);
 
-const isPhoneAvailable = async (canonical) => {
-  if (await phoneExists(canonical)) return false;
-  if (await isReserved(canonical)) return false;
-  return true;
-};
-
 /**
  * Un numéro à 8 chiffres peut-il être acheté par ce compte ?
  *
@@ -139,7 +133,6 @@ module.exports = {
   isReserved,
   isHeld,
   quarantineUntil,
-  isPhoneAvailable,
   purchaseAvailability,
   generateUniquePhone,
 };

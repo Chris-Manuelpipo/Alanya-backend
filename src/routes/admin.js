@@ -61,6 +61,7 @@ const {
   deleteUser,
   createUser,
   updateUserPhone,
+  getUserPhoneHistory,
   listReservedPhones,
   checkAssignablePhone,
   addReservedPhone,
@@ -831,6 +832,7 @@ router.delete('/users/:id/ban',            adminAuth, requirePermission('users.u
 router.put('/users/:id/role',              adminAuth, requirePermission('users.role'), setAccountType);
 router.put('/users/:id/socle',             adminAuth, requirePermission('users.socle'), setUserSocle);
 router.put('/users/:id/phone',             adminAuth, requirePermission('users.phone'), updateUserPhone);
+router.get('/users/:id/phone-history',     adminAuth, requirePermission('users.read'), getUserPhoneHistory);
 router.delete('/users/:id',                adminAuth, requirePermission('users.delete'), deleteUser);
 
 router.get('/alanya-phones/check-assignable', adminAuth, requirePermission('phones.read'), checkAssignablePhone);
