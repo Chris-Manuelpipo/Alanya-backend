@@ -399,6 +399,7 @@ module.exports = {
   initiatePayment,
   initiateRenewal,
   settlePayment,
+  announcePhoneSettlement,
   handleWebhook,
   reconcilePending,
   registerPaymentJobHandlers,

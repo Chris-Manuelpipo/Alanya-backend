@@ -55,6 +55,18 @@ const qrResolveLimiter = rateLimit({
   message: { error: 'Trop de scans, veuillez patienter' },
 });
 
+// Numéro choisi : vérification et mise de côté, 30 par minute.
+// Une vérification dit si un numéro est porté : sans plafond, elle servirait
+// à dresser l'annuaire des numéros attribués. Un humain qui cherche un
+// numéro qui lui plaît en essaie quelques-uns, pas trente à la minute.
+const phoneCheckLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de vérifications, patientez un instant', code: 'RATE_LIMITED' },
+});
+
 //  API générale
 // 300 requêtes par minute par IP
 const generalLimiter = rateLimit({
@@ -66,6 +78,7 @@ const generalLimiter = rateLimit({
 });
 
 module.exports = { authLimiter, registerLimiter, messageLimiter, uploadLimiter, qrResolveLimiter, generalLimiter,
+  phoneCheckLimiter,
   broadcastSendLimiter: rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 10,

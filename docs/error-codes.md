@@ -120,6 +120,17 @@ sont valides mais rendus par le repli lié au statut HTTP.
 | `PLAN_NOT_FOUND` | 404 | Plan inconnu ou retiré |
 | `PAYMENT_PROVIDER_ERROR` | 502 | Fournisseur de paiement injoignable |
 
+### Numéro Alanya choisi
+| Code | Statut | Sens |
+|---|---|---|
+| `PHONE_PURCHASE_UNAVAILABLE` | 403 | Le choix du numéro n'est pas proposé à ce compte (simulateur en production, hors testeurs) |
+| `OFFICIAL_PHONE_FIXED` | 403 | Le compte officiel garde son numéro |
+| `PHONE_NOT_PURCHASABLE` | 400 | Seuls les numéros à 8 chiffres se choisissent |
+| `PHONE_UNAVAILABLE` | 409 | Numéro pas à vendre (`reason` joint : `same`, `taken`, `set_aside`, `held`, `quarantine`) |
+| `PHONE_HOLD_EXPIRED` | 409 | La mise de côté de 15 minutes a expiré avant le paiement |
+| `PHONE_ORDER_NOT_FOUND` | 404 | Commande de numéro inconnue |
+| `PHONE_ORDER_PENDING` | 409 | Un paiement de numéro attend déjà sa réponse (`orderId`, `paymentId` joints) |
+
 ### Vérification d'identité
 | Code | Statut | Sens |
 |---|---|---|
@@ -146,7 +157,7 @@ et c'est normal.
 
 ## Tous les codes HTTP émis
 
-Le backend émet **254 codes** en réponse HTTP. 49 d'entre eux ont
+Le backend émet **261 codes** en réponse HTTP. 56 d'entre eux ont
 une phrase dédiée dans l'application ; les 205 suivants sont valides et rendus par
 le repli lié au statut. Leur donner une phrase est une amélioration, pas un
 correctif — un code non traduit ne fait rien afficher de brut.
