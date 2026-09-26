@@ -20,6 +20,11 @@
 -- ne retient qu'un numéro à la fois. Hors de ces statuts ils sont NULL, et
 -- MySQL admet autant de NULL qu'on veut sous un index UNIQUE.
 --
+-- Colonnes VIRTUAL, pas STORED : MySQL refuse un ON DELETE CASCADE sur la
+-- colonne de base d'une colonne générée STORED (ER_CANNOT_ADD_FOREIGN), or
+-- `alanyaID` doit suivre la suppression du compte. L'index d'une colonne
+-- VIRTUAL est matérialisé : l'unicité est tenue de la même façon.
+--
 -- Une mise de côté échue (statut 0, `held_until` passé) n'est soldée par
 -- aucun job : la prochaine mise de côté du même numéro ou du même compte la
 -- passe à 3 dans sa propre transaction, avant son INSERT.
@@ -54,9 +59,9 @@ CREATE TABLE IF NOT EXISTS alanya_phone_order (
   updated_at      DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   applied_at      DATETIME    NULL,
   active_phone    VARCHAR(8)
-                    GENERATED ALWAYS AS (IF(status IN (0, 1), phone_canonical, NULL)) STORED,
+                    GENERATED ALWAYS AS (IF(status IN (0, 1), phone_canonical, NULL)) VIRTUAL,
   active_user     INT
-                    GENERATED ALWAYS AS (IF(status IN (0, 1), alanyaID, NULL)) STORED,
+                    GENERATED ALWAYS AS (IF(status IN (0, 1), alanyaID, NULL)) VIRTUAL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_order_active_phone (active_phone),
   UNIQUE KEY uq_order_active_user (active_user),
