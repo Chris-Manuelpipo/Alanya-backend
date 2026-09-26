@@ -145,13 +145,16 @@ async function hold(alanyaID, rawPhone, now = new Date()) {
   let settled = null;
   try {
     await conn.beginTransaction();
-    const account = await loadAccount(alanyaID, conn, { lock: true });
-    assertCanBuy(account);
-
+    // Commandes d'abord, compte ensuite : l'ordre de `settlePayment`
+    // (paiement → commande → compte). Dans l'ordre inverse, retenir un numéro
+    // pendant que son paiement se confirme ferait un interblocage.
     const [mine] = await conn.execute(
       'SELECT * FROM alanya_phone_order WHERE alanyaID = ? AND status IN (?, ?) ORDER BY id DESC FOR UPDATE',
       [alanyaID, O.PAYING, O.CREDIT],
     );
+    const account = await loadAccount(alanyaID, conn, { lock: true });
+    assertCanBuy(account);
+
     const paying = mine.find((o) => Number(o.status) === O.PAYING);
     if (paying) {
       throw new BillingError('PHONE_ORDER_PENDING', 409, 'Un paiement de numéro est déjà en cours', {
@@ -203,6 +206,11 @@ async function hold(alanyaID, rawPhone, now = new Date()) {
   } catch (err) {
     await conn.rollback();
     if (err.code === 'ER_DUP_ENTRY') {
+      // Un autre appareil du compte vient de lancer un paiement : c'est
+      // l'index par compte qui a refusé, pas celui du numéro.
+      if (/uq_order_active_user/.test(err.message)) {
+        throw new BillingError('PHONE_ORDER_PENDING', 409, 'Un paiement de numéro est déjà en cours');
+      }
       throw new BillingError('PHONE_UNAVAILABLE', 409, 'Ce numéro vient d\'être retenu', { reason: 'held' });
     }
     throw err;
