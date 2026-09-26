@@ -1,9 +1,10 @@
 /**
  * Paiements : demande, webhook, confirmation, réconciliation.
  *
- * Une seule fonction crée une période à partir d'un paiement :
- * `settlePayment`. Le simulateur y arrive par un job, un agrégateur par sa
- * route de webhook, la réconciliation par `fetchStatus` — toujours par elle.
+ * Une seule fonction donne sa contrepartie à un paiement : `settlePayment` —
+ * une période d'abonnement, ou le numéro Alanya choisi. Le simulateur y
+ * arrive par un job, un agrégateur par sa route de webhook, la réconciliation
+ * par `fetchStatus` — toujours par elle.
  */
 
 const crypto = require('crypto');
@@ -23,6 +24,8 @@ const { pushBilling, messages } = require('../billing/billingNotify');
 const providers = require('./providers');
 const simulated = require('./providers/simulated');
 const { PAYMENT_STATUS_NAME, normalizeMsisdn } = require('./paymentRules');
+const { applyOrderForPayment, abandonOrderForPayment } = require('../alanyaPhoneOrders');
+const { mailPhoneChange } = require('../phoneChangeNotify');
 
 /** Un paiement sans réponse de l'opérateur au-delà expire. */
 const PENDING_TTL_MS = 30 * 60_000;
@@ -186,10 +189,15 @@ async function startPayment({ alanyaID, plan, provider, channel, number, purpose
 }
 
 /**
- * Le seul chemin d'un paiement vers une période. Rejouable sans effet : le
+ * Le seul chemin d'un paiement vers sa contrepartie. Rejouable sans effet : le
  * verrou sérialise deux confirmations simultanées, le contrôle de statut rend
  * la seconde inopérante, et `uq_period_payment` refuserait de toute façon une
  * seconde période pour le même paiement.
+ *
+ * Pour un numéro, le changement se fait DANS la transaction du paiement :
+ * statut du paiement, commande et `users.alanyaPhone` bougent ensemble. Un
+ * échec ou une expiration abandonne la commande de la même façon, ce qui
+ * rend le numéro aux autres.
  *
  * @param {'succeeded'|'failed'|'expired'|'pending'} outcome
  */
@@ -198,8 +206,10 @@ async function settlePayment(paymentId, { outcome, failureCode = null }, now = n
   let alanyaID = null;
   let status = null;
   let changed = false;
+  let isPhone = false;
   let plan = null;
   let appended = null;
+  let phoneChange = null;
   let finalFailure = null;
   try {
     await conn.beginTransaction();
@@ -207,18 +217,23 @@ async function settlePayment(paymentId, { outcome, failureCode = null }, now = n
     if (!p) throw new BillingError('PAYMENT_NOT_FOUND', 404, 'Paiement introuvable');
     alanyaID = p.alanyaID;
     status = Number(p.status);
+    isPhone = Number(p.purpose) === PAYMENT_PURPOSE.PHONE_NUMBER;
 
     if (!FINAL.has(status)) {
       if (outcome === 'succeeded') {
-        [[plan]] = await conn.execute('SELECT * FROM plan WHERE id = ?', [p.plan_id]);
-        appended = await appendPeriod(conn, {
-          alanyaID, plan, now, graceUntil: await graceToPreserve(now),
-          source: PERIOD_SOURCE.PAYMENT, paymentId: p.id,
-        });
-        await conn.execute(
-          'UPDATE subscriber SET renew_channel = ?, renew_msisdn = ? WHERE alanyaID = ?',
-          [p.channel, p.msisdn, alanyaID],
-        );
+        if (isPhone) {
+          phoneChange = await applyOrderForPayment(conn, { paymentId: p.id, now });
+        } else {
+          [[plan]] = await conn.execute('SELECT * FROM plan WHERE id = ?', [p.plan_id]);
+          appended = await appendPeriod(conn, {
+            alanyaID, plan, now, graceUntil: await graceToPreserve(now),
+            source: PERIOD_SOURCE.PAYMENT, paymentId: p.id,
+          });
+          await conn.execute(
+            'UPDATE subscriber SET renew_channel = ?, renew_msisdn = ? WHERE alanyaID = ?',
+            [p.channel, p.msisdn, alanyaID],
+          );
+        }
         await conn.execute('UPDATE payment SET status = ?, confirmed_at = ? WHERE id = ?', [P.SUCCEEDED, now, p.id]);
         status = P.SUCCEEDED;
         changed = true;
@@ -229,6 +244,7 @@ async function settlePayment(paymentId, { outcome, failureCode = null }, now = n
           'UPDATE payment SET status = ?, failure_code = ? WHERE id = ?',
           [status, finalFailure, p.id],
         );
+        if (isPhone) await abandonOrderForPayment(conn, { paymentId: p.id });
         changed = true;
       }
     }
@@ -240,7 +256,10 @@ async function settlePayment(paymentId, { outcome, failureCode = null }, now = n
     conn.release();
   }
 
-  if (changed) {
+  if (changed && isPhone) {
+    emitPaymentUpdate(alanyaID, paymentId, status);
+    await announcePhoneSettlement({ alanyaID, status, change: phoneChange, failureCode: finalFailure });
+  } else if (changed) {
     emitPaymentUpdate(alanyaID, paymentId, status);
     if (status === P.SUCCEEDED) {
       notifyEntitlementsChanged(alanyaID);
@@ -259,6 +278,32 @@ async function settlePayment(paymentId, { outcome, failureCode = null }, now = n
     await pushBilling(alanyaID, message, { skipIfDeviceOnline: true });
   }
   return { status: PAYMENT_STATUS_NAME[status], changed };
+}
+
+/**
+ * Après la transaction d'un achat de numéro : prévenir tous les appareils du
+ * compte, pousser, écrire. Rien ici ne peut plus défaire le changement.
+ */
+async function announcePhoneSettlement({ alanyaID, status, change, failureCode }) {
+  if (status !== P.SUCCEEDED) {
+    await pushBilling(alanyaID, messages.paymentFailed({ failureCode, product: 'phone' }), { skipIfDeviceOnline: true });
+    return;
+  }
+  if (!change) return;
+  if (!change.applied) {
+    await pushBilling(alanyaID, messages.phoneCredit(), { skipIfDeviceOnline: true });
+    return;
+  }
+  // Chaque appareil relit son profil : le numéro affiché, le code QR, et ce
+  // qu'il faudra taper à la prochaine connexion.
+  emitToAccount(alanyaID, 'account:phone_changed', { phone: change.phone });
+  await pushBilling(alanyaID, messages.phoneChanged({ phone: change.phone }), { skipIfDeviceOnline: true });
+  try {
+    const [[user]] = await pool.execute('SELECT nom, email FROM users WHERE alanyaID = ?', [alanyaID]);
+    await mailPhoneChange({ user, oldPhone: change.oldPhone, newPhone: change.phone, origin: 'purchase' });
+  } catch (err) {
+    console.error(`[numero] e-mail de changement pour ${alanyaID} :`, err.message);
+  }
 }
 
 const safeJson = (buf) => {

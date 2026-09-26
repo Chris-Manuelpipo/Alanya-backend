@@ -10,6 +10,7 @@
 const { sendToUser } = require('../notificationService');
 const { buildBillingPayload } = require('../../notifications/notificationContract');
 const { getBillingIo } = require('./subscriptions');
+const { formatDisplay } = require('../../utils/alanyaPhone');
 
 const TZ = 'Africa/Douala';
 
@@ -43,6 +44,13 @@ const FAILURE_TEXT = {
   TIMEOUT: 'Aucune confirmation n\'est arrivée à temps.',
 };
 
+/** Même chose pour l'achat d'un numéro : ce qui n'a pas eu lieu, c'est le changement. */
+const PHONE_FAILURE_TEXT = {
+  INSUFFICIENT_FUNDS: 'Solde insuffisant : votre numéro Alanya n\'a pas changé.',
+  USER_DECLINED: 'Le paiement a été refusé sur le téléphone. Votre numéro Alanya n\'a pas changé.',
+  TIMEOUT: 'Aucune confirmation n\'est arrivée à temps. Votre numéro Alanya n\'a pas changé.',
+};
+
 const messages = {
   reminder: ({ daysLeft, autoRenew }) => ({
     type: 'billing_reminder',
@@ -71,10 +79,22 @@ const messages = {
     title: 'Paiement confirmé',
     body: `Alanya Plus est actif jusqu'au ${fmtDay(until)}.`,
   }),
-  paymentFailed: ({ failureCode }) => ({
+  paymentFailed: ({ failureCode, product = 'plus' }) => ({
     type: 'payment_failed',
     title: 'Paiement non abouti',
-    body: FAILURE_TEXT[failureCode] || 'Le paiement n\'a pas pu aboutir. Vous pouvez réessayer.',
+    body: product === 'phone'
+      ? PHONE_FAILURE_TEXT[failureCode] || 'Le paiement n\'a pas pu aboutir. Votre numéro Alanya n\'a pas changé.'
+      : FAILURE_TEXT[failureCode] || 'Le paiement n\'a pas pu aboutir. Vous pouvez réessayer.',
+  }),
+  phoneChanged: ({ phone }) => ({
+    type: 'payment_succeeded',
+    title: 'Nouveau numéro Alanya',
+    body: `Votre numéro est maintenant le ${formatDisplay(phone)}. C'est lui qui sert à vous connecter.`,
+  }),
+  phoneCredit: () => ({
+    type: 'payment_succeeded',
+    title: 'Paiement confirmé',
+    body: 'Le numéro choisi a été pris entre-temps. Choisissez-en un autre : rien ne vous sera redemandé.',
   }),
 
   // Vérification d'identité : un seul type, le texte dit la décision.

@@ -13,6 +13,7 @@ const {
 } = require('../../services/alanyaPhoneService');
 const { sendMail, renderHtmlEmail, escapeHtml } = require('../../services/mailService');
 const { sendToUser } = require('../../services/notificationService');
+const { mailPhoneChange } = require('../../services/phoneChangeNotify');
 const recoveryCode = require('../../services/recoveryCodeService');
 const { _buildUserMailFrom, _appName } = require('./helpers');
 const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
@@ -67,41 +68,12 @@ const _notifyCredentials = async ({ email, nom, alanyaPhone, password }) => {
 };
 
 const _notifyPhoneChange = async ({ user, oldPhone, newPhone }) => {
-  const oldFmt = formatDisplay(oldPhone);
-  const newFmt = formatDisplay(newPhone);
-  const title = 'Numéro Alanya modifié';
-
-  if (user.email) {
-    const subject = `${title} — ${_appName}`;
-    const text =
-      `Bonjour ${user.nom || 'utilisateur'},\n\n` +
-      `Votre numéro Alanya a été modifié par un administrateur.\n\n` +
-      `Ancien numéro : ${oldFmt}\n` +
-      `Nouveau numéro : ${newFmt}\n`;
-    const html = renderHtmlEmail({
-      title: subject,
-      preheader: `Nouveau numéro : ${newFmt}`,
-      eyebrow: _appName,
-      heading: title,
-      bodyHtml: `
-        <p>Bonjour ${escapeHtml(user.nom || 'utilisateur')},</p>
-        <p>Votre numéro Alanya a été modifié.</p>
-        <p>Ancien : <strong>${escapeHtml(oldFmt)}</strong><br>Nouveau : <strong>${escapeHtml(newFmt)}</strong></p>`,
-      accent: '#1f2937',
-    });
-    await sendMail({
-      from: _buildUserMailFrom(),
-      to: user.email,
-      subject,
-      text,
-      html,
-    });
-  }
+  await mailPhoneChange({ user, oldPhone, newPhone, origin: 'admin' });
 
   await sendToUser(user.alanyaID, {
     type: 'account',
-    title,
-    body: `Nouveau numéro : ${newFmt}`,
+    title: 'Numéro Alanya modifié',
+    body: `Nouveau numéro : ${formatDisplay(newPhone)}`,
     event: 'phone_change',
     oldPhone,
     newPhone,
