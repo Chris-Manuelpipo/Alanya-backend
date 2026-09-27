@@ -2,6 +2,7 @@ const pool = require('../../config/db');
 const bcrypt = require('bcryptjs');
 const { sendDataOnlyNotification } = require('../../services/notificationService');
 const { permissionsFor } = require('../../constants/adminRoles');
+const { releasePublicFiles } = require('../../utils/mediaFile');
 
 const SALT_ROUNDS = 10;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -112,11 +113,20 @@ async function updateMe(req, res) {
       return res.status(400).json({ error: 'Aucun champ à modifier', code: 'NO_FIELDS_TO_UPDATE' });
     }
 
+    const [avant] = avatarUrl !== undefined
+      ? await pool.execute('SELECT avatar_url FROM users WHERE alanyaID = ?', [req.user.alanyaID])
+      : [[]];
+
     values.push(req.user.alanyaID);
     await pool.execute(
       `UPDATE users SET ${updates.join(', ')} WHERE alanyaID = ?`,
       values
     );
+
+    // Photo remplacée : l'ancienne n'est plus désignée.
+    if (avant[0]?.avatar_url && avant[0].avatar_url !== avatarUrl) {
+      releasePublicFiles(avant[0].avatar_url);
+    }
 
     // Retourner le profil mis à jour
     const [rows] = await pool.execute(

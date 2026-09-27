@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Trois buckets Alanya</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+<style>
+  :root {
+    --ground:    #E9EBEE;
+    --surface:   #F8F9FA;
+    --surface-2: #DFE3E7;
+    --ink:       #161B21;
+    --ink-soft:  #3D4750;
+    --muted:     #626D77;
+    --rule:      #CBD1D7;
+    --rule-soft: #DDE1E6;
+    --keep:      #1C6560;
+    --keep-bg:   #DDE8E6;
+    --drop:      #99511C;
+    --drop-bg:   #EFE2D6;
+    --alarm:     #962C2C;
+    --alarm-bg:  #EFDCDC;
+
+    --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --body:    "Source Serif 4", Georgia, "Times New Roman", serif;
+    --mono:    "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground:    #12161A;
+      --surface:   #1A1F25;
+      --surface-2: #242B32;
+      --ink:       #E5E9EC;
+      --ink-soft:  #C0C8CF;
+      --muted:     #8D99A3;
+      --rule:      #2C343C;
+      --rule-soft: #232A31;
+      --keep:      #5FB9B1;
+      --keep-bg:   #17302E;
+      --drop:      #D9944F;
+      --drop-bg:   #33261A;
+      --alarm:     #E08279;
+      --alarm-bg:  #35201F;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:    #12161A;
+    --surface:   #1A1F25;
+    --surface-2: #242B32;
+    --ink:       #E5E9EC;
+    --ink-soft:  #C0C8CF;
+    --muted:     #8D99A3;
+    --rule:      #2C343C;
+    --rule-soft: #232A31;
+    --keep:      #5FB9B1;
+    --keep-bg:   #17302E;
+    --drop:      #D9944F;
+    --drop-bg:   #33261A;
+    --alarm:     #E08279;
+    --alarm-bg:  #35201F;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, p, ul, ol, pre, figure { margin: 0; }
+
+  .page { max-width: 1140px; margin: 0 auto; padding: 56px 20px 120px; }
+  @media (min-width: 700px) { .page { padding-left: 28px; padding-right: 28px; } }
+
+  .band { display: grid; grid-template-columns: 1fr; }
+  @media (min-width: 940px) {
+    .band { grid-template-columns: 108px minmax(0, 1fr); column-gap: 40px; }
+  }
+  .band > .gutter { display: none; }
+  @media (min-width: 940px) { .band > .gutter { display: block; } }
+
+  .col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+  .col > p, .col > ul.plain { max-width: 68ch; }
+
+  .masthead { border-bottom: 2px solid var(--ink); padding-bottom: 26px; margin-bottom: 34px; display: flex; flex-direction: column; gap: 16px; }
+  .kicker { font-family: var(--mono); font-size: 11.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+  h1 {
+    font-family: var(--display); font-weight: 700;
+    font-size: clamp(34px, 5.4vw, 58px); line-height: 1.02;
+    letter-spacing: -.025em; text-wrap: balance;
+  }
+  .standfirst { font-size: 20px; line-height: 1.5; color: var(--ink-soft); max-width: 60ch; }
+
+  .decisions { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 0 0 60px; }
+  @media (min-width: 780px) { .decisions { grid-template-columns: repeat(3, 1fr); } }
+  .decision { background: var(--surface); padding: 18px 20px 20px; display: flex; flex-direction: column; gap: 7px; }
+  .lbl { font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .decision .val { font-family: var(--display); font-weight: 600; font-size: 17px; line-height: 1.28; letter-spacing: -.01em; }
+  .decision .note { font-size: 14.5px; color: var(--muted); line-height: 1.45; }
+
+  section { margin-bottom: 66px; }
+  .gutter .num { font-family: var(--mono); font-size: 12px; letter-spacing: .1em; color: var(--muted); padding-top: 10px; border-top: 1px solid var(--rule); display: block; }
+  h2 {
+    font-family: var(--display); font-weight: 700;
+    font-size: clamp(24px, 3vw, 31px); line-height: 1.12; letter-spacing: -.02em;
+    text-wrap: balance; padding-top: 8px; border-top: 1px solid var(--rule);
+  }
+  h3 { font-family: var(--display); font-weight: 600; font-size: 18.5px; letter-spacing: -.008em; margin-top: 12px; text-wrap: balance; }
+  strong { font-weight: 600; color: var(--ink); }
+
+  code { font-family: var(--mono); font-size: .855em; background: var(--surface-2); padding: .12em .38em; border-radius: 2px; word-break: break-word; }
+
+  .chip {
+    display: inline-block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em;
+    text-transform: uppercase; border: 1px solid currentColor;
+    padding: 0 6px; border-radius: 2px; white-space: nowrap; vertical-align: 2px;
+  }
+  .chip.fait { color: var(--keep); }
+  .chip.afaire { color: var(--drop); }
+  .chip.pub { color: var(--keep); }
+  .chip.priv { color: var(--alarm); }
+
+  .refs { font-family: var(--mono); font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+  figure { background: var(--surface); border: 1px solid var(--rule); padding: 26px 24px 18px; overflow-x: auto; margin: 10px 0; }
+  figure svg { display: block; width: 100%; min-width: 640px; height: auto; color: var(--ink); }
+  figcaption { margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--rule-soft); font-size: 14.5px; line-height: 1.5; color: var(--muted); max-width: 70ch; }
+  .d-box { fill: var(--surface); stroke: var(--ink); stroke-width: 1.4; }
+  .d-box-keep { fill: var(--keep-bg); stroke: var(--keep); stroke-width: 1.6; }
+  .d-box-alarm { fill: var(--alarm-bg); stroke: var(--alarm); stroke-width: 1.6; }
+  .d-line { stroke: var(--ink); stroke-width: 1.4; fill: none; }
+  .d-line-keep { stroke: var(--keep); stroke-width: 1.8; fill: none; }
+  .d-rule { stroke: var(--rule); stroke-width: 1; }
+  .d-txt-s { fill: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .03em; }
+  .d-txt-b { fill: var(--ink); font-family: "Archivo", sans-serif; font-weight: 600; font-size: 13px; }
+  .d-txt-keep { fill: var(--keep); font-family: "IBM Plex Mono", monospace; font-size: 11.5px; letter-spacing: .03em; }
+  .d-panel { fill: var(--muted); font-family: "Archivo", sans-serif; font-weight: 600; font-size: 12px; letter-spacing: .12em; }
+  .m-ink { fill: var(--ink); }
+  .m-keep { fill: var(--keep); }
+
+  pre {
+    background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--keep);
+    padding: 16px 18px; overflow-x: auto;
+    font-family: var(--mono); font-size: 13px; line-height: 1.66; color: var(--ink-soft);
+  }
+  pre .c { color: var(--muted); }
+  pre .k { color: var(--keep); }
+
+  ol.steps { list-style: none; counter-reset: s; display: flex; flex-direction: column; gap: 18px; padding: 0; max-width: 74ch; }
+  ol.steps > li { counter-increment: s; display: grid; grid-template-columns: 34px minmax(0, 1fr); column-gap: 16px; align-items: start; }
+  ol.steps > li::before {
+    content: counter(s); font-family: var(--mono); font-size: 12px; color: var(--keep);
+    border: 1px solid var(--keep); width: 26px; height: 26px;
+    display: grid; place-items: center; border-radius: 50%; margin-top: 2px;
+  }
+  ol.steps .step { display: flex; flex-direction: column; gap: 6px; }
+  ol.steps .step p { font-size: 16px; }
+  ol.steps .step p.sub { font-size: 15px; color: var(--muted); }
+
+  ul.plain { padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+  ul.plain li::marker { color: var(--muted); }
+
+  .callout, .note-box { border: 1px solid var(--rule); padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; max-width: 80ch; }
+  .callout { border-left: 3px solid var(--alarm); background: var(--alarm-bg); }
+  .callout .lbl { color: var(--alarm); }
+  .note-box { border-left: 3px solid var(--keep); background: var(--surface); }
+  .note-box .lbl { color: var(--keep); }
+  .callout p, .note-box p { font-size: 15.5px; line-height: 1.55; }
+
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--rule); }
+  table { border-collapse: collapse; width: 100%; min-width: 680px; background: var(--surface); }
+  th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--rule-soft); font-size: 15px; line-height: 1.5; vertical-align: top; }
+  th { font-family: var(--display); font-weight: 600; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--rule); }
+  td:first-child { font-family: var(--mono); font-size: 12.5px; color: var(--ink); white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  .tbl-prose td:first-child { font-family: var(--display); font-weight: 600; font-size: 14.5px; white-space: normal; min-width: 150px; }
+
+  .open { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  @media (min-width: 780px) { .open { grid-template-columns: repeat(2, 1fr); } }
+  .open > div { background: var(--surface); padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; }
+  .open h3 { margin: 0; font-size: 16.5px; }
+  .open p { font-size: 15px; line-height: 1.52; color: var(--ink-soft); }
+
+  a { color: var(--keep); }
+  :focus-visible { outline: 2px solid var(--keep); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="kicker">Alanya · backend et app · conception · 27/09/2026 · version 1</div>
+    <h1>Trois buckets, trois usages</h1>
+    <p class="standfirst">Les médias de discussion restent privés et expirent au bout de 30 ou 365 jours. Les photos de profil, les annonces du répondeur, les sonneries importées et les médias officiels vont dans deux buckets publics : ils s'affichent sans passer par le serveur de l'API, et n'expirent jamais d'eux-mêmes.</p>
+  </header>
+
+  <div class="decisions">
+    <div class="decision">
+      <div class="lbl">Répartition</div>
+      <div class="val"><code>alanyaprivate</code> · <code>alanyaprofile</code> · <code>profilemedia</code></div>
+      <div class="note">Les trois buckets existent déjà chez Backblaze, en région EU Central. Les deux derniers ont été créés publics.</div>
+    </div>
+    <div class="decision">
+      <div class="lbl">Lecture</div>
+      <div class="val">Directe pour le public, signée pour le privé</div>
+      <div class="note">Une photo s'affiche en un seul aller-retour vers Backblaze. Un média de discussion passe toujours par le serveur, qui décide s'il a expiré.</div>
+    </div>
+    <div class="decision">
+      <div class="lbl">Conservation</div>
+      <div class="val">30 ou 365 jours, décidés par le backend</div>
+      <div class="note">Seuls les médias de discussion expirent. Backblaze n'applique qu'une durée par dossier : il sert de filet, pas de juge.</div>
+    </div>
+  </div>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">01</span></div>
+    <div class="col">
+      <h2>Ce qui va où</h2>
+      <p>Chaque fichier a déjà un préfixe qui dit ce qu'il est : <code>media/</code>, <code>images/</code>, <code>voicemail/</code>. Le bucket se choisit à partir de ce préfixe, sans rien demander d'autre au client. Deux préfixes s'ajoutent : <code>ringtones/</code> et <code>official/</code>.</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Bucket</th><th>Contenu</th><th>Préfixe</th><th>Lecture</th><th>Expiration</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>alanyaprivate <span class="chip priv">privé</span></td>
+              <td>Médias de discussion : photos, vidéos, vocaux, fichiers. Les messages laissés sur le répondeur en font partie : ce sont des vocaux ordinaires.</td>
+              <td><code>media/&lt;jour&gt;/…</code></td>
+              <td>Par le serveur, redirection vers un lien signé d'une heure</td>
+              <td>30 jours, ou 365 si une personne de la discussion est abonnée (section 02)</td>
+            </tr>
+            <tr>
+              <td>alanyaprofile <span class="chip pub">public</span></td>
+              <td>Photos de profil et photos de groupe</td>
+              <td><code>images/…</code></td>
+              <td>Adresse Backblaze directe</td>
+              <td>Aucune. Supprimée quand elle est remplacée, ou quand le compte ou le groupe disparaît</td>
+            </tr>
+            <tr>
+              <td>profilemedia <span class="chip pub">public</span></td>
+              <td>Annonces du répondeur</td>
+              <td><code>voicemail/…</code></td>
+              <td>Adresse Backblaze directe</td>
+              <td>Aucune. Supprimée quand elle est réenregistrée, ou avec le compte</td>
+            </tr>
+            <tr>
+              <td>profilemedia <span class="chip pub">public</span></td>
+              <td>Sonneries importées, choisies pour une liste (section 05)</td>
+              <td><code>ringtones/&lt;compte&gt;/…</code></td>
+              <td>Adresse Backblaze directe</td>
+              <td>Aucune. Supprimée quand plus aucune liste ne l'utilise, à la purge des données payantes, ou avec le compte</td>
+            </tr>
+            <tr>
+              <td>profilemedia <span class="chip pub">public</span></td>
+              <td>Médias officiels de l'admin : diffusions, messages d'accueil</td>
+              <td><code>official/…</code></td>
+              <td>Adresse Backblaze directe</td>
+              <td>Aucune. Supprimé par l'admin, quand plus aucune diffusion ni aucun accueil ne l'utilise (section 06)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="refs">Les photos de groupe passent par la même route que les photos de profil (<code>POST /api/upload/avatar</code>) : elles vont donc au même endroit. Les pièces du coffre d'identité et les exports RGPD restent sur le VPS.</p>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">02</span></div>
+    <div class="col">
+      <h2>Pourquoi les médias de discussion expirent par le backend</h2>
+      <p>Un compte standard garde ses médias 30 jours sur le serveur, un compte Alanya Plus 365 jours. Backblaze ne sait appliquer qu'une durée par préfixe : il ne peut pas garder une photo du 1<sup>er</sup> octobre 30 jours et sa voisine du même jour 365 jours. La décision est donc prise par le backend, message par message. Ce code est écrit et poussé (commit <code>5d6752e</code>, branche <code>partition</code>).</p>
+      <ul class="plain">
+        <li><strong>La règle.</strong> Un média garde 365 jours tant qu'au moins une personne de sa discussion y a droit, qu'elle l'ait envoyé ou reçu. Sinon, il est supprimé au bout de 30 jours. C'est l'état de l'abonnement la nuit de la purge qui compte.</li>
+        <li><strong>Qui y a droit.</strong> Seulement en phase payante : un abonné, jusqu'à la purge de ses données payantes (le délai commun après la fin de l'abonnement, annoncé par notification). En phase gratuite ou de grâce, tout le monde est à 30 jours.</li>
+        <li><strong>Un seul fichier pour tous.</strong> Le serveur ne sait pas qui télécharge. Les droits envoyés au téléphone portent sa propre durée (<code>mediaRetentionDays</code>) : l'application d'un compte standard affiche « média expiré » au bout de 30 jours, même si le fichier reste pour un abonné.</li>
+        <li><strong>Deux garde-fous.</strong> Si l'état des abonnements ne peut pas être lu, la purge ne supprime rien. Si une nuit veut supprimer bien plus que d'habitude, elle s'arrête sans rien supprimer ; la lancer à la main depuis l'admin vaut confirmation.</li>
+        <li><strong>La réponse « expiré » attend la purge.</strong> Le serveur ne répond 410 qu'au-delà de la durée la plus longue appliquée par la dernière purge menée à terme. Un mode payant éteint par erreur ne fait donc pas perdre leurs médias aux abonnés : leurs téléphones ne les marquent pas expirés tant que la purge n'a pas été confirmée.</li>
+      </ul>
+      <div class="note-box">
+        <div class="lbl">Le filet de Backblaze</div>
+        <p>Sur <code>alanyaprivate</code> : <code>media/</code> masqué à <strong>366 jours</strong>, fichiers masqués supprimés après 1 jour. Il rattrape les fichiers qu'aucun message ne désigne plus (envoi interrompu, conversation supprimée). La durée longue réglable depuis l'admin est plafonnée à 365 jours pour rester sous ce filet.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">03</span></div>
+    <div class="col">
+      <h2>Lire : directe ou signée</h2>
+
+      <figure>
+        <svg viewBox="0 0 760 270" role="img" aria-labelledby="fig-lecture-t">
+          <title id="fig-lecture-t">Deux chemins de lecture : direct vers les buckets publics, par le serveur vers le bucket privé</title>
+          <defs>
+            <marker id="fl-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="m-ink"/></marker>
+            <marker id="fl-keep" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="m-keep"/></marker>
+          </defs>
+
+          <text x="20" y="20" class="d-panel">PHOTOS, ANNONCES, SONNERIES, MÉDIAS OFFICIELS</text>
+          <rect x="20" y="36" width="150" height="58" rx="3" class="d-box"/>
+          <text x="95" y="61" text-anchor="middle" class="d-txt-b">Application</text>
+          <text x="95" y="80" text-anchor="middle" class="d-txt-s">cache local</text>
+
+          <line x1="172" y1="65" x2="548" y2="65" class="d-line-keep" marker-end="url(#fl-keep)"/>
+          <text x="360" y="56" text-anchor="middle" class="d-txt-keep">adresse directe · un aller-retour</text>
+
+          <rect x="550" y="36" width="190" height="58" rx="3" class="d-box-keep"/>
+          <text x="645" y="61" text-anchor="middle" class="d-txt-b">alanyaprofile</text>
+          <text x="645" y="80" text-anchor="middle" class="d-txt-b">profilemedia</text>
+
+          <line x1="20" y1="128" x2="740" y2="128" class="d-rule"/>
+
+          <text x="20" y="158" class="d-panel">MÉDIAS DE DISCUSSION</text>
+          <rect x="20" y="174" width="150" height="58" rx="3" class="d-box"/>
+          <text x="95" y="199" text-anchor="middle" class="d-txt-b">Application</text>
+          <text x="95" y="218" text-anchor="middle" class="d-txt-s">sa propre durée</text>
+
+          <line x1="172" y1="203" x2="283" y2="203" class="d-line" marker-end="url(#fl-ink)"/>
+
+          <rect x="285" y="174" width="170" height="58" rx="3" class="d-box"/>
+          <text x="370" y="199" text-anchor="middle" class="d-txt-b">Serveur de l'API</text>
+          <text x="370" y="218" text-anchor="middle" class="d-txt-s">410 si expiré</text>
+
+          <line x1="457" y1="203" x2="548" y2="203" class="d-line" marker-end="url(#fl-ink)"/>
+          <text x="502" y="194" text-anchor="middle" class="d-txt-s">302 signé</text>
+
+          <rect x="550" y="174" width="190" height="58" rx="3" class="d-box-alarm"/>
+          <text x="645" y="199" text-anchor="middle" class="d-txt-b">alanyaprivate</text>
+          <text x="645" y="218" text-anchor="middle" class="d-txt-s">lien valable 1 h</text>
+        </svg>
+        <figcaption>Une photo de profil s'affiche sans passer par le serveur de l'API : un aller-retour de moins, et le serveur ne voit plus ces lectures. Un média de discussion y passe toujours, parce que c'est là que se décide l'expiration.</figcaption>
+      </figure>
+
+      <h3>Les adresses</h3>
+      <ul class="plain">
+        <li><strong>Nouveaux fichiers publics :</strong> l'adresse enregistrée est l'adresse Backblaze, par exemple <code>https://alanyaprofile.s3.eu-central-003.backblazeb2.com/images/img_12_…jpg</code>. L'application l'accepte telle quelle : sa normalisation ne réécrit que les anciennes adresses IP du serveur.</li>
+        <li><strong>Adresses déjà en base :</strong> trois colonnes seulement désignent un fichier public : <code>users.avatar_url</code>, <code>conversation.groupPhoto</code> et <code>user_voicemail_schedule.greeting_url</code>. Un script ponctuel les réécrit, ainsi que les médias des diffusions et de l'accueil (section 06).</li>
+        <li><strong>Anciennes adresses restées sur les téléphones :</strong> <code>www.alanya237.com/uploads/images/…</code> reste servie, par une redirection vers le bucket public. Un téléphone qui n'a pas relu le profil continue d'afficher la photo.</li>
+        <li><strong>Médias de discussion :</strong> rien ne change. Adresse <code>www.alanya237.com/uploads/media/…</code>, redirection vers un lien signé.</li>
+      </ul>
+      <p>Le cache de l'application indexe les fichiers par la fin de leur adresse, qui ne change pas : une photo déjà en cache n'est pas retéléchargée après la migration.</p>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">04</span></div>
+    <div class="col">
+      <h2>Écrire : quelle route dépose où</h2>
+      <p>Le module de stockage choisit le bucket d'après le préfixe de la clé qu'il fabrique. Les réponses des routes ne changent pas de forme : seule l'adresse rendue change.</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Route</th><th>Qui l'utilise</th><th>Clé</th><th>Bucket</th></tr></thead>
+          <tbody>
+            <tr><td>POST /upload/media · ticket <code>media</code></td><td>Application : médias de discussion</td><td><code>media/&lt;jour&gt;/&lt;type&gt;/…</code></td><td>alanyaprivate</td></tr>
+            <tr><td>POST /upload/avatar · ticket <code>avatar</code></td><td>Application : photo de profil, photo de groupe</td><td><code>images/img_&lt;compte&gt;_…</code></td><td>alanyaprofile</td></tr>
+            <tr><td>POST /upload/voicemail-greeting</td><td>Application : annonce du répondeur</td><td><code>voicemail/vm_&lt;compte&gt;_…</code></td><td>profilemedia</td></tr>
+            <tr><td>ticket <code>ringtone</code> <span class="chip afaire">nouveau</span></td><td>Application : sonnerie choisie pour une liste</td><td><code>ringtones/&lt;compte&gt;/…</code></td><td>profilemedia</td></tr>
+            <tr><td>POST /upload/official <span class="chip afaire">nouveau</span></td><td>Admin : diffusions, accueil</td><td><code>official/…</code></td><td>profilemedia</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul class="plain">
+        <li><strong>Une clé Backblaze par bucket</strong>, limitée à ce bucket : une clé volée n'ouvre qu'un bucket. La clé actuelle est limitée à <code>alanyaprivate</code> et y reste.</li>
+        <li><strong>L'admin envoie par le serveur</strong> (formulaire), pas directement chez Backblaze : un envoi direct depuis un navigateur demanderait de régler les règles CORS du bucket, pour quelques fichiers par mois.</li>
+        <li><strong>La route officielle</strong> n'accepte que les administrateurs et le compte officiel. Aujourd'hui, l'admin passe par <code>/upload/media</code> : ses médias sont rangés comme des médias de discussion, et expirent.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">05</span></div>
+    <div class="col">
+      <h2>Les sonneries importées</h2>
+      <p>Aujourd'hui, une sonnerie importée reste sur le téléphone : seule son empreinte SHA-256 est synchronisée avec les réglages de la liste. Sur un nouvel appareil, la liste désigne une sonnerie absente, et le téléphone joue la sonnerie par défaut.</p>
+
+      <h3>Lesquelles envoyer</h3>
+      <p><strong>Seulement celles choisies pour une liste.</strong> Ce sont les seules dont l'identité voyage déjà entre appareils ; la sonnerie générale importée n'est synchronisée nulle part, un fichier en ligne n'aurait personne pour le lire. Et « sonneries par liste » est une fonctionnalité payante : ses fichiers suivent le sort des données payantes.</p>
+
+      <h3>Le déroulé</h3>
+      <ol class="steps">
+        <li><div class="step"><p>L'utilisateur choisit une sonnerie importée pour une liste. L'application demande un ticket <code>ringtone</code> avec l'empreinte, le type et la taille du fichier.</p><p class="sub">Types audio seulement, taille plafonnée (5 Mo proposés : une sonnerie dure quelques dizaines de secondes).</p></div></li>
+        <li><div class="step"><p>Le serveur calcule la clé <code>ringtones/&lt;compte&gt;/&lt;jeton&gt;</code>, où le jeton est dérivé de l'empreinte et d'un secret du serveur. Si le fichier existe déjà, il répond « déjà là » et rien n'est renvoyé.</p><p class="sub">Une clé tirée de l'empreinte seule permettrait à quiconque possède le même morceau de vérifier qu'un compte donné l'utilise. Avec le secret, l'adresse est stable pour le serveur, et imprévisible pour les autres.</p></div></li>
+        <li><div class="step"><p>L'application envoie le fichier directement chez Backblaze. Les réglages de la liste ne changent pas : type <code>custom</code>, empreinte, nom.</p></div></li>
+        <li><div class="step"><p>Sur un autre appareil, les réglages de la liste arrivent avec l'adresse du fichier, calculée par le serveur. L'application le télécharge, vérifie l'empreinte, puis l'enregistre comme une sonnerie importée.</p></div></li>
+      </ol>
+      <p>Aucune colonne n'est ajoutée en base : l'adresse se recalcule à partir du compte et de l'empreinte, déjà stockés.</p>
+
+      <h3>Quand le fichier disparaît</h3>
+      <ul class="plain">
+        <li>Quand plus aucune liste du compte ne l'utilise.</li>
+        <li>À la purge des données payantes, avec les listes (après le délai commun et son avertissement).</li>
+        <li>À la suppression du compte : tout le dossier <code>ringtones/&lt;compte&gt;/</code>.</li>
+      </ul>
+
+      <div class="callout">
+        <div class="lbl">Choix assumé : sonneries publiques</div>
+        <p>Une sonnerie importée est souvent un morceau protégé par le droit d'auteur. Dans un bucket public, quiconque connaît son adresse peut la télécharger. Le jeton rend l'adresse impossible à deviner, mais une adresse transmise reste valable. Ce risque a été accepté le 27/09/2026.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">06</span></div>
+    <div class="col">
+      <h2>Les médias officiels</h2>
+      <p>Les médias des diffusions et des messages d'accueil sont aujourd'hui rangés comme des médias de discussion. Deux défauts en découlent.</p>
+      <ul class="plain">
+        <li><strong>Ils expirent.</strong> Au bout de 30 jours, l'image d'un message d'accueil disparaît pour tous les nouveaux inscrits.</li>
+        <li><strong>Un seul fichier, beaucoup de messages.</strong> Chaque inscrit reçoit son propre message d'accueil, qui pointe vers le même fichier. La purge supprime le fichier au terme du premier message : les suivants pointent dans le vide.</li>
+      </ul>
+      <p>Rangés sous <code>official/</code> dans <code>profilemedia</code>, ils n'expirent plus. La purge des médias de discussion ne supprime que des fichiers sous <code>media/</code> : un message qui pointe vers un média officiel garde son média. Un média officiel n'est supprimé que par l'admin, et seulement si plus aucune diffusion ni aucun bloc d'accueil ne le désigne.</p>
+      <p>À la migration, les médias encore présents que désignent <code>broadcast.media_url</code> et les blocs d'accueil sont copiés sous <code>official/</code>, et ces adresses réécrites.</p>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">07</span></div>
+    <div class="col">
+      <h2>Supprimer sans se tromper de fichier</h2>
+      <p>Des fichiers publics n'expirent jamais : ils doivent donc être supprimés quand ils ne servent plus. Aujourd'hui, ce n'était jamais le cas. Ces corrections sont écrites le 27/09/2026 sur la branche <code>partition</code>, pas encore commitées. Elles n'attendent pas la répartition.</p>
+      <div class="tbl-wrap">
+        <table class="tbl-prose">
+          <thead><tr><th>Événement</th><th>Fichiers supprimés</th><th>État</th></tr></thead>
+          <tbody>
+            <tr><td>Photo de profil changée</td><td>L'ancienne photo (profil de l'application et profil de l'admin)</td><td><span class="chip fait">écrit</span></td></tr>
+            <tr><td>Photo de groupe changée ou retirée</td><td>L'ancienne photo</td><td><span class="chip fait">écrit</span></td></tr>
+            <tr><td>Groupe supprimé</td><td>Sa photo (dernier membre parti, suppression groupée, suppression par l'admin)</td><td><span class="chip fait">écrit</span></td></tr>
+            <tr><td>Compte supprimé</td><td>Sa photo et son annonce de répondeur (suppression demandée par l'utilisateur, ou par l'admin)</td><td><span class="chip fait">écrit</span></td></tr>
+            <tr><td>Annonce réenregistrée</td><td>L'ancienne annonce</td><td>déjà en place</td></tr>
+            <tr><td>Sonnerie plus utilisée, purge payante, compte supprimé</td><td>Les sonneries concernées</td><td><span class="chip afaire">avec la section 05</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Trois protections</h3>
+      <ul class="plain">
+        <li><strong>Seuls les noms générés par le serveur</strong> (<code>img_&lt;compte&gt;_&lt;date&gt;…</code>, <code>vm_…</code>) peuvent être supprimés. Les avatars par défaut (<code>default_avatar_male.png</code>), partagés par tous les comptes qui n'ont pas choisi de photo, ne le sont jamais.</li>
+        <li><strong>Plus aucune ligne ne doit désigner le fichier.</strong> Ces adresses s'écrivent librement depuis l'application : sans ce contrôle, un client qui recopierait l'adresse de la photo d'un autre, puis la changerait, ferait supprimer la photo de l'autre.</li>
+        <li><strong>Au moindre doute, rien n'est supprimé.</strong> Base injoignable : le fichier reste, ce qui est sans conséquence.</li>
+      </ul>
+      <div class="callout">
+        <div class="lbl">Faille corrigée au passage</div>
+        <p>La fonction qui supprime un média construisait le chemin sur le disque directement à partir de l'adresse, sans la contrôler. Un client pouvait envoyer une photo « vue unique » dont l'adresse contenait <code>/uploads/../.env</code> : à l'ouverture, ou 30 jours plus tard par la purge, le serveur aurait supprimé son propre fichier de configuration. Le chemin est désormais tiré d'une clé validée (préfixe connu, aucun <code>..</code>).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">08</span></div>
+    <div class="col">
+      <h2>Réglages chez Backblaze</h2>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Bucket</th><th>Cycle de vie</th><th>Clé d'application</th></tr></thead>
+          <tbody>
+            <tr><td>alanyaprivate</td><td>Préfixe <code>media/</code> : masqué après 366 jours. Préfixe vide : masqués supprimés après 1 jour.</td><td>Existante, limitée à ce bucket</td></tr>
+            <tr><td>alanyaprofile</td><td>« Garder seulement la dernière version » (masqués supprimés après 1 jour). Aucune expiration.</td><td>Nouvelle, limitée à ce bucket</td></tr>
+            <tr><td>profilemedia</td><td>« Garder seulement la dernière version ». Aucune expiration.</td><td>Nouvelle, limitée à ce bucket</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <div class="lbl">À vérifier avant la phase payante</div>
+        <p>Si une règle <code>media/</code> à 31 jours a été posée sur <code>alanyaprivate</code> pour l'ancienne conception, Backblaze supprimera les médias des abonnés au 31<sup>e</sup> jour, quoi que décide le backend. Elle doit passer à 366 jours.</p>
+      </div>
+      <p><strong>Coût.</strong> Aucun service n'est ajouté. Les buckets publics ont déjà été créés, la condition de Backblaze pour rendre un bucket public est donc remplie. Chaque téléchargement reste une transaction Backblaze, directe ou par lien signé : le nombre ne change pas.</p>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">09</span></div>
+    <div class="col">
+      <h2>Mise en place</h2>
+      <ol class="steps">
+        <li><div class="step"><p><strong>Backblaze.</strong> Vérifier que les deux buckets publics sont en EU Central (<code>eu-central-003</code>), poser les cycles de vie de la section 08, créer une clé par bucket public.</p><p class="sub">Par la personne qui a accès à la console Backblaze.</p></div></li>
+        <li><div class="step"><p><strong>Backend.</strong> Déployer le code qui sait lire aux deux endroits : ancien bucket d'abord si le fichier n'a pas encore été copié, nouveau ensuite. Les nouvelles clés vont dans le <code>.env</code> du serveur.</p></div></li>
+        <li><div class="step"><p><strong>Copie de l'existant.</strong> <code>images/</code> vers <code>alanyaprofile</code>, <code>voicemail/</code> vers <code>profilemedia</code>, les médias officiels encore présents vers <code>profilemedia/official/</code>. Avec <code>rclone copy</code>, puis <code>rclone check --one-way</code>. Si des fichiers sont encore sur le disque du VPS, ils sont copiés depuis le disque.</p><p class="sub">Par le collègue qui a accès au serveur.</p></div></li>
+        <li><div class="step"><p><strong>Adresses en base.</strong> Le script réécrit les trois colonnes de la section 03 et les adresses des médias officiels. Il affiche ce qu'il va changer, puis le fait sur confirmation.</p></div></li>
+        <li><div class="step"><p><strong>Application.</strong> Envoi et récupération des sonneries (section 05), affichage « média expiré » d'après <code>mediaRetentionDays</code>. L'admin passe à la route officielle.</p></div></li>
+        <li><div class="step"><p><strong>Nettoyage.</strong> Une fois la copie vérifiée, supprimer <code>images/</code> et <code>voicemail/</code> de <code>alanyaprivate</code>. La redirection des anciennes adresses reste en place.</p></div></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════ -->
+  <section class="band">
+    <div class="gutter"><span class="num">10</span></div>
+    <div class="col">
+      <h2>Limites connues</h2>
+      <div class="open">
+        <div>
+          <h3>Adresses Backblaze en base</h3>
+          <p>Les adresses publiques portent le nom de Backblaze. Changer de fournisseur demanderait de réécrire quelques colonnes, sur des tables de taille modeste.</p>
+        </div>
+        <div>
+          <h3>Conversations supprimées</h3>
+          <p>Quand le dernier membre supprime une conversation, ses messages disparaissent mais pas leurs fichiers. Le filet de 366 jours les rattrape.</p>
+        </div>
+        <div>
+          <h3>Transfert dont la copie échoue</h3>
+          <p>Le transfert reprend alors l'adresse du fichier d'origine. Si le transfert expire avant l'original, la purge supprime le fichier des deux. Le cas est rare : il faut que la copie chez Backblaze échoue.</p>
+        </div>
+        <div>
+          <h3>Testeurs de l'abonnement</h3>
+          <p>En phase gratuite, la purge épargne bien leurs médias, mais le serveur leur répond « expiré » au-delà de 30 jours, comme à tout le monde.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

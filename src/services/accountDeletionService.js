@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { publicFilesOfUser, releasePublicFiles } = require('../utils/mediaFile');
 const fs = require('fs/promises');
 const path = require('path');
 
@@ -71,8 +72,14 @@ const purgeExpiredAccounts = async () => {
 
 const _purgeUser = async (alanyaID) => {
   const conn = await pool.getConnection();
+  let fichiersPublics = [];
   try {
     await conn.beginTransaction();
+
+    // Photo de profil et annonce du répondeur : lues avant que la ligne (et,
+    // par cascade, le réglage du répondeur) ne disparaisse, supprimées après
+    // le commit. Ce sont des données personnelles, elles partent avec le compte.
+    fichiersPublics = await publicFilesOfUser(conn, alanyaID);
 
     await conn.execute(
       'DELETE FROM blocked WHERE alanyaID = ? OR idCallerBlock = ?',
@@ -97,6 +104,7 @@ const _purgeUser = async (alanyaID) => {
 
     await conn.execute('DELETE FROM users WHERE alanyaID = ?', [alanyaID]);
     await conn.commit();
+    releasePublicFiles(fichiersPublics);
   } catch (e) {
     await conn.rollback();
     throw e;

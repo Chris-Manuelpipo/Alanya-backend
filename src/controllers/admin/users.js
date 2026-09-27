@@ -1,5 +1,6 @@
 const pool = require('../../config/db');
 const { ensureGroupOwner } = require('../../utils/groupOwnership');
+const { publicFilesOfUser, releasePublicFiles } = require('../../utils/mediaFile');
 const { _notifyUserAccountAction } = require('./helpers');
 const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
 const { parseSoclePayload } = require('../../utils/soclePayload');
@@ -245,7 +246,11 @@ const deleteUser = async (req, res) => {
       [id],
     );
 
+    // Photo de profil et annonce du répondeur, lues avant la cascade.
+    const fichiersPublics = await publicFilesOfUser(pool, Number(id));
+
     const [result] = await pool.execute('DELETE FROM users WHERE alanyaID = ?', [id]);
+    if (result.affectedRows > 0) releasePublicFiles(fichiersPublics);
 
     // Après la cascade : le garant constate l'absence de propriétaire et
     // désigne le membre restant le plus ancien.

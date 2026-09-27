@@ -14,6 +14,7 @@ const { guardDisplayNames } = require('../utils/displayNameGuard');
 const { ACCOUNT_TYPE } = require('../constants/accountTypes');
 const { isOfficialAccount } = require('../utils/officialAccountGuard');
 const { ensureDefaultContactLists } = require('../utils/defaultContactLists');
+const { releasePublicFiles } = require('../utils/mediaFile');
 const { invalidateSenderIdentity } = require('../utils/senderIdentityCache');
 const { entitlementsOrNull } = require('../services/billing/entitlements');
 const { journaliserAcces } = require('../services/userAccessLog');
@@ -849,7 +850,7 @@ const updateMe = async (req, res) => {
     if (pseudo)    { updates.push('pseudo = ?');     values.push(pseudo); }
 
     const [selfRows] = await pool.execute(
-      'SELECT account_type, nom, pseudo FROM users WHERE alanyaID = ?',
+      'SELECT account_type, nom, pseudo, avatar_url FROM users WHERE alanyaID = ?',
       [req.user.alanyaID],
     );
     const selfAccountType = selfRows[0]?.account_type ?? 0;
@@ -960,6 +961,10 @@ const updateMe = async (req, res) => {
       // servi depuis un cache 60 s : sans ceci un changement de nom n'y
       // apparaîtrait qu'à l'expiration.
       invalidateSenderIdentity(req.user.alanyaID);
+      // Photo remplacée : l'ancienne n'est plus désignée.
+      if (avatar_url && avatar_url !== selfRows[0]?.avatar_url) {
+        releasePublicFiles(selfRows[0]?.avatar_url);
+      }
       // Le nom vérifié n'est plus celui qu'on affiche : la coche tombe jusqu'à
       // un nouvel examen (et revient si l'on reprend le nom vérifié).
       if (nom) {

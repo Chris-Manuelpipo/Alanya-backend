@@ -1,4 +1,5 @@
 const pool = require('../../config/db');
+const { releasePublicFiles, groupPhotosOf } = require('../../utils/mediaFile');
  
 // Tous les groupes de l'application avec nombre de membres et date de création
 const getAllGroups = async (req, res) => {
@@ -114,9 +115,11 @@ const deleteGroup = async (req, res) => {
       [id],
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Groupe introuvable', code: 'GROUP_NOT_FOUND' });
+    const photo = await groupPhotosOf(pool, id);
     await pool.execute('DELETE FROM message WHERE conversationID = ?', [id]);
     await pool.execute('DELETE FROM conv_participants WHERE conversID = ?', [id]);
     await pool.execute('DELETE FROM conversation WHERE conversID = ?', [id]);
+    releasePublicFiles(photo);
     res.json({ message: 'Groupe supprimé' });
   } catch (error) {
     console.error('[Admin] deleteGroup error:', error.message);

@@ -16,6 +16,7 @@ const {
 } = require('../utils/directConversation');
 const { evaluateJoinAckMessage } = require('../utils/groupJoinAck');
 const { canAddUser } = require('../services/privacyPrefsService');
+const { releasePublicFiles, groupPhotosOf } = require('../utils/mediaFile');
 const MAX_BATCH_CONVERSATIONS = 50;
 
 /** Champs par-utilisateur jointés sur cp — inclut consentement / historique (028). */
@@ -509,8 +510,10 @@ const deleteConversation = async (req, res, next) => {
     const [remaining] = await pool.execute('SELECT * FROM conv_participants WHERE conversID = ?', [id]);
 
     if (remaining.length === 0) {
+      const photo = await groupPhotosOf(pool, id);
       await pool.execute('DELETE FROM message WHERE conversationID = ?', [id]);
       await pool.execute('DELETE FROM conversation WHERE conversID = ?', [id]);
+      releasePublicFiles(photo);
     } else if (isGroup) {
       const io = req.app.get('io');
 
@@ -817,11 +820,15 @@ const updateGroupInfo = async (req, res, next) => {
       return res.status(400).json({ error: 'Aucun champ à modifier', code: 'NO_FIELDS_TO_UPDATE' });
     }
 
+    const anciennePhoto = groupPhoto !== undefined ? await groupPhotosOf(pool, conversID) : [];
+
     values.push(conversID);
     await pool.execute(
       `UPDATE conversation SET ${updates.join(', ')} WHERE conversID = ?`,
       values,
     );
+    // Photo remplacée ou retirée : l'ancienne n'est plus désignée.
+    releasePublicFiles(anciennePhoto);
 
     const io = req.app.get('io');
 
@@ -1230,8 +1237,10 @@ const leaveGroup = async (req, res, next) => {
     const [remaining] = await pool.execute('SELECT * FROM conv_participants WHERE conversID = ?', [id]);
 
     if (remaining.length === 0) {
+      const photo = await groupPhotosOf(pool, id);
       await pool.execute('DELETE FROM message WHERE conversationID = ?', [id]);
       await pool.execute('DELETE FROM conversation WHERE conversID = ?', [id]);
+      releasePublicFiles(photo);
       return res.json({ message: 'Left group' });
     }
 
@@ -1390,6 +1399,9 @@ const batchDeleteConversations = async (req, res) => {
       ids
     );
     const orphanIDs = orphans.map((r) => Number(r.conversID)).filter((id) => id > 0);
+    // Lues dans la transaction, supprimées après le commit : un retour
+    // arrière ne doit pas laisser des groupes privés de leur photo.
+    const photosOrphelines = await groupPhotosOf(conn, orphanIDs);
     if (orphanIDs.length > 0) {
       const orphanPlaceholders = orphanIDs.map(() => '?').join(',');
       await conn.execute(
@@ -1403,6 +1415,7 @@ const batchDeleteConversations = async (req, res) => {
     }
 
     await conn.commit();
+    releasePublicFiles(photosOrphelines);
 
     // Même trou que deleteConversation, en lot : la suppression ne regarde pas
     // le rôle, donc un propriétaire pouvait laisser derrière lui un groupe sans

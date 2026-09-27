@@ -21,9 +21,12 @@
  *
  * ── La purge n'est pas ici ──
  *
- * Les règles de cycle de vie du bucket suppriment les médias échus. Ce module
- * ne supprime que sur demande explicite : un média à vue unique consommé, dont
- * toutes les versions doivent disparaître tout de suite.
+ * Elle est décidée par `mediaRetention.js`, message par message : 30 jours, ou
+ * 365 pour un média qu'un abonné Alanya Plus peut encore demander. Backblaze
+ * n'applique qu'une durée par préfixe ; ses règles de cycle de vie ne sont
+ * qu'un filet (`media/` masqué à 366 jours). Ce module ne supprime que sur
+ * demande, et toujours toutes les versions : média échu, vue unique
+ * consommée, photo ou annonce remplacée.
  */
 
 const crypto = require('crypto');

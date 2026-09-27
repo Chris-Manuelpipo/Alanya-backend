@@ -13,6 +13,7 @@ const {
   MEDIA_MAX_BYTES,
 } = require('../middleware/upload');
 const { invalidateSenderIdentity } = require('../utils/senderIdentityCache');
+const { releasePublicFiles } = require('../utils/mediaFile');
 const { fail } = require('../utils/apiError');
 
 const _toBool = (v) => v === true || v === 1 || v === '1' || v === 'true';
@@ -83,12 +84,19 @@ const uploadAvatar = async (req, res) => {
       if (!req.user?.alanyaID) {
         return res.status(401).json({ error: 'Authentification requise pour applyToProfile', code: 'MEDIA_REQUIRED' });
       }
+      const [avant] = await pool.execute(
+        'SELECT avatar_url FROM users WHERE alanyaID = ?',
+        [req.user.alanyaID],
+      );
       await pool.execute(
         'UPDATE users SET avatar_url = ? WHERE alanyaID = ?',
         [url, req.user.alanyaID],
       );
       // Le payload temps réel des messages sert l'avatar depuis un cache 60 s.
       invalidateSenderIdentity(req.user.alanyaID);
+      // L'ancienne photo n'est plus désignée : elle est supprimée, sauf si une
+      // autre ligne la désigne encore ou si c'est un avatar par défaut.
+      releasePublicFiles(avant[0]?.avatar_url);
     }
 
     res.json({
