@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { deleteMediaFile } = require('../utils/mediaFile');
 
 /**
  * Rétention des stories ordinaires (`statut`).
@@ -14,14 +15,20 @@ const pool = require('../config/db');
  * Les stories de bienvenue sont exclues : elles ont leur propre purge, avec son
  * propre interrupteur (`welcome_status`). Sans cette exclusion, couper l'une
  * n'empêcherait pas l'autre de supprimer les mêmes lignes.
+ *
+ * Le fichier d'une story part avec elle. Aucune autre purge ne le voit : celle
+ * des médias ne lit que les messages, et le filet du bucket ne passe qu'à 366
+ * jours — la durée longue d'Alanya Plus. Seuls les fichiers sous `media/` sont
+ * supprimés (`deleteMediaFile`) : une story de diffusion pointe vers un média
+ * officiel, que d'autres continuent d'afficher.
  */
-async function purgeExpiredStories({ retentionDays = 7 } = {}) {
-  // DELETE mono-table, et non `DELETE s FROM statut s JOIN ...` : la forme
-  // multi-tables n'accepte pas LIMIT, ce qui ferait sauter le bornage
-  // anti-verrou long commun à toutes les purges de ce fichier. D'où le
+async function purgeExpiredStories({ retentionDays = 7, db = pool, supprimerFichier = deleteMediaFile } = {}) {
+  // Lire puis supprimer par identifiant, et non `DELETE s FROM statut s JOIN
+  // ...` : la forme multi-tables n'accepte pas LIMIT, ce qui ferait sauter le
+  // bornage anti-verrou long commun à toutes les purges de ce fichier. D'où le
   // NOT EXISTS corrélé plutôt qu'une jointure.
-  const [res] = await pool.execute(
-    `DELETE FROM statut
+  const [rows] = await db.execute(
+    `SELECT ID, mediaUrl FROM statut
       WHERE expiredAt < DATE_SUB(NOW(), INTERVAL ? DAY)
         AND NOT EXISTS (
           SELECT 1 FROM welcome_status_delivery w WHERE w.statut_id = statut.ID
@@ -29,7 +36,18 @@ async function purgeExpiredStories({ retentionDays = 7 } = {}) {
       LIMIT 5000`,
     [retentionDays],
   );
-  return { statut: res.affectedRows || 0 };
+  if (!rows.length) return { statut: 0, fichiers: 0 };
+
+  const ids = rows.map((r) => r.ID);
+  const [res] = await db.execute(
+    `DELETE FROM statut WHERE ID IN (${ids.map(() => '?').join(',')})`,
+    ids,
+  );
+  // Après la suppression des lignes : un échec en cours de route laisse un
+  // fichier sans story, jamais une story sans fichier.
+  const avecMedia = rows.filter((r) => r.mediaUrl);
+  for (const r of avecMedia) supprimerFichier(r.mediaUrl);
+  return { statut: res.affectedRows || 0, fichiers: avecMedia.length };
 }
 
 /**

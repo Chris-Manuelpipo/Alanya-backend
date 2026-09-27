@@ -233,13 +233,19 @@ const compteCouvert = (ctx) => {
  * actuel. Un média gardé ne correspond pas au prédicat, donc la boucle par
  * lots ne le revoit jamais et s'arrête bien.
  *
+ * Seuls les médias de discussion expirent : ceux dont l'adresse désigne
+ * `/uploads/media/`. Un message d'accueil ou de diffusion pointe vers un média
+ * officiel (`official/`, bucket public), qui n'expire jamais et que des
+ * milliers de messages partagent ; supprimer le fichier au terme du premier
+ * message les casserait tous.
+ *
  * `ctx` vient de `lireContexte`. Un appel avec `{ mediaDays }` seul garde la
  * forme d'avant les paliers.
  */
 const expiredMediaWhere = (ctx = {}) => {
   const standard = ctx.standardDays ?? ctx.mediaDays ?? policy.RETENTION.mediaDays;
   const base = {
-    sql: `m.mediaUrl IS NOT NULL AND m.mediaUrl <> ''
+    sql: `m.mediaUrl IS NOT NULL AND m.mediaUrl LIKE '%/uploads/media/%'
           AND m.sendAt < DATE_SUB(NOW(), INTERVAL ? DAY)`,
     params: [standard],
   };

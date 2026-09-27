@@ -14,6 +14,7 @@ const setsListSound = (body) => SOUND_KEYS.some((k) => (
 const { maskPresenceIfBlocked } = require('../utils/blockUtils');
 const { sanitizeUrl } = require('../services/contactService');
 const { ensureDefaultContactLists, KIND_ORDER_SQL, isSystemListKind } = require('../utils/defaultContactLists');
+const { soundUrl, releaseRingtones } = require('../services/ringtoneFiles');
 
 // Listes de contacts (Famille / Amis / Bureau…) — CRUD des listes et de leurs
 // membres. Tout est scopé au propriétaire (`req.user.alanyaID`) : une liste
@@ -34,8 +35,11 @@ const cleanColor = (raw) => {
 };
 
 // ── SONNERIES DE LISTE (synchronisées entre les appareils du compte) ──
-// La sélection est une préférence DU COMPTE, pas de l'appareil. On ne stocke
-// jamais le fichier audio d'une sonnerie importée : seulement son identité.
+// La sélection est une préférence DU COMPTE, pas de l'appareil. La liste
+// n'enregistre que l'identité d'une sonnerie importée ; son fichier est déposé
+// à part (ticket `ringtone`), et son adresse, recalculée à partir du compte et
+// de l'empreinte, accompagne la liste (`*SoundUrl`) pour qu'un nouvel
+// appareil la récupère. Voir services/ringtoneFiles.js.
 //   builtin → id stable d'un son fourni avec l'app (`notif_pop`, `bundled_son3`,
 //             `__system_default__`) ; le fichier existe sur tous les appareils.
 //   custom  → SHA-256 du CONTENU du fichier importé. Le nom (`*_name`) n'est
@@ -105,7 +109,7 @@ const findOwnedList = async (idList, alanyaID) => {
   return rows[0] || null;
 };
 
-const listRow = (r, memberCount = 0) => ({
+const listRow = (r, memberCount = 0, ownerId = r.alanyaID) => ({
   idList:      Number(r.idList),
   name:        r.name,
   kind:        r.kind ?? null,
@@ -124,6 +128,11 @@ const listRow = (r, memberCount = 0) => ({
   callSoundId:      r.call_sound_id ?? null,
   callSoundName:    r.call_sound_name ?? null,
   soundPriority:    r.sound_priority != null ? Number(r.sound_priority) : null,
+  // Adresse du fichier d'une sonnerie importée, pour l'appareil qui ne l'a
+  // pas encore. `null` pour un son fourni avec l'application. Le fichier peut
+  // manquer (jamais déposé) : l'appareil garde alors son son par défaut.
+  messageSoundUrl:  soundUrl(ownerId, r.msg_sound_type, r.msg_sound_id),
+  callSoundUrl:     soundUrl(ownerId, r.call_sound_type, r.call_sound_id),
 });
 
 // Toutes mes listes, avec le nombre de membres de chacune.
@@ -159,7 +168,7 @@ const getLists = async (req, res) => {
       [alanyaID]
     );
 
-    res.json(rows.map((r) => listRow(r, r.member_count)));
+    res.json(rows.map((r) => listRow(r, r.member_count, alanyaID)));
   } catch (error) {
     console.error('[getLists] ERROR:', error);
     res.status(500).json({ error: 'Erreur interne', code: 'INTERNAL' });
@@ -282,6 +291,13 @@ const updateList = async (req, res) => {
       throw e;
     }
 
+    // Une sonnerie importée remplacée ou retirée : son fichier part si plus
+    // aucune liste du compte ne l'utilise.
+    const avaitImportee = existing.msg_sound_type === 'custom' || existing.call_sound_type === 'custom';
+    if (avaitImportee && (existing.msg_sound_id !== msg.id || existing.call_sound_id !== call.id)) {
+      releaseRingtones(alanyaID);
+    }
+
     const [[counted]] = await pool.execute(
       'SELECT COUNT(*) AS member_count FROM contact_list_member WHERE idList = ?',
       [idList]
@@ -339,6 +355,9 @@ const deleteList = async (req, res) => {
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'List not found', code: 'LIST_NOT_FOUND' });
+    }
+    if (existing.msg_sound_type === 'custom' || existing.call_sound_type === 'custom') {
+      releaseRingtones(alanyaID);
     }
 
     res.json({ message: 'List deleted' });

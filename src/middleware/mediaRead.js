@@ -18,6 +18,17 @@
  * La question posée pendant la transition est « le fichier est-il encore sur
  * le disque ? », jamais « l'interrupteur est-il allumé ? » : c'est la leçon du
  * 25/08/2026 (voir `mediaExpiry.js`), où lier les deux avait coupé les médias.
+ *
+ * ── Fichiers publics ──
+ *
+ * Une photo, une annonce, une sonnerie ou un média officiel est normalement
+ * lu par son adresse Backblaze directe, sans passer ici. Restent les anciennes
+ * adresses (`/uploads/images/…`), en base avant la répartition ou gardées par
+ * un téléphone. Tant que les fichiers n'ont pas été copiés dans les buckets
+ * publics, elles sont lues dans le bucket privé, où ils se trouvent encore.
+ * Une fois la copie faite (`MEDIA_PUBLIC_MIGRATED`), elles sont redirigées
+ * vers le bucket public — une redirection qui peut rester en cache : le
+ * fichier désigné ne change jamais.
  */
 
 const fs = require('fs');
@@ -36,6 +47,12 @@ function mediaRead({ root = UPLOADS_DIR } = {}) {
     const key = req.mediaKey || storage.keyFromPath(req.path);
     if (!key) return next();
     if (!req.mediaKey && fs.existsSync(storage.diskPathForKey(key, root))) return next();
+
+    const cible = storage.cibleDe(key);
+    if (cible.publique && storage.STORAGE.publicMigrated) {
+      res.set('Cache-Control', 'public, max-age=86400');
+      return res.redirect(302, storage.publicUrl(key));
+    }
 
     try {
       const url = await storage.presignRead(key, req.method);

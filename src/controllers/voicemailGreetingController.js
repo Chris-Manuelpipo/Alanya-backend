@@ -40,8 +40,10 @@ const _supprimerFichier = async (url) => {
   if (!url) return;
   try {
     if (isB2Enabled()) {
+      // Seulement une annonce : quoi que désigne l'adresse, rien d'autre ne
+      // part d'ici.
       const cle = keyFromUrl(url);
-      if (cle) await removeAllVersions(cle);
+      if (cle && cle.startsWith('voicemail/')) await removeAllVersions(cle);
       return;
     }
     const nom = String(url).split('/').pop();

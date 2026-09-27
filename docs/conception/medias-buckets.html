@@ -198,7 +198,7 @@
 <div class="page">
 
   <header class="masthead">
-    <div class="kicker">Alanya · backend et app · conception · 27/09/2026 · version 1</div>
+    <div class="kicker">Alanya · backend et app · conception · 27/09/2026 · version 3 · backend, app et admin écrits</div>
     <h1>Trois buckets, trois usages</h1>
     <p class="standfirst">Les médias de discussion restent privés et expirent au bout de 30 ou 365 jours. Les photos de profil, les annonces du répondeur, les sonneries importées et les médias officiels vont dans deux buckets publics : ils s'affichent sans passer par le serveur de l'API, et n'expirent jamais d'eux-mêmes.</p>
   </header>
@@ -265,7 +265,7 @@
               <td>Médias officiels de l'admin : diffusions, messages d'accueil</td>
               <td><code>official/…</code></td>
               <td>Adresse Backblaze directe</td>
-              <td>Aucune. Supprimé par l'admin, quand plus aucune diffusion ni aucun accueil ne l'utilise (section 06)</td>
+              <td>Aucune. Jamais supprimé automatiquement : les messages déjà reçus continuent de l'afficher (section 06)</td>
             </tr>
           </tbody>
         </table>
@@ -367,15 +367,15 @@
             <tr><td>POST /upload/media · ticket <code>media</code></td><td>Application : médias de discussion</td><td><code>media/&lt;jour&gt;/&lt;type&gt;/…</code></td><td>alanyaprivate</td></tr>
             <tr><td>POST /upload/avatar · ticket <code>avatar</code></td><td>Application : photo de profil, photo de groupe</td><td><code>images/img_&lt;compte&gt;_…</code></td><td>alanyaprofile</td></tr>
             <tr><td>POST /upload/voicemail-greeting</td><td>Application : annonce du répondeur</td><td><code>voicemail/vm_&lt;compte&gt;_…</code></td><td>profilemedia</td></tr>
-            <tr><td>ticket <code>ringtone</code> <span class="chip afaire">nouveau</span></td><td>Application : sonnerie choisie pour une liste</td><td><code>ringtones/&lt;compte&gt;/…</code></td><td>profilemedia</td></tr>
-            <tr><td>POST /upload/official <span class="chip afaire">nouveau</span></td><td>Admin : diffusions, accueil</td><td><code>official/…</code></td><td>profilemedia</td></tr>
+            <tr><td>ticket <code>ringtone</code> <span class="chip fait">écrit</span></td><td>Application : sonnerie choisie pour une liste</td><td><code>ringtones/&lt;compte&gt;/…</code></td><td>profilemedia</td></tr>
+            <tr><td>POST /upload/official <span class="chip fait">écrit</span></td><td>Admin : diffusions, accueil</td><td><code>official/…</code></td><td>profilemedia</td></tr>
           </tbody>
         </table>
       </div>
       <ul class="plain">
         <li><strong>Une clé Backblaze par bucket</strong>, limitée à ce bucket : une clé volée n'ouvre qu'un bucket. La clé actuelle est limitée à <code>alanyaprivate</code> et y reste.</li>
         <li><strong>L'admin envoie par le serveur</strong> (formulaire), pas directement chez Backblaze : un envoi direct depuis un navigateur demanderait de régler les règles CORS du bucket, pour quelques fichiers par mois.</li>
-        <li><strong>La route officielle</strong> n'accepte que les administrateurs et le compte officiel. Aujourd'hui, l'admin passe par <code>/upload/media</code> : ses médias sont rangés comme des médias de discussion, et expirent.</li>
+        <li><strong>La route officielle</strong> n'accepte que les administrateurs qui peuvent publier une diffusion ou préparer l'accueil. Aujourd'hui, l'admin passe par <code>/upload/media</code> : ses médias sont rangés comme des médias de discussion, et expirent. La photo de profil de l'admin aussi : elle doit passer par <code>/upload/avatar</code>.</li>
       </ul>
     </div>
   </section>
@@ -393,9 +393,9 @@
       <h3>Le déroulé</h3>
       <ol class="steps">
         <li><div class="step"><p>L'utilisateur choisit une sonnerie importée pour une liste. L'application demande un ticket <code>ringtone</code> avec l'empreinte, le type et la taille du fichier.</p><p class="sub">Types audio seulement, taille plafonnée (5 Mo proposés : une sonnerie dure quelques dizaines de secondes).</p></div></li>
-        <li><div class="step"><p>Le serveur calcule la clé <code>ringtones/&lt;compte&gt;/&lt;jeton&gt;</code>, où le jeton est dérivé de l'empreinte et d'un secret du serveur. Si le fichier existe déjà, il répond « déjà là » et rien n'est renvoyé.</p><p class="sub">Une clé tirée de l'empreinte seule permettrait à quiconque possède le même morceau de vérifier qu'un compte donné l'utilise. Avec le secret, l'adresse est stable pour le serveur, et imprévisible pour les autres.</p></div></li>
+        <li><div class="step"><p>Le serveur calcule la clé <code>ringtones/&lt;compte&gt;/&lt;jeton&gt;</code>, où le jeton est dérivé de l'empreinte et d'un secret du serveur. Si le fichier existe déjà, il répond « déjà là » et rien n'est renvoyé.</p><p class="sub">Une clé tirée de l'empreinte seule permettrait à quiconque possède le même morceau de vérifier qu'un compte donné l'utilise. Avec le secret (<code>RINGTONE_KEY_SECRET</code>, à ne jamais changer une fois posé), l'adresse est stable pour le serveur, et imprévisible pour les autres. Sans secret, le ticket répond « indisponible » et la sonnerie reste sur le téléphone, comme aujourd'hui.</p></div></li>
         <li><div class="step"><p>L'application envoie le fichier directement chez Backblaze. Les réglages de la liste ne changent pas : type <code>custom</code>, empreinte, nom.</p></div></li>
-        <li><div class="step"><p>Sur un autre appareil, les réglages de la liste arrivent avec l'adresse du fichier, calculée par le serveur. L'application le télécharge, vérifie l'empreinte, puis l'enregistre comme une sonnerie importée.</p></div></li>
+        <li><div class="step"><p>Sur un autre appareil, les réglages de la liste arrivent avec l'adresse du fichier (<code>messageSoundUrl</code>, <code>callSoundUrl</code>), calculée par le serveur. L'application le télécharge, vérifie l'empreinte, puis l'enregistre comme une sonnerie importée.</p></div></li>
       </ol>
       <p>Aucune colonne n'est ajoutée en base : l'adresse se recalcule à partir du compte et de l'empreinte, déjà stockés.</p>
 
@@ -423,7 +423,7 @@
         <li><strong>Ils expirent.</strong> Au bout de 30 jours, l'image d'un message d'accueil disparaît pour tous les nouveaux inscrits.</li>
         <li><strong>Un seul fichier, beaucoup de messages.</strong> Chaque inscrit reçoit son propre message d'accueil, qui pointe vers le même fichier. La purge supprime le fichier au terme du premier message : les suivants pointent dans le vide.</li>
       </ul>
-      <p>Rangés sous <code>official/</code> dans <code>profilemedia</code>, ils n'expirent plus. La purge des médias de discussion ne supprime que des fichiers sous <code>media/</code> : un message qui pointe vers un média officiel garde son média. Un média officiel n'est supprimé que par l'admin, et seulement si plus aucune diffusion ni aucun bloc d'accueil ne le désigne.</p>
+      <p>Rangés sous <code>official/</code> dans <code>profilemedia</code>, ils n'expirent plus. La purge des médias de discussion ne sélectionne que les messages dont le média est sous <code>/uploads/media/</code> : un message qui pointe vers un média officiel garde son média. Un média officiel n'est jamais supprimé automatiquement : chaque message d'accueil ou de diffusion déjà reçu continue de le désigner.</p>
       <p>À la migration, les médias encore présents que désignent <code>broadcast.media_url</code> et les blocs d'accueil sont copiés sous <code>official/</code>, et ces adresses réécrites.</p>
     </div>
   </section>
@@ -433,7 +433,7 @@
     <div class="gutter"><span class="num">07</span></div>
     <div class="col">
       <h2>Supprimer sans se tromper de fichier</h2>
-      <p>Des fichiers publics n'expirent jamais : ils doivent donc être supprimés quand ils ne servent plus. Aujourd'hui, ce n'était jamais le cas. Ces corrections sont écrites le 27/09/2026 sur la branche <code>partition</code>, pas encore commitées. Elles n'attendent pas la répartition.</p>
+      <p>Des fichiers publics n'expirent jamais : ils doivent donc être supprimés quand ils ne servent plus. Jusqu'ici, ce n'était jamais le cas. Ces corrections sont écrites sur la branche <code>partition</code> (commit <code>74aa9a8</code>, puis la répartition).</p>
       <div class="tbl-wrap">
         <table class="tbl-prose">
           <thead><tr><th>Événement</th><th>Fichiers supprimés</th><th>État</th></tr></thead>
@@ -443,7 +443,8 @@
             <tr><td>Groupe supprimé</td><td>Sa photo (dernier membre parti, suppression groupée, suppression par l'admin)</td><td><span class="chip fait">écrit</span></td></tr>
             <tr><td>Compte supprimé</td><td>Sa photo et son annonce de répondeur (suppression demandée par l'utilisateur, ou par l'admin)</td><td><span class="chip fait">écrit</span></td></tr>
             <tr><td>Annonce réenregistrée</td><td>L'ancienne annonce</td><td>déjà en place</td></tr>
-            <tr><td>Sonnerie plus utilisée, purge payante, compte supprimé</td><td>Les sonneries concernées</td><td><span class="chip afaire">avec la section 05</span></td></tr>
+            <tr><td>Sonnerie plus utilisée, purge payante, compte supprimé</td><td>Les sonneries concernées (une sonnerie de moins d'une heure est épargnée : elle vient d'être envoyée, la liste n'est pas encore enregistrée)</td><td><span class="chip fait">écrit</span></td></tr>
+            <tr><td>Story expirée</td><td>Son fichier. Jusqu'ici, seules les lignes partaient : les fichiers restaient jusqu'au filet de Backblaze, désormais à 366 jours</td><td><span class="chip fait">écrit</span></td></tr>
           </tbody>
         </table>
       </div>
@@ -456,6 +457,7 @@
       <div class="callout">
         <div class="lbl">Faille corrigée au passage</div>
         <p>La fonction qui supprime un média construisait le chemin sur le disque directement à partir de l'adresse, sans la contrôler. Un client pouvait envoyer une photo « vue unique » dont l'adresse contenait <code>/uploads/../.env</code> : à l'ouverture, ou 30 jours plus tard par la purge, le serveur aurait supprimé son propre fichier de configuration. Le chemin est désormais tiré d'une clé validée (préfixe connu, aucun <code>..</code>).</p>
+        <p>Et la suppression d'un média de discussion ne touche plus que <code>media/</code> : un message « vue unique » qui désignerait la photo de profil de quelqu'un d'autre la faisait supprimer à son ouverture.</p>
       </div>
     </div>
   </section>
@@ -490,11 +492,11 @@
       <h2>Mise en place</h2>
       <ol class="steps">
         <li><div class="step"><p><strong>Backblaze.</strong> Vérifier que les deux buckets publics sont en EU Central (<code>eu-central-003</code>), poser les cycles de vie de la section 08, créer une clé par bucket public.</p><p class="sub">Par la personne qui a accès à la console Backblaze.</p></div></li>
-        <li><div class="step"><p><strong>Backend.</strong> Déployer le code qui sait lire aux deux endroits : ancien bucket d'abord si le fichier n'a pas encore été copié, nouveau ensuite. Les nouvelles clés vont dans le <code>.env</code> du serveur.</p></div></li>
-        <li><div class="step"><p><strong>Copie de l'existant.</strong> <code>images/</code> vers <code>alanyaprofile</code>, <code>voicemail/</code> vers <code>profilemedia</code>, les médias officiels encore présents vers <code>profilemedia/official/</code>. Avec <code>rclone copy</code>, puis <code>rclone check --one-way</code>. Si des fichiers sont encore sur le disque du VPS, ils sont copiés depuis le disque.</p><p class="sub">Par le collègue qui a accès au serveur.</p></div></li>
-        <li><div class="step"><p><strong>Adresses en base.</strong> Le script réécrit les trois colonnes de la section 03 et les adresses des médias officiels. Il affiche ce qu'il va changer, puis le fait sur confirmation.</p></div></li>
-        <li><div class="step"><p><strong>Application.</strong> Envoi et récupération des sonneries (section 05), affichage « média expiré » d'après <code>mediaRetentionDays</code>. L'admin passe à la route officielle.</p></div></li>
-        <li><div class="step"><p><strong>Nettoyage.</strong> Une fois la copie vérifiée, supprimer <code>images/</code> et <code>voicemail/</code> de <code>alanyaprivate</code>. La redirection des anciennes adresses reste en place.</p></div></li>
+        <li><div class="step"><p><strong>Backend.</strong> Déployer le code, puis poser dans le <code>.env</code> du serveur : <code>B2_PROFILE_BUCKET</code>, <code>B2_PROFILE_KEY_ID</code>, <code>B2_PROFILE_APP_KEY</code>, les trois mêmes en <code>B2_PROFILEMEDIA_*</code>, et <code>RINGTONE_KEY_SECRET</code>. Redémarrer. Les nouveaux fichiers publics vont alors dans leur bucket ; les anciens sont encore lus dans le privé.</p><p class="sub">Sans ces variables, rien ne change : les fichiers restent dans le bucket privé, comme aujourd'hui.</p></div></li>
+        <li><div class="step"><p><strong>Copie de l'existant et adresses.</strong> <code>npm run migrate:public-buckets</code> affiche ce qu'il ferait ; <code>npm run migrate:public-buckets -- --apply</code> le fait. Il copie <code>images/</code>, <code>voicemail/</code>, <code>official/</code> et <code>ringtones/</code> dans leur bucket public (depuis le bucket privé ou le disque du VPS), range les médias officiels sous <code>official/</code>, puis réécrit les adresses en base, seulement pour les fichiers bien copiés. Rejouable : relancer ne refait rien.</p><p class="sub">Par le collègue qui a accès au serveur.</p></div></li>
+        <li><div class="step"><p><strong>Anciennes adresses.</strong> Poser <code>MEDIA_PUBLIC_MIGRATED=true</code> et redémarrer : les adresses <code>/uploads/images/…</code> restées sur les téléphones sont redirigées vers le bucket public. Passer <code>AVATAR_DEFAULT_MALE</code> et <code>AVATAR_DEFAULT_FEMALE</code> sur leur adresse publique.</p></div></li>
+        <li><div class="step"><p><strong>Application et admin.</strong> Envoi et récupération des sonneries (section 05), affichage « média expiré » d'après <code>mediaRetentionDays</code>. L'admin envoie les médias des diffusions et de l'accueil par <code>/upload/official</code>, et sa photo de profil par <code>/upload/avatar</code>.</p><p class="sub">Écrit le 27/09/2026 (branches <code>partition</code> de l'application et <code>Alfred</code> de l'admin, fusionnées avec <code>main</code>). À publier avec le déploiement du backend.</p></div></li>
+        <li><div class="step"><p><strong>Nettoyage.</strong> <code>npm run migrate:public-buckets -- --nettoyer-prive</code>, puis avec <code>--apply</code> : supprime du bucket privé les fichiers publics dont la copie est vérifiée, et rien d'autre. La redirection des anciennes adresses reste en place.</p></div></li>
       </ol>
     </div>
   </section>
@@ -510,8 +512,8 @@
           <p>Les adresses publiques portent le nom de Backblaze. Changer de fournisseur demanderait de réécrire quelques colonnes, sur des tables de taille modeste.</p>
         </div>
         <div>
-          <h3>Conversations supprimées</h3>
-          <p>Quand le dernier membre supprime une conversation, ses messages disparaissent mais pas leurs fichiers. Le filet de 366 jours les rattrape.</p>
+          <h3>Fichiers orphelins</h3>
+          <p>Quand le dernier membre supprime une conversation, ses messages disparaissent mais pas leurs fichiers. Un envoi jamais joint à un message ni à une story n'est désigné par rien non plus. Le filet de 366 jours les rattrape.</p>
         </div>
         <div>
           <h3>Transfert dont la copie échoue</h3>

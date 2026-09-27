@@ -130,6 +130,48 @@ const test = async (nom, fn) => {
     assert.strictEqual(new URL(res.redirige).pathname, `/media/2026-09-13/images/${nom}`);
   });
 
+  // ── Anciennes adresses de fichiers publics ─────────────────────────────
+  const PUBLICS = {
+    profile: { bucket: 'alanyaprofile', keyId: 'k-prof', appKey: 's-prof' },
+    profilemedia: { bucket: 'profilemedia', keyId: 'k-pm', appKey: 's-pm' },
+  };
+
+  await test('photo, avant la copie : lue dans le bucket privé, où elle est encore', async () => {
+    storage.configureForTests({ ...CONFIG_B2, publics: PUBLICS, publicMigrated: false });
+    const { res } = await passer({ method: 'GET', path: '/images/img_1_2.jpg' }, { root: racine });
+    assert.strictEqual(res.code, 302);
+    const u = new URL(res.redirige);
+    assert.strictEqual(u.host, 'alanyaprivate.s3.eu-central-003.backblazeb2.com');
+    assert.ok(u.searchParams.get('X-Amz-Signature'), 'lien signé');
+    assert.strictEqual(res.entetes['Cache-Control'], 'no-store');
+  });
+
+  await test('photo, après la copie : redirigée vers le bucket public, sans signature', async () => {
+    storage.configureForTests({ ...CONFIG_B2, publics: PUBLICS, publicMigrated: true });
+    const { res } = await passer({ method: 'GET', path: '/images/img_1_2.jpg' }, { root: racine });
+    assert.strictEqual(res.code, 302);
+    assert.strictEqual(res.redirige, 'https://alanyaprofile.s3.eu-central-003.backblazeb2.com/images/img_1_2.jpg');
+    assert.strictEqual(res.entetes['Cache-Control'], 'public, max-age=86400');
+
+    const annonce = await passer({ method: 'HEAD', path: '/voicemail/vm_1_2.m4a' }, { root: racine });
+    assert.strictEqual(annonce.res.redirige, 'https://profilemedia.s3.eu-central-003.backblazeb2.com/voicemail/vm_1_2.m4a');
+  });
+
+  await test('média de discussion : toujours signé, copie faite ou non', async () => {
+    storage.configureForTests({ ...CONFIG_B2, publics: PUBLICS, publicMigrated: true });
+    const { res } = await passer({ method: 'GET', path: '/media/2026-09-15/images/a.jpg' }, { root: racine });
+    assert.strictEqual(new URL(res.redirige).host, 'alanyaprivate.s3.eu-central-003.backblazeb2.com');
+    assert.strictEqual(res.entetes['Cache-Control'], 'no-store');
+  });
+
+  storage.configureForTests({
+    ...CONFIG_B2,
+    publicMigrated: false,
+    publics: {
+      profile: { bucket: '', keyId: '', appKey: '' },
+      profilemedia: { bucket: '', keyId: '', appKey: '' },
+    },
+  });
   fs.rmSync(racine, { recursive: true });
   console.log(`mediaRead : ${ok} tests passés`);
 })();

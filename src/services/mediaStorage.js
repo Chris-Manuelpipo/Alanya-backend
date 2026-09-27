@@ -19,6 +19,18 @@
  * poser dans le `.env` ne change donc aucun comportement — même principe que
  * `MEDIA_PARTITIONS_ENABLED`.
  *
+ * ── Trois buckets ──
+ *
+ * Conception : docs/conception/medias-buckets.html. Le préfixe de la clé
+ * décide du bucket, sans rien demander au client :
+ *  - `media/` : `B2_BUCKET` (alanyaprivate), privé, lu par lien signé ;
+ *  - `images/` : `B2_PROFILE_BUCKET` (alanyaprofile), public ;
+ *  - `voicemail/`, `ringtones/`, `official/` : `B2_PROFILEMEDIA_BUCKET`
+ *    (profilemedia), public.
+ * Un fichier public est lu par son adresse Backblaze directe, sans passer par
+ * ce serveur. Tant qu'un bucket public n'est pas configuré (nom et clé), ses
+ * préfixes restent dans le bucket privé, comme avant.
+ *
  * ── La purge n'est pas ici ──
  *
  * Elle est décidée par `mediaRetention.js`, message par message : 30 jours, ou
@@ -67,7 +79,15 @@ const CACHE_IMMUABLE = 'public, max-age=31536000, immutable';
  * clé — et silencieusement, puisque B2 est éteint par défaut : personne ne le
  * verrait avant de l'allumer.
  */
-const PREFIXES_SERVIS = [MEDIA_ROOT, 'images', 'voicemail'];
+const PREFIXES_SERVIS = [MEDIA_ROOT, 'images', 'voicemail', 'ringtones', 'official'];
+
+/** Bucket public de chaque préfixe public. Tout le reste va dans le bucket privé. */
+const BUCKET_PUBLIC_DU_PREFIXE = {
+  images: 'profile',
+  voicemail: 'profilemedia',
+  ringtones: 'profilemedia',
+  official: 'profilemedia',
+};
 
 const SEGMENT_SUR = /^[A-Za-z0-9._-]+$/;
 const EXTENSION_SURE = /^\.[a-z0-9]{1,8}$/;
@@ -87,6 +107,26 @@ const STORAGE = {
   appKey: process.env.B2_APP_KEY || '',
   downloadTtlS: lireEntier('B2_DOWNLOAD_URL_TTL_S', 3600, 60, 86400),
   uploadTtlS: lireEntier('B2_UPLOAD_URL_TTL_S', 900, 60, 3600),
+  // Buckets publics : chacun sa clé d'application, limitée à lui. Une clé
+  // volée n'ouvre qu'un bucket.
+  publics: {
+    profile: {
+      bucket: process.env.B2_PROFILE_BUCKET || '',
+      keyId: process.env.B2_PROFILE_KEY_ID || '',
+      appKey: process.env.B2_PROFILE_APP_KEY || '',
+    },
+    profilemedia: {
+      bucket: process.env.B2_PROFILEMEDIA_BUCKET || '',
+      keyId: process.env.B2_PROFILEMEDIA_KEY_ID || '',
+      appKey: process.env.B2_PROFILEMEDIA_APP_KEY || '',
+    },
+  },
+  // Posé une fois les fichiers existants copiés dans les buckets publics
+  // (scripts/maintenance/migrate-public-buckets.js). Avant, une ancienne
+  // adresse `/uploads/images/…` est lue dans le bucket privé, où le fichier se
+  // trouve encore ; après, elle est redirigée vers le bucket public.
+  publicMigrated: ['1', 'true', 'oui', 'yes', 'on']
+    .includes(String(process.env.MEDIA_PUBLIC_MIGRATED || '').trim().toLowerCase()),
 };
 
 const configurationComplete = () =>
@@ -99,34 +139,79 @@ if (STORAGE.demande === 'b2' && !configurationComplete()) {
     + 'B2_KEY_ID ou B2_APP_KEY manque : les médias restent sur le disque.');
 }
 
+// Même principe pour un bucket public : à moitié configuré, ses fichiers
+// resteraient dans le bucket privé sans que rien ne le dise.
+for (const [nom, conf] of Object.entries(STORAGE.publics)) {
+  const poses = [conf.bucket, conf.keyId, conf.appKey].filter(Boolean).length;
+  if (STORAGE.demande === 'b2' && poses > 0 && poses < 3) {
+    console.error(`[MediaStorage] bucket public « ${nom} » incomplet (nom, clé et secret requis) : `
+      + 'ses fichiers restent dans le bucket privé.');
+  }
+}
+
 /** `true` si les médias vont chez Backblaze. */
 const isB2Enabled = () => STORAGE.demande === 'b2' && configurationComplete();
 
 // ── Clients ─────────────────────────────────────────────────────────────────
 
-let clientReel = null;
+const clientsReels = new Map();
 let clientDeTest = null;
 
+/** Identifiants du bucket `nom` : `prive`, ou un bucket public. */
+const identifiantsDe = (nom) => (nom === 'prive'
+  ? { keyId: STORAGE.keyId, appKey: STORAGE.appKey }
+  : STORAGE.publics[nom]);
+
 /** Client configuré : sert à signer (calcul local, sans réseau) et à envoyer. */
-function clientConfigure() {
-  if (!clientReel) {
+function clientConfigure(nom = 'prive') {
+  if (!clientsReels.has(nom)) {
     const { S3Client } = require('@aws-sdk/client-s3');
-    clientReel = new S3Client({
+    const { keyId, appKey } = identifiantsDe(nom);
+    clientsReels.set(nom, new S3Client({
       endpoint: STORAGE.endpoint,
       region: STORAGE.region,
-      credentials: { accessKeyId: STORAGE.keyId, secretAccessKey: STORAGE.appKey },
+      credentials: { accessKeyId: keyId, secretAccessKey: appKey },
       // Les versions récentes du SDK ajoutent d'office des sommes de contrôle
       // CRC32 que des services compatibles S3 refusent. On s'en tient à celles
       // que l'API exige.
       requestChecksumCalculation: 'WHEN_REQUIRED',
       responseChecksumValidation: 'WHEN_REQUIRED',
-    });
+    }));
   }
-  return clientReel;
+  return clientsReels.get(nom);
 }
 
 /** Client des requêtes réseau ; remplacé par un faux dans les tests. */
-const clientEnvoi = () => clientDeTest || clientConfigure();
+const clientEnvoi = (nom = 'prive') => clientDeTest || clientConfigure(nom);
+
+// ── Buckets ─────────────────────────────────────────────────────────────────
+
+/** `true` si le bucket public `nom` a un nom et une clé. */
+const publicConfigure = (nom) => {
+  const c = STORAGE.publics[nom];
+  return Boolean(c && c.bucket && c.keyId && c.appKey);
+};
+
+/**
+ * Où vit une clé : `{ nom, bucket, publique }`.
+ *
+ * Un préfixe public va dans son bucket public dès que celui-ci est configuré ;
+ * sinon, comme avant, dans le bucket privé. Déployer ce code avant d'avoir
+ * posé les nouvelles clés ne change donc rien.
+ */
+function cibleDe(key) {
+  const nom = BUCKET_PUBLIC_DU_PREFIXE[String(key || '').split('/')[0]];
+  if (nom && isB2Enabled() && publicConfigure(nom)) {
+    return { nom, bucket: STORAGE.publics[nom].bucket, publique: true };
+  }
+  return { nom: 'prive', bucket: STORAGE.bucket, publique: false };
+}
+
+/** Adresse de lecture directe d'un bucket public. */
+const urlPubliqueDe = (bucket) => `https://${bucket}.s3.${STORAGE.region}.backblazeb2.com`;
+
+/** Une clé dans une URL : chaque segment encodé, les `/` gardés. */
+const encoderCle = (key) => key.split('/').map(encodeURIComponent).join('/');
 
 // ── Clés ────────────────────────────────────────────────────────────────────
 
@@ -154,14 +239,25 @@ function keyFromPath(chemin) {
   return isSafeKey(rel) ? rel : null;
 }
 
-/** Clé d'une URL publique (`…/uploads/<clé>`), ou `null`. */
+/**
+ * Clé d'une URL, ou `null` : une adresse de ce serveur (`…/uploads/<clé>`),
+ * ou l'adresse directe d'un bucket public — seulement pour un préfixe qui
+ * appartient à ce bucket.
+ */
 function keyFromUrl(url) {
   if (!url) return null;
-  const s = String(url);
+  const s = String(url).split(/[?#]/)[0];
+  for (const [nom, conf] of Object.entries(STORAGE.publics)) {
+    if (!conf.bucket) continue;
+    const base = `${urlPubliqueDe(conf.bucket)}/`;
+    if (!s.startsWith(base)) continue;
+    const key = keyFromPath(s.slice(base.length));
+    return key && BUCKET_PUBLIC_DU_PREFIXE[key.split('/')[0]] === nom ? key : null;
+  }
   const marqueur = '/uploads/';
   const i = s.indexOf(marqueur);
   if (i === -1) return null;
-  return keyFromPath(s.slice(i + marqueur.length).split(/[?#]/)[0]);
+  return keyFromPath(s.slice(i + marqueur.length));
 }
 
 /**
@@ -223,8 +319,55 @@ function newVoicemailGreetingKey({ alanyaID, ext = '', instant = Date.now() }) {
   return `voicemail/vm_${Number(alanyaID)}_${instant}_${suffixeAleatoire()}${ext}`;
 }
 
-/** Adresse publique d'une clé. */
-const publicUrl = (key) => `${BASE_URL}/uploads/${key}`;
+/**
+ * Clé d'un média officiel (diffusion, message d'accueil) :
+ * `official/<type>/off_<ms>_<hasard><ext>`. Jamais daté : un média officiel
+ * n'expire pas, et la purge des discussions ne voit que `media/`.
+ */
+function newOfficialKey({ kind, ext = '', instant = Date.now() }) {
+  if (!LEGACY_KINDS.includes(kind)) throw new Error(`type de média inconnu : ${kind}`);
+  return `official/${kind}/off_${instant}_${suffixeAleatoire()}${ext}`;
+}
+
+/**
+ * Clé d'une sonnerie importée, choisie pour une liste :
+ * `ringtones/<compte>/<jeton>`.
+ *
+ * Le jeton est un HMAC de l'empreinte SHA-256 du fichier sous un secret du
+ * serveur (`RINGTONE_KEY_SECRET`). Stable : le même fichier n'est déposé
+ * qu'une fois par compte, et son adresse se recalcule à partir de ce que la
+ * liste enregistre déjà. Imprévisible : une clé tirée de l'empreinte seule
+ * laisserait quiconque possède le même morceau vérifier qu'un compte donné
+ * l'utilise. Sans secret, `null` : la fonctionnalité reste éteinte.
+ */
+function ringtoneKey({ alanyaID, sha256, secret = process.env.RINGTONE_KEY_SECRET }) {
+  const empreinte = String(sha256 || '').toLowerCase();
+  const compte = Number(alanyaID);
+  if (!secret || !/^[0-9a-f]{64}$/.test(empreinte) || !(compte > 0)) return null;
+  const jeton = crypto.createHmac('sha256', secret)
+    .update(`ringtone:${compte}:${empreinte}`)
+    .digest('hex')
+    .slice(0, 40);
+  return `ringtones/${compte}/${jeton}`;
+}
+
+/**
+ * Adresse publique d'une clé : l'adresse Backblaze directe pour un fichier
+ * public, l'adresse de ce serveur sinon (un média de discussion y est lu par
+ * redirection vers un lien signé).
+ */
+function publicUrl(key) {
+  const cible = cibleDe(key);
+  if (cible.publique) return `${urlPubliqueDe(cible.bucket)}/${encoderCle(key)}`;
+  return `${BASE_URL}/uploads/${key}`;
+}
+
+/** Adresse d'une sonnerie de liste, ou `null` si elle ne peut pas exister. */
+function ringtoneUrl({ alanyaID, sha256 }) {
+  if (!isB2Enabled()) return null;
+  const key = ringtoneKey({ alanyaID, sha256 });
+  return key ? publicUrl(key) : null;
+}
 
 /** Chemin sur le disque d'une clé déjà validée. */
 const diskPathForKey = (key, root = UPLOADS_DIR) => path.join(root, key);
@@ -251,8 +394,10 @@ async function presignRead(key, method = 'GET') {
   const { GetObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
   const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
   const Commande = method === 'HEAD' ? HeadObjectCommand : GetObjectCommand;
+  // Toujours le bucket privé : un fichier public se lit sans signature, et un
+  // ancien fichier public pas encore copié y est encore.
   return getSignedUrl(
-    clientConfigure(),
+    clientConfigure('prive'),
     new Commande({ Bucket: STORAGE.bucket, Key: key }),
     { expiresIn: STORAGE.downloadTtlS },
   );
@@ -269,10 +414,11 @@ async function presignRead(key, method = 'GET') {
 async function presignUpload(key, { contentType, contentLength }) {
   const { PutObjectCommand } = require('@aws-sdk/client-s3');
   const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+  const cible = cibleDe(key);
   const url = await getSignedUrl(
-    clientConfigure(),
+    clientConfigure(cible.nom),
     new PutObjectCommand({
-      Bucket: STORAGE.bucket,
+      Bucket: cible.bucket,
       Key: key,
       ContentType: contentType,
       ContentLength: contentLength,
@@ -296,13 +442,19 @@ async function presignUpload(key, { contentType, contentLength }) {
 
 /** Dépose un fichier local sous `key` (découpé en parties au-delà de 8 Mo). */
 async function putFile(key, cheminLocal, { contentType } = {}) {
+  return putBody(key, fs.createReadStream(cheminLocal), { contentType });
+}
+
+/** Dépose un flux ou un tampon sous `key`, dans le bucket de sa clé. */
+async function putBody(key, corps, { contentType } = {}) {
   const { Upload } = require('@aws-sdk/lib-storage');
+  const cible = cibleDe(key);
   const envoi = new Upload({
-    client: clientEnvoi(),
+    client: clientEnvoi(cible.nom),
     params: {
-      Bucket: STORAGE.bucket,
+      Bucket: cible.bucket,
       Key: key,
-      Body: fs.createReadStream(cheminLocal),
+      Body: corps,
       ContentType: contentType || contentTypeForKey(key),
       CacheControl: CACHE_IMMUABLE,
     },
@@ -313,15 +465,44 @@ async function putFile(key, cheminLocal, { contentType } = {}) {
   await envoi.done();
 }
 
-/** Copie côté Backblaze : aucun octet ne passe par le serveur. */
+/**
+ * Copie côté Backblaze : aucun octet ne passe par le serveur. Dans un même
+ * bucket seulement — chaque clé d'application est limitée au sien.
+ */
 async function copyObject(cleSource, cleCible) {
   const { CopyObjectCommand } = require('@aws-sdk/client-s3');
-  const source = cleSource.split('/').map(encodeURIComponent).join('/');
-  await clientEnvoi().send(new CopyObjectCommand({
-    Bucket: STORAGE.bucket,
+  const cible = cibleDe(cleCible);
+  if (cibleDe(cleSource).nom !== cible.nom) {
+    throw new Error(`copie entre deux buckets impossible : ${cleSource} → ${cleCible}`);
+  }
+  await clientEnvoi(cible.nom).send(new CopyObjectCommand({
+    Bucket: cible.bucket,
     Key: cleCible,
-    CopySource: `${STORAGE.bucket}/${source}`,
+    CopySource: `${cible.bucket}/${encoderCle(cleSource)}`,
   }));
+}
+
+/**
+ * `true` si la clé existe dans son bucket (ou dans le bucket `depuis` : `prive`
+ * pour un fichier public pas encore copié).
+ */
+async function headObject(key, { depuis } = {}) {
+  const { HeadObjectCommand } = require('@aws-sdk/client-s3');
+  const nom = depuis || cibleDe(key).nom;
+  const bucket = nom === 'prive' ? STORAGE.bucket : STORAGE.publics[nom].bucket;
+  try {
+    await clientEnvoi(nom).send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    return true;
+  } catch (e) {
+    if (e?.$metadata?.httpStatusCode === 404 || e?.name === 'NotFound') return false;
+    throw e;
+  }
+}
+
+/** Contenu d'une clé du bucket privé : `{ Body, ContentType }` (migration). */
+async function readPrivateObject(key) {
+  const { GetObjectCommand } = require('@aws-sdk/client-s3');
+  return clientEnvoi('prive').send(new GetObjectCommand({ Bucket: STORAGE.bucket, Key: key }));
 }
 
 /**
@@ -334,38 +515,61 @@ async function copyObject(cleSource, cleCible) {
  * exigerait une somme de contrôle que tous les services compatibles S3 ne
  * calculent pas de la même façon.
  */
-async function removeAllVersions(key) {
+async function removeAllVersions(key, { seulement } = {}) {
   const { ListObjectVersionsCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
-  const res = await clientEnvoi().send(new ListObjectVersionsCommand({
-    Bucket: STORAGE.bucket,
-    Prefix: key,
-  }));
-  const versions = [...(res.Versions || []), ...(res.DeleteMarkers || [])]
-    .filter((v) => v.Key === key);
-  for (const v of versions) {
+  // Un fichier public a pu naître dans le bucket privé, avant la répartition :
+  // il est cherché aux deux endroits. `seulement: 'prive'` ne vise que le
+  // privé — le nettoyage qui suit la copie ne doit pas toucher à la copie.
+  const cible = cibleDe(key);
+  const prive = { nom: 'prive', bucket: STORAGE.bucket };
+  let lieux = cible.publique ? [cible, prive] : [cible];
+  if (seulement === 'prive') lieux = [prive];
+  let total = 0;
+  for (const lieu of lieux) {
     // eslint-disable-next-line no-await-in-loop
-    await clientEnvoi().send(new DeleteObjectCommand({
-      Bucket: STORAGE.bucket,
-      Key: key,
-      VersionId: v.VersionId,
+    const res = await clientEnvoi(lieu.nom).send(new ListObjectVersionsCommand({
+      Bucket: lieu.bucket,
+      Prefix: key,
     }));
+    const versions = [...(res.Versions || []), ...(res.DeleteMarkers || [])]
+      .filter((v) => v.Key === key);
+    for (const v of versions) {
+      // eslint-disable-next-line no-await-in-loop
+      await clientEnvoi(lieu.nom).send(new DeleteObjectCommand({
+        Bucket: lieu.bucket,
+        Key: key,
+        VersionId: v.VersionId,
+      }));
+    }
+    total += versions.length;
   }
-  return versions.length;
+  return total;
 }
 
-/** Objets sous un préfixe : `[{ key, size }]`, toutes pages confondues. */
-async function listPrefix(prefixe) {
+/**
+ * Objets sous un préfixe : `[{ key, size, lastModified }]`, toutes pages
+ * confondues. Dans le bucket du préfixe, ou dans le bucket `depuis`.
+ */
+async function listPrefix(prefixe, { depuis } = {}) {
   const { ListObjectsV2Command } = require('@aws-sdk/client-s3');
+  const nom = depuis || cibleDe(prefixe).nom;
+  const bucket = nom === 'prive' ? STORAGE.bucket : STORAGE.publics[nom].bucket;
   const out = [];
   let jeton;
   do {
     // eslint-disable-next-line no-await-in-loop
-    const res = await clientEnvoi().send(new ListObjectsV2Command({
-      Bucket: STORAGE.bucket,
+    const res = await clientEnvoi(nom).send(new ListObjectsV2Command({
+      Bucket: bucket,
       Prefix: prefixe,
       ContinuationToken: jeton,
     }));
-    for (const o of res.Contents || []) out.push({ key: o.Key, size: Number(o.Size) || 0 });
+    for (const o of res.Contents || []) {
+      out.push({
+        key: o.Key,
+        size: Number(o.Size) || 0,
+        lastModified: o.LastModified ? new Date(o.LastModified).getTime() : 0,
+      });
+    }
     jeton = res.IsTruncated ? res.NextContinuationToken : undefined;
   } while (jeton);
   return out;
@@ -404,9 +608,12 @@ async function copyForForward(mediaUrl, { alanyaID, instant = Date.now(), root =
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 /** Réglages de test : configuration, et faux client pour les requêtes réseau. */
-function configureForTests({ client, ...reglages } = {}) {
+function configureForTests({ client, publics, ...reglages } = {}) {
   Object.assign(STORAGE, reglages);
-  clientReel = null;
+  if (publics) {
+    for (const [nom, conf] of Object.entries(publics)) Object.assign(STORAGE.publics[nom], conf);
+  }
+  clientsReels.clear();
   clientDeTest = client || null;
 }
 
@@ -422,13 +629,20 @@ module.exports = {
   newMediaKey,
   newImageKey,
   newVoicemailGreetingKey,
+  newOfficialKey,
+  ringtoneKey,
+  ringtoneUrl,
+  cibleDe,
   publicUrl,
   diskPathForKey,
   contentTypeForKey,
   presignRead,
   presignUpload,
   putFile,
+  putBody,
   copyObject,
+  headObject,
+  readPrivateObject,
   removeAllVersions,
   listPrefix,
   copyForForward,

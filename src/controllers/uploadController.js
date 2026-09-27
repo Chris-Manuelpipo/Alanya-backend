@@ -11,7 +11,11 @@ const {
   MEDIA_MIME_TYPES,
   AVATAR_MAX_BYTES,
   MEDIA_MAX_BYTES,
+  RINGTONE_MIME_TYPES,
+  RINGTONE_MAX_BYTES,
 } = require('../middleware/upload');
+const { entitlementsOrNull } = require('../services/billing/entitlements');
+const { FEATURE } = require('../constants/billing');
 const { invalidateSenderIdentity } = require('../utils/senderIdentityCache');
 const { releasePublicFiles } = require('../utils/mediaFile');
 const { fail } = require('../utils/apiError');
@@ -170,8 +174,9 @@ const uploadMedia = async (req, res) => {
  */
 const uploadTicket = async (req, res) => {
   const { kind = 'media', mimetype, size, fileName } = req.body || {};
+  if (kind === 'ringtone') return ticketSonnerie(req, res);
   if (kind !== 'media' && kind !== 'avatar') {
-    return fail(res, 400, 'VALIDATION_FAILED', 'kind doit valoir media ou avatar');
+    return fail(res, 400, 'VALIDATION_FAILED', 'kind doit valoir media, avatar ou ringtone');
   }
   const avatar = kind === 'avatar';
 
@@ -213,5 +218,69 @@ const uploadTicket = async (req, res) => {
     return stockageIndisponible(res);
   }
 };
+
+/**
+ * Ticket `ringtone` : dépôt d'une sonnerie importée, choisie pour une liste.
+ *
+ * L'application annonce l'empreinte SHA-256 du fichier (celle que la liste
+ * enregistre déjà), son type et sa taille. Trois réponses :
+ *  - `exists` : le fichier est déjà là, rien à envoyer ;
+ *  - `direct` : lien d'envoi `PUT` signé, comme pour un média ;
+ *  - `unavailable` : stockage objet éteint, ou secret des sonneries absent.
+ *    Rien n'est perdu : la sonnerie reste sur le téléphone, comme avant.
+ * Dans les trois cas, `url` (quand elle existe) est l'adresse que les autres
+ * appareils recevront avec les réglages de la liste.
+ */
+async function ticketSonnerie(req, res) {
+  const { sha256, mimetype, size } = req.body || {};
+  const alanyaID = req.user.alanyaID;
+
+  const entitlements = await entitlementsOrNull(alanyaID);
+  if (entitlements && entitlements.features[FEATURE.LIST_RINGTONES] === false) {
+    return fail(res, 403, 'SUBSCRIPTION_REQUIRED', 'Fonctionnalité réservée à Alanya Plus', {
+      feature: FEATURE.LIST_RINGTONES,
+    });
+  }
+
+  const empreinte = String(sha256 || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(empreinte)) {
+    return fail(res, 400, 'VALIDATION_FAILED', 'Empreinte SHA-256 invalide');
+  }
+  const type = String(mimetype || '').toLowerCase();
+  if (!RINGTONE_MIME_TYPES.includes(type)) {
+    return fail(res, 400, 'INVALID_EXTENSION', 'Type de fichier non autorisé');
+  }
+  const octets = Number(size);
+  if (!Number.isInteger(octets) || octets <= 0) {
+    return fail(res, 400, 'VALIDATION_FAILED', 'Taille de fichier invalide');
+  }
+  if (octets > RINGTONE_MAX_BYTES) {
+    return fail(res, 413, 'FILE_TOO_LARGE', 'Fichier trop volumineux');
+  }
+
+  const key = storage.isB2Enabled()
+    ? storage.ringtoneKey({ alanyaID, sha256: empreinte })
+    : null;
+  if (!key) return res.json({ mode: 'unavailable' });
+  const url = storage.publicUrl(key);
+
+  try {
+    if (await storage.headObject(key)) return res.json({ mode: 'exists', url });
+    const envoi = await storage.presignUpload(key, { contentType: type, contentLength: octets });
+    return res.json({
+      mode: 'direct',
+      method: 'PUT',
+      uploadUrl: envoi.url,
+      headers: envoi.headers,
+      expiresIn: envoi.expiresIn,
+      url,
+      mimetype: type,
+      size: octets,
+    });
+  } catch (e) {
+    console.error('[Upload ticket] sonnerie :', e.message);
+    return stockageIndisponible(res);
+  }
+}
 
 module.exports = { uploadAvatar, uploadMedia, uploadTicket, msgTypeFor };

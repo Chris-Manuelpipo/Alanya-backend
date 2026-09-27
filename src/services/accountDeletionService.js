@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { publicFilesOfUser, releasePublicFiles } = require('../utils/mediaFile');
+const { releaseRingtones } = require('./ringtoneFiles');
 const fs = require('fs/promises');
 const path = require('path');
 
@@ -105,6 +106,7 @@ const _purgeUser = async (alanyaID) => {
     await conn.execute('DELETE FROM users WHERE alanyaID = ?', [alanyaID]);
     await conn.commit();
     releasePublicFiles(fichiersPublics);
+    releaseRingtones(alanyaID, { tout: true });
   } catch (e) {
     await conn.rollback();
     throw e;

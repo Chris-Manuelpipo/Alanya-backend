@@ -17,7 +17,9 @@ const policy = require('../constants/mediaRetentionPolicy');
 // ── Le prédicat, sans paliers ───────────────────────────────────────
 const echu = expiredMediaWhere();
 assert.ok(echu.sql.includes('m.mediaUrl IS NOT NULL'));
-assert.ok(echu.sql.includes("m.mediaUrl <> ''"));
+// Seuls les médias de discussion expirent : un média officiel (accueil,
+// diffusion), partagé par des milliers de messages, n'est jamais purgé.
+assert.ok(echu.sql.includes("m.mediaUrl LIKE '%/uploads/media/%'"));
 assert.ok(echu.sql.includes('INTERVAL ? DAY'));
 assert.deepStrictEqual(echu.params, [policy.RETENTION.mediaDays]);
 // L'ancienne forme d'appel reste valable.

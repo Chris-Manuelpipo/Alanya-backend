@@ -27,9 +27,17 @@ const ANNONCE = `${HOTE}/uploads/voicemail/vm_12_1756700000000_0123456789abcdef.
     assert.deepStrictEqual(cheminsDisque(url, RACINE), [], url);
   }
 
-  // Adresse valide : un chemin, sous la racine.
-  assert.deepStrictEqual(cheminsDisque(IMAGE, RACINE), [
+  // Adresse valide : un chemin, sous la racine — pour le préfixe autorisé.
+  assert.deepStrictEqual(cheminsDisque(IMAGE, RACINE, ['images']), [
     path.join(RACINE, 'images/img_12_1756700000000_0123456789abcdef.jpg'),
+  ]);
+  // La suppression d'un média de discussion ne touche que `media/` : un
+  // message « vue unique » qui désignerait la photo de profil de quelqu'un
+  // d'autre ne peut pas la faire supprimer.
+  assert.deepStrictEqual(cheminsDisque(IMAGE, RACINE), []);
+  assert.deepStrictEqual(cheminsDisque(ANNONCE, RACINE), []);
+  assert.deepStrictEqual(cheminsDisque(`${HOTE}/uploads/media/2026-09-01/images/media_12_1756700000000.jpg`, RACINE), [
+    path.join(RACINE, 'media/2026-09-01/images/media_12_1756700000000.jpg'),
   ]);
 
   // Adresse d'avant les partitions : l'ancien emplacement ET la partition où

@@ -10,8 +10,11 @@ const {
   uploadAvatar: multerAvatar,
   uploadMedia: multerMedia,
   uploadVoicemailGreeting: multerGreeting,
+  uploadOfficial: multerOfficial,
   handleMulterError,
 } = require('../middleware/upload');
+const { adminAuth } = require('../middleware/adminAuth');
+const { can } = require('../constants/adminRoles');
 const {
   putVoicemailGreeting,
   deleteVoicemailGreeting,
@@ -171,8 +174,14 @@ router.delete('/voicemail-greeting', auth, deleteVoicemailGreeting);
  *             properties:
  *               kind:
  *                 type: string
- *                 enum: [media, avatar]
+ *                 enum: [media, avatar, ringtone]
  *                 default: media
+ *               sha256:
+ *                 type: string
+ *                 description: >
+ *                   Pour `ringtone` seulement : empreinte SHA-256 du fichier,
+ *                   celle que la liste enregistre. La réponse peut alors valoir
+ *                   `mode: "exists"` (déjà déposé) ou `mode: "unavailable"`.
  *               mimetype:
  *                 type: string
  *               size:
@@ -195,5 +204,55 @@ router.delete('/voicemail-greeting', auth, deleteVoicemailGreeting);
  *         description: Stockage des médias indisponible (STORAGE_UNAVAILABLE)
  */
 router.post('/ticket', auth, uploadLimiter, uploadTicketCtrl);
+
+/**
+ * Médias officiels : réservés à qui publie une diffusion ou prépare l'accueil.
+ * Pas de `requirePermission` : la route sert deux permissions, l'une suffit.
+ */
+const peutEnvoyerOfficiel = (req, res, next) => {
+  const t = req.user?.typeCompte;
+  if (can(t, 'broadcasts.send') || can(t, 'welcome.draft')) return next();
+  return res.status(403).json({ error: 'Permission requise', code: 'INSUFFICIENT_ROLE' });
+};
+
+/**
+ * @swagger
+ * /api/upload/official:
+ *   post:
+ *     summary: Héberger un média officiel (diffusion, message d'accueil)
+ *     description: >
+ *       Réservé à l'administration. Le fichier est rangé sous `official/`, dans
+ *       le bucket public `profilemedia` : il n'expire jamais, et la purge des
+ *       discussions ne le touche pas. Même réponse que /upload/media.
+ *     tags: [Upload]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *     responses:
+ *       200:
+ *         description: url, filename, originalName, mimetype, size, msgType
+ *       403:
+ *         description: Permission requise (INSUFFICIENT_ROLE)
+ *       503:
+ *         description: Stockage des médias indisponible (STORAGE_UNAVAILABLE)
+ */
+router.post(
+  '/official',
+  adminAuth,
+  peutEnvoyerOfficiel,
+  uploadLimiter,
+  multerOfficial.single('file'),
+  handleMulterError,
+  uploadMediaCtrl,
+);
 
 module.exports = router;

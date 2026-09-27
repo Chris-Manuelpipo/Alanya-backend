@@ -10,6 +10,7 @@ const {
   newMediaKey,
   newImageKey,
   newVoicemailGreetingKey,
+  newOfficialKey,
   safeExt,
 } = require('../services/mediaStorage');
 
@@ -17,6 +18,7 @@ const {
 const AVATAR_MAX_BYTES = 5 * 1024 * 1024;   // 5 MB
 const MEDIA_MAX_BYTES  = 50 * 1024 * 1024;  // 50 MB
 const GREETING_MAX_BYTES = 2 * 1024 * 1024; // 2 MB — dix secondes de voix
+const RINGTONE_MAX_BYTES = 5 * 1024 * 1024; // 5 MB — une sonnerie, pas un album
 
 /**
  * Dossier de transit quand les médias vont chez Backblaze : multer y écrit,
@@ -144,6 +146,36 @@ const mediaStorage = multer.diskStorage({
   },
 });
 
+// Sauvegarde : médias officiels (diffusions, messages d'accueil).
+//
+// `official/<type>/…`, jamais daté : ces médias n'expirent pas, et un même
+// fichier est partagé par autant de messages qu'il y a de destinataires. En
+// stockage objet, ils vont dans le bucket public `profilemedia`.
+const officialStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    try {
+      if (isB2Enabled()) {
+        file.storageKey = newOfficialKey({
+          kind: mediaSubDir(file.mimetype),
+          ext: safeExt(file.originalname),
+        });
+        ensureDir(UPLOAD_TMP_DIR);
+        return cb(null, UPLOAD_TMP_DIR);
+      }
+      const dir = path.join(__dirname, '../../uploads/official', mediaSubDir(file.mimetype));
+      ensureDir(dir);
+      return cb(null, dir);
+    } catch (e) {
+      return cb(e);
+    }
+  },
+  filename: (req, file, cb) => {
+    if (file.storageKey) return cb(null, path.basename(file.storageKey));
+    const ext = safeExt(file.originalname);
+    return cb(null, `off_${Date.now()}_${crypto.randomBytes(8).toString('hex')}${ext}`);
+  },
+});
+
 // Types acceptés — exportés pour la route de ticket, qui applique les mêmes
 // règles avant d'autoriser un envoi direct.
 const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -246,6 +278,22 @@ const uploadMedia = multer({
   fileFilter: mediaFilter,
 });
 
+/** Médias officiels : mêmes types et même plafond qu'un média de discussion. */
+const uploadOfficial = multer({
+  storage: officialStorage,
+  limits:  { fileSize: MEDIA_MAX_BYTES },
+  fileFilter: mediaFilter,
+});
+
+/**
+ * Types d'une sonnerie importée : l'audio des médias, plus `video/mp4` que
+ * certains `.m4a` annoncent.
+ */
+const RINGTONE_MIME_TYPES = [
+  ...MEDIA_MIME_TYPES.filter((t) => t.startsWith('audio/')),
+  'video/mp4',
+];
+
 /**
  * Annonce de répondeur : dix secondes de voix, deux mégaoctets de plafond.
  *
@@ -288,6 +336,7 @@ module.exports = {
   uploadAvatar,
   uploadMedia,
   uploadVoicemailGreeting,
+  uploadOfficial,
   handleMulterError,
   mediaSubDir,
   IMAGE_MIME_TYPES,
@@ -295,6 +344,8 @@ module.exports = {
   AVATAR_MAX_BYTES,
   MEDIA_MAX_BYTES,
   GREETING_MAX_BYTES,
+  RINGTONE_MIME_TYPES,
+  RINGTONE_MAX_BYTES,
   UPLOAD_TMP_DIR,
   cleanStaleUploadTmp,
 };

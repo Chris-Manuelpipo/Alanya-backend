@@ -4,8 +4,9 @@
  *
  * - Trajets : les trajets clos du compte, avec leurs positions, événements et
  *   suiveurs (cascade). Un trajet encore ouvert va à son terme.
- * - Sonneries par liste : les colonnes de son des listes du compte. Le
- *   téléphone efface ses préférences locales en lisant `purgedAt`.
+ * - Sonneries par liste : les colonnes de son des listes du compte, et les
+ *   fichiers des sonneries importées (`ringtones/<compte>/`). Le téléphone
+ *   efface ses préférences locales en lisant `purgedAt`.
  * - Traduction : tout vit sur le téléphone (modèles, traductions) — c'est lui
  *   qui efface, à la même lecture.
  * - Sauvegarde : jamais. Les archives sont chez l'utilisateur ; refuser la clé
@@ -13,6 +14,7 @@
  */
 
 const pool = require('../../config/db');
+const { releaseRingtones } = require('../ringtoneFiles');
 
 async function purgeFeatureData(alanyaID, db = pool) {
   const [trips] = await db.execute(
@@ -28,6 +30,8 @@ async function purgeFeatureData(alanyaID, db = pool) {
         AND (msg_sound_id IS NOT NULL OR call_sound_id IS NOT NULL OR sound_priority IS NOT NULL)`,
     [alanyaID],
   );
+  // Les fichiers suivent les colonnes : plus aucune liste ne les désigne.
+  releaseRingtones(alanyaID, { tout: true });
   return { trips: trips.affectedRows, lists: lists.affectedRows };
 }
 

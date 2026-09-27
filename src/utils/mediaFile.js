@@ -19,33 +19,43 @@ const {
 /// connu, aucun `..` — devient un chemin. Construire le chemin directement à
 /// partir de l'URL laissait une adresse en `/uploads/../../.env` faire
 /// supprimer un fichier du serveur hors de `uploads/`.
-const cheminsDisque = (url, root) => {
+const cheminsDisque = (url, root, prefixes = ['media']) => {
   const cles = new Set([keyFromUrl(url), storedKeyFromUrl(url)].filter(Boolean));
-  return [...cles].map((cle) => diskPathForKey(cle, root));
+  return [...cles]
+    .filter((cle) => prefixes.includes(cle.split('/')[0]))
+    .map((cle) => diskPathForKey(cle, root));
 };
 
-/// Supprime physiquement un fichier média à partir de son URL publique
-/// (`.../uploads/images/x.jpg` ou `.../uploads/media/<sous-dossier>/x`).
-/// Best-effort : toute erreur est ignorée (fichier déjà absent, etc.).
-///
-/// Stockage objet : le fichier est aussi supprimé chez Backblaze, **toutes
-/// versions comprises**. Une suppression simple ne ferait que le masquer
-/// jusqu'au passage quotidien des règles de cycle de vie, ce qui ne convient
-/// pas à un média à vue unique consommé.
-const deleteMediaFile = (mediaUrl) => {
-  if (!mediaUrl) return;
-  for (const chemin of cheminsDisque(mediaUrl)) {
+/// Supprime un fichier (disque et Backblaze), s'il est rangé sous l'un des
+/// `prefixes` autorisés. Best-effort : toute erreur est ignorée.
+const supprimerFichier = (url, prefixes) => {
+  if (!url) return;
+  for (const chemin of cheminsDisque(url, undefined, prefixes)) {
     fs.unlink(chemin, () => {});
   }
   if (isB2Enabled()) {
-    const key = storedKeyFromUrl(mediaUrl);
-    if (key) {
+    const key = storedKeyFromUrl(url);
+    if (key && prefixes.includes(key.split('/')[0])) {
       removeAllVersions(key).catch((e) => {
         console.error('[MediaFile] suppression Backblaze échouée:', e.message);
       });
     }
   }
 };
+
+/// Supprime physiquement un média de discussion à partir de son URL
+/// (`.../uploads/media/<jour>/<type>/x`). Best-effort.
+///
+/// Seulement sous `media/` : l'adresse d'un message s'écrit librement depuis
+/// l'application, et un message « vue unique » qui désignerait la photo de
+/// profil de quelqu'un d'autre la ferait sinon supprimer à son ouverture. Les
+/// photos et annonces passent par `deletePublicFileIfUnused`.
+///
+/// Stockage objet : le fichier est aussi supprimé chez Backblaze, **toutes
+/// versions comprises**. Une suppression simple ne ferait que le masquer
+/// jusqu'au passage quotidien des règles de cycle de vie, ce qui ne convient
+/// pas à un média à vue unique consommé.
+const deleteMediaFile = (mediaUrl) => supprimerFichier(mediaUrl, ['media']);
 
 // ── Fichiers publics : photos de profil et de groupe, annonces ──────────────
 
@@ -89,7 +99,10 @@ const motifFinissantPar = (cle) => `%/${cle.replace(/[!%_]/g, '!$&')}`;
  *
  * @returns {Promise<boolean>} `true` si la suppression a été lancée
  */
-async function deletePublicFileIfUnused(url, { db = pool, supprimer = deleteMediaFile } = {}) {
+async function deletePublicFileIfUnused(url, {
+  db = pool,
+  supprimer = (u) => supprimerFichier(u, ['images', 'voicemail']),
+} = {}) {
   const cle = keyFromUrl(url);
   if (!cle || !NOMS_GENERES.some((re) => re.test(cle))) return false;
 
