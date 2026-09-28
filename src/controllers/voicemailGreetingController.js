@@ -2,11 +2,9 @@
  * Annonce vocale du répondeur : dépôt, remplacement, suppression.
  *
  * L'annonce est un réglage, pas un message. Elle ne passe donc PAS par
- * `POST /upload/media` — ce serait le piège : ce chemin range le fichier sous
- * `uploads/media/<jour>/`, et `sweepPartitions` supprime le répertoire daté
- * entier au bout de la rétention, sans consulter aucune table. L'annonce
- * disparaîtrait d'elle-même, quelques semaines plus tard, sans que rien ne
- * l'explique. Elle vit donc dans `uploads/voicemail/`, que rien ne balaie.
+ * `POST /upload/media`, qui la rangerait sous `media/<jour>/` : elle serait
+ * traitée comme un média de discussion, qui expire. Elle vit sous
+ * `voicemail/`, dans le bucket public `profilemedia`, que rien ne purge.
  *
  * Chaque enregistrement produit un NOUVEAU nom de fichier, avec un suffixe
  * aléatoire, et l'ancien est supprimé. Ce n'est pas seulement de l'hygiène :
@@ -15,12 +13,7 @@
  * entendraient éternellement la première version.
  */
 
-const path = require('path');
 const fs = require('fs/promises');
-
-// Même source que `uploadController` : l'adresse publique n'est pas dans un
-// module de configuration, elle se lit dans l'environnement.
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
 const {
   loadUserVoicemailSchedule,
@@ -33,28 +26,17 @@ const { isB2Enabled, putFile, publicUrl, removeAllVersions, keyFromUrl } =
 /** Plafond de durée, en secondes. « Quelques secondes », pas un monologue. */
 const MAX_GREETING_SECONDS = 10;
 
-const GREETING_DIR = path.join(__dirname, '../../uploads/voicemail');
-
 /** Supprime l'annonce précédente. Un échec ici ne doit jamais bloquer la nouvelle. */
 const _supprimerFichier = async (url) => {
   if (!url) return;
   try {
-    if (isB2Enabled()) {
-      // Seulement une annonce : quoi que désigne l'adresse, rien d'autre ne
-      // part d'ici.
-      const cle = keyFromUrl(url);
-      if (cle && cle.startsWith('voicemail/')) await removeAllVersions(cle);
-      return;
-    }
-    const nom = String(url).split('/').pop();
-    // Garde-fou : on ne supprime que dans le répertoire des annonces, et
-    // seulement un nom de fichier — pas un chemin.
-    if (!nom || nom.includes('/') || nom.includes('..')) return;
-    await fs.unlink(path.join(GREETING_DIR, nom));
+    if (!isB2Enabled()) return;
+    // Seulement une annonce : quoi que désigne l'adresse, rien d'autre ne
+    // part d'ici.
+    const cle = keyFromUrl(url);
+    if (cle && cle.startsWith('voicemail/')) await removeAllVersions(cle);
   } catch (e) {
-    if (e.code !== 'ENOENT') {
-      console.warn('[VoicemailGreeting] ancien fichier non supprimé:', e.message);
-    }
+    console.warn('[VoicemailGreeting] ancien fichier non supprimé:', e.message);
   }
 };
 
@@ -73,7 +55,8 @@ const putVoicemailGreeting = async (req, res) => {
 
     const secondes = Number(req.body?.seconds);
     if (!Number.isFinite(secondes) || secondes < 1 || secondes > MAX_GREETING_SECONDS) {
-      await _supprimerFichier(req.file.filename);
+      // Le fichier de transit ne doit pas survivre au refus.
+      await fs.unlink(req.file.path).catch(() => {});
       return res.status(400).json({
         error: `L'annonce doit durer entre 1 et ${MAX_GREETING_SECONDS} secondes`,
         code: 'GREETING_TOO_LONG',
@@ -81,18 +64,15 @@ const putVoicemailGreeting = async (req, res) => {
     }
 
     let url;
-    if (req.file.storageKey) {
-      try {
-        await putFile(req.file.storageKey, req.file.path, { contentType: req.file.mimetype });
-        url = publicUrl(req.file.storageKey);
-      } catch (e) {
-        console.error('[VoicemailGreeting] dépôt Backblaze échoué:', e.message);
-        return res.status(503).json({ error: 'Stockage indisponible', code: 'STORAGE_UNAVAILABLE' });
-      } finally {
-        await fs.unlink(req.file.path).catch(() => {});
-      }
-    } else {
-      url = `${BASE_URL}/uploads/voicemail/${req.file.filename}`;
+    try {
+      if (!isB2Enabled()) throw new Error('Backblaze non configuré');
+      await putFile(req.file.storageKey, req.file.path, { contentType: req.file.mimetype });
+      url = publicUrl(req.file.storageKey);
+    } catch (e) {
+      console.error('[VoicemailGreeting] dépôt Backblaze échoué:', e.message);
+      return res.status(503).json({ error: 'Stockage indisponible', code: 'STORAGE_UNAVAILABLE' });
+    } finally {
+      await fs.unlink(req.file.path).catch(() => {});
     }
 
     // L'ancienne est supprimée APRÈS que la nouvelle est écrite : à aucun

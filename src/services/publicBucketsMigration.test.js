@@ -1,13 +1,9 @@
 const assert = require('assert');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 
 const reel = require('./mediaStorage');
 const { executer } = require('./publicBucketsMigration');
 
 const CONFIG_B2 = {
-  demande: 'b2',
   endpoint: 'https://s3.eu-central-003.backblazeb2.com',
   region: 'eu-central-003',
   bucket: 'alanyaprivate',
@@ -22,16 +18,14 @@ const HOTE = 'https://www.alanya237.com/uploads';
 const PROF = 'https://alanyaprofile.s3.eu-central-003.backblazeb2.com';
 const PM = 'https://profilemedia.s3.eu-central-003.backblazeb2.com';
 
-// Le monde de départ : un avatar resté sur le disque du VPS, un autre et une
-// annonce dans le bucket privé, l'avatar par défaut déjà copié, un média
-// officiel rangé comme un média de discussion, un autre déjà expiré.
-const racine = fs.mkdtempSync(path.join(os.tmpdir(), 'migr-pub-'));
-fs.mkdirSync(path.join(racine, 'images'), { recursive: true });
-fs.writeFileSync(path.join(racine, 'images/img_1_1700000000000.jpg'), 'disque');
+// Le monde de départ : deux avatars et une annonce dans le bucket privé,
+// l'avatar par défaut déjà copié, un média officiel rangé comme un média de
+// discussion, un autre déjà expiré.
 
 function monde() {
   return {
     prive: new Map([
+      ['images/img_1_1700000000000.jpg', 'prive'],
       ['images/img_2_1700000000000.jpg', 'prive'],
       ['voicemail/vm_5_1700000000000_0123456789abcdef.m4a', 'annonce'],
       ['media/2026-08-01/images/media_9_1754000000000.jpg', 'officiel'],
@@ -53,7 +47,6 @@ function fauxStockage(m) {
       listPrefix: async (prefixe, { depuis } = {}) => [...(depuis === 'prive' ? m.prive : m.publics).keys()]
         .filter((k) => k.startsWith(prefixe))
         .map((key) => ({ key, size: 1, lastModified: 0 })),
-      putFile: async (key, chemin) => { ops.push(['disque→public', key]); m.publics.set(key, fs.readFileSync(chemin, 'utf8')); },
       putBody: async (key, corps, { contentType }) => { ops.push(['privé→public', key, contentType]); m.publics.set(key, corps); },
       readPrivateObject: async (key) => {
         if (!m.prive.has(key)) throw new Error(`absent : ${key}`);
@@ -89,7 +82,7 @@ function fausseBase() {
       if (sql.includes('FROM statut')) return [[]];
       if (sql.includes('FROM users')) {
         return [[
-          { id: 1, url: `${HOTE}/images/img_1_1700000000000.jpg` }, // sur le disque
+          { id: 1, url: `${HOTE}/images/img_1_1700000000000.jpg` },
           { id: 2, url: `http://158.220.107.211/uploads/images/img_2_1700000000000.jpg` }, // ancien hôte
           { id: 3, url: `${HOTE}/images/default_avatar_male.png` }, // déjà copié
           { id: 4, url: `${HOTE}/images/img_4_1700000000000.jpg` }, // fichier perdu
@@ -114,7 +107,7 @@ function fausseBase() {
     const m = monde();
     const { storage, ops } = fauxStockage(m);
     const db = fausseBase();
-    const res = await executer({ db, storage, racine, log: silence });
+    const res = await executer({ db, storage, log: silence });
     assert.strictEqual(ops.length, 0, 'aucune copie');
     assert.strictEqual(db.ecritures.length, 0, 'aucune écriture en base');
     assert.deepStrictEqual(res.copie, { dejaLa: 0, aCopier: 3, copies: 0, echecs: 0 });
@@ -128,9 +121,9 @@ function fausseBase() {
   const { storage, ops } = fauxStockage(m);
   {
     const db = fausseBase();
-    const res = await executer({ appliquer: true, db, storage, racine, log: silence });
+    const res = await executer({ appliquer: true, db, storage, log: silence });
     assert.deepStrictEqual(ops.map((o) => o.slice(0, 2)).sort(), [
-      ['disque→public', 'images/img_1_1700000000000.jpg'],
+      ['privé→public', 'images/img_1_1700000000000.jpg'],
       ['privé→public', 'images/img_2_1700000000000.jpg'],
       ['privé→public', 'official/images/media_9_1754000000000.jpg'],
       ['privé→public', 'voicemail/vm_5_1700000000000_0123456789abcdef.m4a'],
@@ -162,7 +155,7 @@ function fausseBase() {
   // ── Seconde exécution : rien n'est recopié ──────────────────────────────
   {
     ops.length = 0;
-    const res = await executer({ appliquer: true, db: fausseBase(), storage, racine, log: silence });
+    const res = await executer({ appliquer: true, db: fausseBase(), storage, log: silence });
     assert.strictEqual(ops.length, 0);
     assert.strictEqual(res.copie.dejaLa, 3);
     assert.strictEqual(res.officiels.copies, 0);
@@ -171,20 +164,21 @@ function fausseBase() {
   // ── Nettoyage : seulement ce qui a une copie publique ───────────────────
   {
     ops.length = 0;
-    const res = await executer({ appliquer: true, nettoyer: true, db: fausseBase(), storage, racine, log: silence });
+    const res = await executer({ appliquer: true, nettoyer: true, db: fausseBase(), storage, log: silence });
     assert.deepStrictEqual(ops.map((o) => o[1]).sort(), [
+      'images/img_1_1700000000000.jpg',
       'images/img_2_1700000000000.jpg',
       'voicemail/vm_5_1700000000000_0123456789abcdef.m4a',
     ]);
     assert.ok(m.prive.has('media/2026-08-01/images/media_9_1754000000000.jpg'), 'les médias de discussion restent');
-    assert.deepStrictEqual(res.nettoyage, { aSupprimer: 2, supprimes: 2, gardes: 0 });
+    assert.deepStrictEqual(res.nettoyage, { aSupprimer: 3, supprimes: 3, gardes: 0 });
   }
 
   // ── Buckets publics non configurés : refus avant toute lecture ──────────
   {
     reel.configureForTests({ ...CONFIG_B2, publics: { profile: { bucket: '' } } });
     const { storage: s2 } = fauxStockage(monde());
-    await assert.rejects(executer({ db: fausseBase(), storage: s2, racine, log: silence }), /non configurés/);
+    await assert.rejects(executer({ db: fausseBase(), storage: s2, log: silence }), /non configurés/);
   }
 
   reel.configureForTests({
@@ -194,7 +188,6 @@ function fausseBase() {
       profilemedia: { bucket: '', keyId: '', appKey: '' },
     },
   });
-  fs.rmSync(racine, { recursive: true });
   console.log('publicBucketsMigration: OK');
 })().catch((e) => {
   console.error(e);

@@ -1,9 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const pool = require('../config/db');
-const { UPLOADS_DIR } = require('../services/mediaPartitions');
 const storage = require('../services/mediaStorage');
 const {
   mediaSubDir,
@@ -22,20 +20,6 @@ const { fail } = require('../utils/apiError');
 
 const _toBool = (v) => v === true || v === 1 || v === '1' || v === 'true';
 
-/**
- * Chemin public d'un fichier déposé par multer, relatif à `/uploads/`.
- *
- * Se déduit du répertoire de destination réel plutôt que du type MIME : c'est
- * la seule façon d'obtenir la même valeur que celle qui a servi à écrire le
- * fichier, quelle que soit la disposition (historique ou partitionnée).
- * Les séparateurs sont normalisés en barres obliques — un chemin de fichier
- * n'est pas une URL.
- */
-const publicPathFor = (file) => {
-  const relatif = path.relative(UPLOADS_DIR, file.destination);
-  return `${relatif.split(path.sep).join('/')}/${file.filename}`;
-};
-
 /** Type de message d'après le type MIME : 1=image, 2=vidéo, 3=audio, 4=fichier. */
 const msgTypeFor = (mimetype = '') => {
   if (mimetype.startsWith('image/')) return 1;
@@ -45,12 +29,13 @@ const msgTypeFor = (mimetype = '') => {
 };
 
 /**
- * Stockage objet : dépose chez Backblaze le fichier que multer a écrit en
- * transit, sous la clé décidée à l'ouverture du flux. Le fichier de transit ne
- * survit jamais à la requête, qu'elle réussisse ou non.
+ * Dépose chez Backblaze le fichier que multer a écrit en transit, sous la clé
+ * décidée à l'ouverture du flux. Le fichier de transit ne survit jamais à la
+ * requête, qu'elle réussisse ou non. Lève si Backblaze n'est pas configuré.
  */
 async function deposerChezB2(file) {
   try {
+    if (!storage.isB2Enabled()) throw new Error('Backblaze non configuré');
     await storage.putFile(file.storageKey, file.path, { contentType: file.mimetype });
     return storage.publicUrl(file.storageKey);
   } finally {
@@ -72,15 +57,11 @@ const uploadAvatar = async (req, res) => {
 
     const filename = req.file.filename;
     let url;
-    if (req.file.storageKey) {
-      try {
-        url = await deposerChezB2(req.file);
-      } catch (e) {
-        console.error('[Upload avatar] dépôt Backblaze échoué:', e.message);
-        return stockageIndisponible(res);
-      }
-    } else {
-      url = `${BASE_URL}/uploads/images/${filename}`;
+    try {
+      url = await deposerChezB2(req.file);
+    } catch (e) {
+      console.error('[Upload avatar] dépôt Backblaze échoué:', e.message);
+      return stockageIndisponible(res);
     }
     const applyToProfile = _toBool(req.body?.applyToProfile ?? req.query?.applyToProfile);
 
@@ -125,24 +106,16 @@ const uploadMedia = async (req, res) => {
     const filename = file.filename;
     const mimetype = file.mimetype;
 
-    // L'URL est composée à partir du répertoire RÉELLEMENT choisi par multer
-    // (`file.destination`), jamais recalculée. Avec le stockage partitionné,
-    // recomposer la date ici rouvrirait une fenêtre à minuit : un upload
-    // commencé à 23:59:59 est écrit dans la partition du jour J, et une URL
-    // recalculée à 00:00:00 désignerait J+1 — un fichier qui n'existe pas.
-    // Cette lecture rend aussi la bascule d'interrupteur transparente : le
-    // contrôleur n'a pas à savoir si la disposition est partitionnée ou non.
-    // Stockage objet : même principe, la clé décidée par multer est relue.
+    // La clé, partition du jour comprise, a été décidée par multer à
+    // l'ouverture du flux (`file.storageKey`) : elle est relue, jamais
+    // recalculée, sans quoi un envoi commencé à 23:59:59 recevrait l'adresse
+    // du lendemain.
     let url;
-    if (file.storageKey) {
-      try {
-        url = await deposerChezB2(file);
-      } catch (e) {
-        console.error('[Upload media] dépôt Backblaze échoué:', e.message);
-        return stockageIndisponible(res);
-      }
-    } else {
-      url = `${BASE_URL}/uploads/${publicPathFor(file)}`;
+    try {
+      url = await deposerChezB2(file);
+    } catch (e) {
+      console.error('[Upload media] dépôt Backblaze échoué:', e.message);
+      return stockageIndisponible(res);
     }
 
     res.json({
@@ -169,8 +142,7 @@ const uploadMedia = async (req, res) => {
  * serveur. Le type et la taille font partie de la signature — un fichier qui
  * ne correspond pas à ce qui a été autorisé est refusé par Backblaze.
  *
- * Tant que le stockage objet n'est pas actif, la réponse est
- * `{ mode: 'multipart' }` : l'application envoie alors comme avant.
+ * Sans Backblaze configuré : 503 `STORAGE_UNAVAILABLE`, comme tout envoi.
  */
 const uploadTicket = async (req, res) => {
   const { kind = 'media', mimetype, size, fileName } = req.body || {};
@@ -192,7 +164,7 @@ const uploadTicket = async (req, res) => {
     return fail(res, 413, 'FILE_TOO_LARGE', 'Fichier trop volumineux');
   }
 
-  if (!storage.isB2Enabled()) return res.json({ mode: 'multipart' });
+  if (!storage.isB2Enabled()) return stockageIndisponible(res);
 
   const ext = storage.safeExt(fileName);
   const key = avatar

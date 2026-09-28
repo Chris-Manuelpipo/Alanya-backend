@@ -7,7 +7,6 @@ const storage = require('./mediaStorage');
 const { soundUrl, cleanRingtones, DELAI_DE_GRACE_MS } = require('./ringtoneFiles');
 
 const CONFIG_B2 = {
-  demande: 'b2',
   endpoint: 'https://s3.eu-central-003.backblazeb2.com',
   region: 'eu-central-003',
   bucket: 'alanyaprivate',
@@ -67,8 +66,8 @@ const baseAvecListes = (listes) => ({ execute: async () => [listes] });
   const url = soundUrl(12, 'custom', A);
   assert.ok(url.startsWith('https://profilemedia.s3.eu-central-003.backblazeb2.com/ringtones/12/'), url);
   assert.ok(!url.includes(A), "l'empreinte n'apparaît pas dans l'adresse");
-  storage.configureForTests({ ...CONFIG_B2, demande: 'disk' });
-  assert.strictEqual(soundUrl(12, 'custom', A), null, 'sans stockage objet, aucune adresse');
+  storage.configureForTests({ ...CONFIG_B2, keyId: '' });
+  assert.strictEqual(soundUrl(12, 'custom', A), null, 'sans Backblaze, aucune adresse');
 
   // ── Nettoyage : seulement les orphelines, et pas celles qui arrivent ──
   {
@@ -104,8 +103,8 @@ const baseAvecListes = (listes) => ({ execute: async () => [listes] });
     process.env.RINGTONE_KEY_SECRET = secret;
   }
 
-  // ── Stockage disque : rien à faire ────────────────────────────────────
-  storage.configureForTests({ ...CONFIG_B2, demande: 'disk' });
+  // ── Backblaze non configuré : rien à faire ────────────────────────────
+  storage.configureForTests({ ...CONFIG_B2, keyId: '' });
   assert.strictEqual(await cleanRingtones(12, { db: baseAvecListes([]) }), 0);
 
   storage.configureForTests({

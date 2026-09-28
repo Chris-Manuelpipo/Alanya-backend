@@ -12,12 +12,13 @@
  * Le serveur répond à cette adresse par une redirection vers un lien signé
  * (voir `middleware/mediaRead.js`) : le bucket reste privé.
  *
- * ── L'interrupteur ──
+ * ── Backblaze est obligatoire ──
  *
- * `MEDIA_STORAGE=b2` active le stockage objet ; toute autre valeur, ou une
- * configuration incomplète, laisse le disque. Déployer ce code sans rien
- * poser dans le `.env` ne change donc aucun comportement — même principe que
- * `MEDIA_PARTITIONS_ENABLED`.
+ * Aucun média n'est plus rangé ni lu sur le disque du serveur (retrait du
+ * stockage disque, 28/09/2026 : les derniers médias du disque ont été copiés
+ * chez Backblaze). Sans `B2_ENDPOINT`, `B2_REGION`, `B2_BUCKET`, `B2_KEY_ID` et
+ * `B2_APP_KEY`, tout envoi et toute lecture de média répondent 503
+ * `STORAGE_UNAVAILABLE` : jamais de repli silencieux vers le disque.
  *
  * ── Trois buckets ──
  *
@@ -53,7 +54,6 @@ const {
   isPartitionKey,
   uploadMsFromFileName,
 } = require('../utils/mediaPartition');
-const { UPLOADS_DIR } = require('./mediaPartitions');
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
@@ -64,20 +64,15 @@ const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
  */
 const CACHE_IMMUABLE = 'public, max-age=31536000, immutable';
 
-/** Préfixes servis par `/uploads`. `exports/` et le reste ne le sont jamais. */
 /**
- * `voicemail` : les annonces de répondeur.
+ * Préfixes servis par `/uploads`. `exports/` et le reste ne le sont jamais.
  *
- * Elles ont leur propre préfixe, et pas par coquetterie — deux purges
- * l'imposent. `mediaRetention` ne voit que ce que `message.mediaUrl` désigne,
- * et une annonce n'est jamais un message ; mais surtout `sweepPartitions`
- * SUPPRIME le répertoire daté entier sous `uploads/media/`, sans consulter
- * aucune table. Une annonce rangée là disparaîtrait toute seule, à terme, sans
- * que rien ne l'explique.
+ * Chacun a son rôle, et sa purge : `media/` est daté et purgé message par
+ * message ; les autres (photos, annonces, sonneries, médias officiels) ne sont
+ * jamais datés et ne partent que sur demande. Une annonce rangée sous `media/`
+ * serait purgée comme un média de discussion.
  *
- * ⚠ Oublier ce préfixe ici casse le service en mode B2 — `isSafeKey` refuse la
- * clé — et silencieusement, puisque B2 est éteint par défaut : personne ne le
- * verrait avant de l'allumer.
+ * ⚠ Oublier un préfixe ici fait refuser ses clés par `isSafeKey`.
  */
 const PREFIXES_SERVIS = [MEDIA_ROOT, 'images', 'voicemail', 'ringtones', 'official'];
 
@@ -99,7 +94,6 @@ const lireEntier = (nom, defaut, min, max) => {
 };
 
 const STORAGE = {
-  demande: String(process.env.MEDIA_STORAGE || 'disk').trim().toLowerCase(),
   endpoint: process.env.B2_ENDPOINT || '',
   region: process.env.B2_REGION || '',
   bucket: process.env.B2_BUCKET || '',
@@ -132,25 +126,27 @@ const STORAGE = {
 const configurationComplete = () =>
   Boolean(STORAGE.endpoint && STORAGE.region && STORAGE.bucket && STORAGE.keyId && STORAGE.appKey);
 
-if (STORAGE.demande === 'b2' && !configurationComplete()) {
-  // Bruyant exprès : un interrupteur allumé sur une configuration incomplète
-  // resterait sinon silencieusement sur le disque.
-  console.error('[MediaStorage] MEDIA_STORAGE=b2 mais B2_ENDPOINT, B2_REGION, B2_BUCKET, '
-    + 'B2_KEY_ID ou B2_APP_KEY manque : les médias restent sur le disque.');
+if (!configurationComplete() && process.env.NODE_ENV !== 'test') {
+  // Bruyant exprès : sans Backblaze, aucun média ne peut être déposé ni servi.
+  console.error('[MediaStorage] B2_ENDPOINT, B2_REGION, B2_BUCKET, B2_KEY_ID ou B2_APP_KEY '
+    + 'manque : aucun média ne pourra être déposé ni servi (503).');
 }
 
-// Même principe pour un bucket public : à moitié configuré, ses fichiers
-// resteraient dans le bucket privé sans que rien ne le dise.
+// Un bucket public à moitié configuré : ses fichiers resteraient dans le
+// bucket privé sans que rien ne le dise.
 for (const [nom, conf] of Object.entries(STORAGE.publics)) {
   const poses = [conf.bucket, conf.keyId, conf.appKey].filter(Boolean).length;
-  if (STORAGE.demande === 'b2' && poses > 0 && poses < 3) {
+  if (poses > 0 && poses < 3) {
     console.error(`[MediaStorage] bucket public « ${nom} » incomplet (nom, clé et secret requis) : `
       + 'ses fichiers restent dans le bucket privé.');
   }
 }
 
-/** `true` si les médias vont chez Backblaze. */
-const isB2Enabled = () => STORAGE.demande === 'b2' && configurationComplete();
+/**
+ * `true` si Backblaze est configuré. Sans lui, aucun média : les appelants
+ * répondent 503 plutôt que de chercher un disque qui n'est plus utilisé.
+ */
+const isB2Enabled = () => configurationComplete();
 
 // ── Clients ─────────────────────────────────────────────────────────────────
 
@@ -369,9 +365,6 @@ function ringtoneUrl({ alanyaID, sha256 }) {
   return key ? publicUrl(key) : null;
 }
 
-/** Chemin sur le disque d'une clé déjà validée. */
-const diskPathForKey = (key, root = UPLOADS_DIR) => path.join(root, key);
-
 const TYPES_PAR_EXTENSION = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
   '.gif': 'image/gif', '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.3gp': 'video/3gpp',
@@ -576,14 +569,14 @@ async function listPrefix(prefixe, { depuis } = {}) {
 }
 
 /**
- * Copie propre d'un média transféré, dans la partition du jour.
+ * Copie propre d'un média transféré, dans la partition du jour, côté
+ * Backblaze : aucun octet ne passe par le serveur.
  *
- * Même sémantique que l'ancien lien matériel (`relinkForForward`) : chaque
- * message garantit la rétention à son propre média. Pendant la transition, un
- * fichier encore sur le disque est déposé depuis le disque. Renvoie la
- * nouvelle clé, ou `null` — l'appelant garde alors l'URL d'origine.
+ * Chaque message garantit ainsi la rétention à son propre média : sans copie,
+ * le transfert mourrait avec le média d'origine. Renvoie la nouvelle clé, ou
+ * `null` — l'appelant garde alors l'URL d'origine.
  */
-async function copyForForward(mediaUrl, { alanyaID, instant = Date.now(), root = UPLOADS_DIR } = {}) {
+async function copyForForward(mediaUrl, { alanyaID, instant = Date.now() } = {}) {
   const source = storedKeyFromUrl(mediaUrl);
   if (!source || !source.startsWith(`${MEDIA_ROOT}/`)) return null;
   const segments = source.split('/');
@@ -592,12 +585,7 @@ async function copyForForward(mediaUrl, { alanyaID, instant = Date.now(), root =
 
   const cible = newMediaKey({ kind, alanyaID, ext: safeExt(source), instant });
   try {
-    const surDisque = diskPathForKey(source, root);
-    if (fs.existsSync(surDisque)) {
-      await putFile(cible, surDisque, { contentType: contentTypeForKey(source) });
-    } else {
-      await copyObject(source, cible);
-    }
+    await copyObject(source, cible);
     return cible;
   } catch (e) {
     console.error('[MediaStorage] transfert : copie impossible:', e.message);
@@ -634,7 +622,6 @@ module.exports = {
   ringtoneUrl,
   cibleDe,
   publicUrl,
-  diskPathForKey,
   contentTypeForKey,
   presignRead,
   presignUpload,

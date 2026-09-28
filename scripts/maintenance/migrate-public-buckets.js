@@ -7,8 +7,8 @@
  *
  * ── Avant ──
  *
- * Dans le `.env` du serveur : `MEDIA_STORAGE=b2`, et pour chacun des deux
- * buckets publics son nom, sa clé et son secret (`B2_PROFILE_*`,
+ * Dans le `.env` du serveur : le bucket privé (`B2_*`), et pour chacun des
+ * deux buckets publics son nom, sa clé et son secret (`B2_PROFILE_*`,
  * `B2_PROFILEMEDIA_*`). Le code qui sait lire aux deux endroits doit déjà être
  * déployé.
  *

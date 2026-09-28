@@ -10,9 +10,8 @@
  * Le fichier déposé est un objet de test sous `media/<jour>/files/`, supprimé
  * à la fin — y compris si une étape échoue.
  *
- * Lit le `.env` du dépôt. `MEDIA_STORAGE` n'a pas besoin d'être à `b2` : il
- * suffit que B2_ENDPOINT, B2_REGION, B2_BUCKET, B2_KEY_ID et B2_APP_KEY soient
- * renseignés.
+ * Lit le `.env` du dépôt : B2_ENDPOINT, B2_REGION, B2_BUCKET, B2_KEY_ID et
+ * B2_APP_KEY doivent être renseignés.
  */
 
 require('dotenv').config();
@@ -34,10 +33,6 @@ async function main() {
     console.error('  Voir .env.example, section « Stockage des médias (Backblaze B2) ».');
     process.exit(1);
   }
-
-  // Le script doit marcher même quand MEDIA_STORAGE est resté à `disk` : c'est
-  // justement l'ordre recommandé (vérifier les clés avant de basculer).
-  storage.configureForTests({ demande: 'b2' });
 
   console.log(`Bucket   : ${storage.STORAGE.bucket}`);
   console.log(`Endpoint : ${storage.STORAGE.endpoint}`);

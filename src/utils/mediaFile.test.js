@@ -1,22 +1,20 @@
 const assert = require('assert');
-const path = require('path');
 
 const {
   deletePublicFileIfUnused,
   publicFilesOfUser,
   groupPhotosOf,
-  _cheminsDisque: cheminsDisque,
+  _cleSupprimable: cleSupprimable,
 } = require('./mediaFile');
 
 const HOTE = 'https://www.alanya237.com';
-const RACINE = '/srv/alanya/uploads';
 const IMAGE = `${HOTE}/uploads/images/img_12_1756700000000_0123456789abcdef.jpg`;
 const ANNONCE = `${HOTE}/uploads/voicemail/vm_12_1756700000000_0123456789abcdef.m4a`;
 
-// ── Chemins sur le disque : jamais hors de `uploads/` ───────────────
+// ── Clés supprimables : jamais une clé fabriquée par un client ──────
 {
   // Une adresse de média s'écrit librement depuis l'application : elle ne
-  // doit pas pouvoir désigner un fichier du serveur.
+  // doit pas pouvoir désigner autre chose qu'un média rangé.
   for (const url of [
     `${HOTE}/uploads/../.env`,
     `${HOTE}/uploads/media/../../.env`,
@@ -24,28 +22,27 @@ const ANNONCE = `${HOTE}/uploads/voicemail/vm_12_1756700000000_0123456789abcdef.
     `${HOTE}/uploads/exports/export_12.zip`,
     `${HOTE}/uploads/../../server.js`,
   ]) {
-    assert.deepStrictEqual(cheminsDisque(url, RACINE), [], url);
+    assert.strictEqual(cleSupprimable(url, ['media', 'images', 'voicemail']), null, url);
   }
 
-  // Adresse valide : un chemin, sous la racine — pour le préfixe autorisé.
-  assert.deepStrictEqual(cheminsDisque(IMAGE, RACINE, ['images']), [
-    path.join(RACINE, 'images/img_12_1756700000000_0123456789abcdef.jpg'),
-  ]);
+  // Adresse valide : sa clé, pour le préfixe autorisé.
+  assert.strictEqual(cleSupprimable(IMAGE, ['images']), 'images/img_12_1756700000000_0123456789abcdef.jpg');
   // La suppression d'un média de discussion ne touche que `media/` : un
   // message « vue unique » qui désignerait la photo de profil de quelqu'un
   // d'autre ne peut pas la faire supprimer.
-  assert.deepStrictEqual(cheminsDisque(IMAGE, RACINE), []);
-  assert.deepStrictEqual(cheminsDisque(ANNONCE, RACINE), []);
-  assert.deepStrictEqual(cheminsDisque(`${HOTE}/uploads/media/2026-09-01/images/media_12_1756700000000.jpg`, RACINE), [
-    path.join(RACINE, 'media/2026-09-01/images/media_12_1756700000000.jpg'),
-  ]);
+  assert.strictEqual(cleSupprimable(IMAGE, ['media']), null);
+  assert.strictEqual(cleSupprimable(ANNONCE, ['media']), null);
+  assert.strictEqual(
+    cleSupprimable(`${HOTE}/uploads/media/2026-09-01/images/media_12_1756700000000.jpg`, ['media']),
+    'media/2026-09-01/images/media_12_1756700000000.jpg',
+  );
 
-  // Adresse d'avant les partitions : l'ancien emplacement ET la partition où
-  // le fichier a été rangé depuis.
-  const ancien = `${HOTE}/uploads/media/images/media_12_1756700000000.jpg`;
-  const chemins = cheminsDisque(ancien, RACINE);
-  assert.strictEqual(chemins.length, 2);
-  assert.ok(chemins.every((c) => c.startsWith(`${RACINE}/media/`)));
+  // Adresse d'avant les partitions : la clé de la partition où le fichier a
+  // été rangé.
+  assert.strictEqual(
+    cleSupprimable(`${HOTE}/uploads/media/images/media_12_1756700000000.jpg`, ['media']),
+    'media/2025-09-01/images/media_12_1756700000000.jpg',
+  );
 }
 
 async function main() {

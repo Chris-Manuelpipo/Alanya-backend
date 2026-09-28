@@ -23,23 +23,13 @@ const pool = require('../config/db');
 const mediaPolicy = require('../constants/mediaRetentionPolicy');
 const tripPolicy = require('../constants/tripPolicy');
 
-const NAMES = ['media', 'media_partitions', 'broadcast', 'story', 'welcome_status', 'trip', 'data_retention', 'backup_key_access'];
+const NAMES = ['media', 'broadcast', 'story', 'welcome_status', 'trip', 'data_retention', 'backup_key_access'];
 
 /** Borne une valeur de réglage. Une saisie hors bornes est ramenée, jamais rejetée en silence. */
 function clampInt(value, { min, max, fallback }) {
   const n = Number.parseInt(value, 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, n));
-}
-
-/**
- * Rétention appliquée aux tranches du disque : jamais en deçà du plafond de
- * conservation des médias. Jette si l'état des abonnements est illisible —
- * le balayage échoue alors sans rien supprimer.
- */
-async function retentionDesPartitions(opts) {
-  const { rafraichirPlafond } = require('./mediaRetention');
-  return Math.max(opts.mediaDays, await rafraichirPlafond());
 }
 
 // ── Descripteurs ────────────────────────────────────────────────────────────
@@ -99,49 +89,6 @@ const DESCRIPTORS = {
         alertFloor: opts.alertFloor,
         trigger,
       });
-    },
-  },
-
-  // Purge TEMPORELLE des médias, par opposition à la purge référentielle
-  // ci-dessus. Elle ne demande pas à `message` quels fichiers sont expirés :
-  // elle supprime le répertoire du jour échu, dont le nom porte la date. La
-  // différence n'est pas de performance mais de garantie — un fichier que la
-  // base ne référence pas (upload interrompu, conversation supprimée, `unlink`
-  // en échec) tombe avec sa partition, alors que la purge référentielle ne peut
-  // pas même le voir. C'est exactement ce qui a laissé 707 fichiers orphelins
-  // sur le disque le 25/08/2026.
-  //
-  // Les deux coexistent le temps de la transition : `media` continue de traiter
-  // les fichiers restés à leur ancienne adresse, `media_partitions` prend en
-  // charge tout ce qui est déposé dans une tranche datée. Le vrai interrupteur
-  // reste la variable d'environnement `MEDIA_PARTITIONS_ENABLED` : tant qu'elle
-  // est éteinte, ce balayage ne supprime rien et `stats()` l'annonce.
-  //
-  // Une tranche ne tombe qu'au plafond de conservation (`plafondDe`) : en
-  // phase payante, elle peut contenir des médias d'abonnés, gardés jusqu'à la
-  // durée Alanya Plus. Les autres fichiers de la tranche sont supprimés un à un
-  // par la purge `media`, au terme de leur propre rétention.
-  media_partitions: {
-    label: 'Partitions de médias échues',
-    description:
-      "Supprime les tranches de 24 h dont tous les fichiers ont dépassé la "
-      + 'rétention. La suppression ne consulte pas la base : elle atteint donc '
-      + 'aussi les fichiers qu\'aucun message ne référence.',
-    knobs: [{
-      key: 'mediaDays',
-      label: 'Rétention des médias',
-      unit: 'jours',
-      min: 1,
-      max: 365,
-      default: () => mediaPolicy.RETENTION.mediaDays,
-    }],
-    async stats(opts) {
-      const { partitionStats } = require('./mediaPartitions');
-      return partitionStats({ retentionDays: await retentionDesPartitions(opts) });
-    },
-    async run(opts) {
-      const { sweepPartitions } = require('./mediaPartitions');
-      return sweepPartitions({ retentionDays: await retentionDesPartitions(opts) });
     },
   },
 

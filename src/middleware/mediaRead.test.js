@@ -1,14 +1,10 @@
 const assert = require('assert');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 
 const storage = require('../services/mediaStorage');
 const { mediaRead } = require('./mediaRead');
 const { mediaExpiryGuard } = require('./mediaExpiry');
 
 const CONFIG_B2 = {
-  demande: 'b2',
   endpoint: 'https://s3.eu-central-003.backblazeb2.com',
   region: 'eu-central-003',
   bucket: 'alanyaprivate',
@@ -32,10 +28,10 @@ function fausseReponse() {
   };
 }
 
-async function passer(req, { root }) {
+async function passer(req) {
   const res = fausseReponse();
   let suivant = false;
-  await mediaRead({ root })(req, res, () => { suivant = true; });
+  await mediaRead()(req, res, () => { suivant = true; });
   return { res, suivant };
 }
 
@@ -51,19 +47,18 @@ const test = async (nom, fn) => {
 };
 
 (async () => {
-  const racine = fs.mkdtempSync(path.join(os.tmpdir(), 'media-read-'));
-
-  await test('stockage disque : ne fait rien, express.static sert', async () => {
-    storage.configureForTests({ ...CONFIG_B2, demande: 'disk' });
-    const { res, suivant } = await passer({ method: 'GET', path: '/media/2026-09-15/images/a.jpg' }, { root: racine });
-    assert.ok(suivant);
-    assert.strictEqual(res.code, null);
+  await test('Backblaze non configuré : 503, jamais de repli vers un disque', async () => {
+    storage.configureForTests({ ...CONFIG_B2, keyId: '' });
+    const { res, suivant } = await passer({ method: 'GET', path: '/media/2026-09-15/images/a.jpg' });
+    assert.ok(!suivant);
+    assert.strictEqual(res.code, 503);
+    assert.strictEqual(res.corps.code, 'STORAGE_UNAVAILABLE');
   });
 
   storage.configureForTests(CONFIG_B2);
 
   await test('GET : 302 vers un lien signé, jamais mis en cache', async () => {
-    const { res, suivant } = await passer({ method: 'GET', path: '/media/2026-09-15/images/a.jpg' }, { root: racine });
+    const { res, suivant } = await passer({ method: 'GET', path: '/media/2026-09-15/images/a.jpg' });
     assert.ok(!suivant);
     assert.strictEqual(res.code, 302);
     const u = new URL(res.redirige);
@@ -73,21 +68,13 @@ const test = async (nom, fn) => {
   });
 
   await test('HEAD : lien signé pour HEAD, distinct du lien GET', async () => {
-    const g = await passer({ method: 'GET', path: '/images/a.jpg' }, { root: racine });
-    const h = await passer({ method: 'HEAD', path: '/images/a.jpg' }, { root: racine });
+    const g = await passer({ method: 'GET', path: '/images/a.jpg' });
+    const h = await passer({ method: 'HEAD', path: '/images/a.jpg' });
     assert.strictEqual(h.res.code, 302);
     assert.notStrictEqual(
       new URL(g.res.redirige).searchParams.get('X-Amz-Signature'),
       new URL(h.res.redirige).searchParams.get('X-Amz-Signature'),
     );
-  });
-
-  await test('transition : un fichier encore sur le disque est servi comme avant', async () => {
-    fs.mkdirSync(path.join(racine, 'images'), { recursive: true });
-    fs.writeFileSync(path.join(racine, 'images', 'local.jpg'), 'x');
-    const { res, suivant } = await passer({ method: 'GET', path: '/images/local.jpg' }, { root: racine });
-    assert.ok(suivant);
-    assert.strictEqual(res.code, null);
   });
 
   await test('hors médias, remontée, autre méthode : laissé à la suite (404)', async () => {
@@ -96,7 +83,7 @@ const test = async (nom, fn) => {
       { method: 'GET', path: '/media/../../etc/passwd' },
       { method: 'POST', path: '/images/a.jpg' },
     ]) {
-      const { res, suivant } = await passer(req, { root: racine });
+      const { res, suivant } = await passer(req);
       assert.ok(suivant, `${req.method} ${req.path}`);
       assert.strictEqual(res.code, null);
     }
@@ -106,7 +93,7 @@ const test = async (nom, fn) => {
     const original = storage.presignRead;
     storage.presignRead = async () => { throw new Error('horloge'); };
     try {
-      const { res } = await passer({ method: 'GET', path: '/images/a.jpg' }, { root: racine });
+      const { res } = await passer({ method: 'GET', path: '/images/a.jpg' });
       assert.strictEqual(res.code, 503);
       assert.strictEqual(res.corps.code, 'STORAGE_UNAVAILABLE');
     } finally {
@@ -125,7 +112,7 @@ const test = async (nom, fn) => {
     assert.ok(suivant);
     assert.strictEqual(req.mediaKey, `media/2026-09-13/images/${nom}`);
 
-    const { res } = await passer(req, { root: racine });
+    const { res } = await passer(req);
     assert.strictEqual(res.code, 302);
     assert.strictEqual(new URL(res.redirige).pathname, `/media/2026-09-13/images/${nom}`);
   });
@@ -138,7 +125,7 @@ const test = async (nom, fn) => {
 
   await test('photo, avant la copie : lue dans le bucket privé, où elle est encore', async () => {
     storage.configureForTests({ ...CONFIG_B2, publics: PUBLICS, publicMigrated: false });
-    const { res } = await passer({ method: 'GET', path: '/images/img_1_2.jpg' }, { root: racine });
+    const { res } = await passer({ method: 'GET', path: '/images/img_1_2.jpg' });
     assert.strictEqual(res.code, 302);
     const u = new URL(res.redirige);
     assert.strictEqual(u.host, 'alanyaprivate.s3.eu-central-003.backblazeb2.com');
@@ -148,18 +135,18 @@ const test = async (nom, fn) => {
 
   await test('photo, après la copie : redirigée vers le bucket public, sans signature', async () => {
     storage.configureForTests({ ...CONFIG_B2, publics: PUBLICS, publicMigrated: true });
-    const { res } = await passer({ method: 'GET', path: '/images/img_1_2.jpg' }, { root: racine });
+    const { res } = await passer({ method: 'GET', path: '/images/img_1_2.jpg' });
     assert.strictEqual(res.code, 302);
     assert.strictEqual(res.redirige, 'https://alanyaprofile.s3.eu-central-003.backblazeb2.com/images/img_1_2.jpg');
     assert.strictEqual(res.entetes['Cache-Control'], 'public, max-age=86400');
 
-    const annonce = await passer({ method: 'HEAD', path: '/voicemail/vm_1_2.m4a' }, { root: racine });
+    const annonce = await passer({ method: 'HEAD', path: '/voicemail/vm_1_2.m4a' });
     assert.strictEqual(annonce.res.redirige, 'https://profilemedia.s3.eu-central-003.backblazeb2.com/voicemail/vm_1_2.m4a');
   });
 
   await test('média de discussion : toujours signé, copie faite ou non', async () => {
     storage.configureForTests({ ...CONFIG_B2, publics: PUBLICS, publicMigrated: true });
-    const { res } = await passer({ method: 'GET', path: '/media/2026-09-15/images/a.jpg' }, { root: racine });
+    const { res } = await passer({ method: 'GET', path: '/media/2026-09-15/images/a.jpg' });
     assert.strictEqual(new URL(res.redirige).host, 'alanyaprivate.s3.eu-central-003.backblazeb2.com');
     assert.strictEqual(res.entetes['Cache-Control'], 'no-store');
   });
@@ -172,6 +159,5 @@ const test = async (nom, fn) => {
       profilemedia: { bucket: '', keyId: '', appKey: '' },
     },
   });
-  fs.rmSync(racine, { recursive: true });
   console.log(`mediaRead : ${ok} tests passés`);
 })();

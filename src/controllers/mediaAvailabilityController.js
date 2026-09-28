@@ -1,31 +1,8 @@
-const fs = require('fs');
-const path = require('path');
 const pool = require('../config/db');
 const { isB2Enabled, storedKeyFromUrl, listPrefix } = require('../services/mediaStorage');
 
-const UPLOADS_DIR = path.join(__dirname, '../../uploads');
-
-/** Au-delà, la requête est refusée plutôt que de balayer le disque sans fin. */
+/** Au-delà, la requête est refusée plutôt que d'interroger le stockage sans fin. */
 const MAX_IDS = 2000;
-
-/**
- * Chemin disque d'un média à partir de son URL publique.
- *
- * Renvoie `null` si l'URL ne pointe pas dans `uploads/`, ou si elle tente de
- * remonter l'arborescence. Le contrôle de remontée n'est pas théorique : cette
- * URL vient de la base, mais la base a été alimentée par des clients.
- */
-const _diskPath = (mediaUrl) => {
-  if (!mediaUrl) return null;
-  const marker = '/uploads/';
-  const idx = String(mediaUrl).indexOf(marker);
-  if (idx === -1) return null;
-
-  const relative = decodeURIComponent(mediaUrl.substring(idx + marker.length));
-  const resolved = path.resolve(UPLOADS_DIR, relative);
-  if (!resolved.startsWith(UPLOADS_DIR + path.sep)) return null;
-  return resolved;
-};
 
 /**
  * Tailles des objets présents chez Backblaze, pour un ensemble de clés.
@@ -97,27 +74,15 @@ exports.checkAvailability = async (req, res) => {
 
     const available = [];
     const bytes = {};
-    // Stockage objet : ce qui n'est plus sur le disque est cherché chez
-    // Backblaze, en une seule passe à la fin.
+    if (!isB2Enabled()) {
+      return res.status(503).json({ error: 'Stockage des médias indisponible', code: 'STORAGE_UNAVAILABLE' });
+    }
+    // La clé est validée (préfixe connu, aucune remontée) : l'URL vient de la
+    // base, mais la base a été alimentée par des clients.
     const aChercher = [];
     for (const row of rows) {
-      const filePath = _diskPath(row.mediaUrl);
-      if (filePath) {
-        try {
-          const stat = fs.statSync(filePath);
-          if (stat.isFile()) {
-            available.push(row.msgID);
-            bytes[row.msgID] = stat.size;
-            continue;
-          }
-        } catch (_) {
-          // Absent du disque : purgé, jamais arrivé, ou parti chez Backblaze.
-        }
-      }
-      if (isB2Enabled()) {
-        const key = storedKeyFromUrl(row.mediaUrl);
-        if (key) aChercher.push({ msgID: row.msgID, key });
-      }
+      const key = storedKeyFromUrl(row.mediaUrl);
+      if (key) aChercher.push({ msgID: row.msgID, key });
     }
 
     if (aChercher.length > 0) {
@@ -142,4 +107,3 @@ exports.checkAvailability = async (req, res) => {
   }
 };
 
-exports._diskPath = _diskPath;

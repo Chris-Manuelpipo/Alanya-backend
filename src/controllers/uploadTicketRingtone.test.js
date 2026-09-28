@@ -22,7 +22,6 @@ const storage = require('../services/mediaStorage');
 const { uploadTicket } = require('./uploadController');
 
 const CONFIG_B2 = {
-  demande: 'b2',
   endpoint: 'https://s3.eu-central-003.backblazeb2.com',
   region: 'eu-central-003',
   bucket: 'alanyaprivate',
@@ -112,7 +111,7 @@ const valide = { kind: 'ringtone', sha256: EMPREINTE, mimetype: 'audio/mpeg', si
     assert.deepStrictEqual((await demander(valide)).corps, { mode: 'unavailable' });
     process.env.RINGTONE_KEY_SECRET = secret;
 
-    storage.configureForTests({ ...CONFIG_B2, demande: 'disk' });
+    storage.configureForTests({ ...CONFIG_B2, keyId: '' });
     assert.deepStrictEqual((await demander(valide)).corps, { mode: 'unavailable' });
   }
 

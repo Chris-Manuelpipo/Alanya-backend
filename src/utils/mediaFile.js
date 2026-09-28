@@ -1,49 +1,35 @@
-const fs = require('fs');
-const path = require('path');
-
 const pool = require('../config/db');
 const {
   isB2Enabled,
-  keyFromUrl,
   storedKeyFromUrl,
-  diskPathForKey,
+  keyFromUrl,
   removeAllVersions,
 } = require('../services/mediaStorage');
 
-/// Chemins sur le disque d'un fichier désigné par son URL publique : son
-/// adresse telle quelle et, pour une adresse d'avant les partitions, l'endroit
-/// où il a été rangé depuis.
+/// Clé Backblaze d'un fichier désigné par son URL, si elle est rangée sous
+/// l'un des `prefixes` autorisés ; sinon `null`.
 ///
 /// L'URL vient d'un client (`message.mediaUrl`, `avatar_url`, `groupPhoto`
-/// s'écrivent librement) : seule une clé validée par `keyFromUrl` — préfixe
-/// connu, aucun `..` — devient un chemin. Construire le chemin directement à
-/// partir de l'URL laissait une adresse en `/uploads/../../.env` faire
-/// supprimer un fichier du serveur hors de `uploads/`.
-const cheminsDisque = (url, root, prefixes = ['media']) => {
-  const cles = new Set([keyFromUrl(url), storedKeyFromUrl(url)].filter(Boolean));
-  return [...cles]
-    .filter((cle) => prefixes.includes(cle.split('/')[0]))
-    .map((cle) => diskPathForKey(cle, root));
+/// s'écrivent librement) : seule une clé validée — préfixe connu, aucun `..` —
+/// peut être supprimée. Et seulement sous le préfixe attendu par l'appelant.
+const cleSupprimable = (url, prefixes) => {
+  const key = storedKeyFromUrl(url);
+  return key && prefixes.includes(key.split('/')[0]) ? key : null;
 };
 
-/// Supprime un fichier (disque et Backblaze), s'il est rangé sous l'un des
-/// `prefixes` autorisés. Best-effort : toute erreur est ignorée.
+/// Supprime un fichier chez Backblaze, toutes versions comprises, s'il est
+/// rangé sous l'un des `prefixes` autorisés. Best-effort : une erreur est
+/// journalisée, jamais levée.
 const supprimerFichier = (url, prefixes) => {
-  if (!url) return;
-  for (const chemin of cheminsDisque(url, undefined, prefixes)) {
-    fs.unlink(chemin, () => {});
-  }
-  if (isB2Enabled()) {
-    const key = storedKeyFromUrl(url);
-    if (key && prefixes.includes(key.split('/')[0])) {
-      removeAllVersions(key).catch((e) => {
-        console.error('[MediaFile] suppression Backblaze échouée:', e.message);
-      });
-    }
-  }
+  if (!url || !isB2Enabled()) return;
+  const key = cleSupprimable(url, prefixes);
+  if (!key) return;
+  removeAllVersions(key).catch((e) => {
+    console.error('[MediaFile] suppression Backblaze échouée:', e.message);
+  });
 };
 
-/// Supprime physiquement un média de discussion à partir de son URL
+/// Supprime un média de discussion à partir de son URL
 /// (`.../uploads/media/<jour>/<type>/x`). Best-effort.
 ///
 /// Seulement sous `media/` : l'adresse d'un message s'écrit librement depuis
@@ -51,10 +37,9 @@ const supprimerFichier = (url, prefixes) => {
 /// profil de quelqu'un d'autre la ferait sinon supprimer à son ouverture. Les
 /// photos et annonces passent par `deletePublicFileIfUnused`.
 ///
-/// Stockage objet : le fichier est aussi supprimé chez Backblaze, **toutes
-/// versions comprises**. Une suppression simple ne ferait que le masquer
-/// jusqu'au passage quotidien des règles de cycle de vie, ce qui ne convient
-/// pas à un média à vue unique consommé.
+/// Toutes les versions sont supprimées : une suppression simple ne ferait que
+/// masquer le fichier jusqu'au passage quotidien des règles de cycle de vie,
+/// ce qui ne convient pas à un média à vue unique consommé.
 const deleteMediaFile = (mediaUrl) => supprimerFichier(mediaUrl, ['media']);
 
 // ── Fichiers publics : photos de profil et de groupe, annonces ──────────────
@@ -167,5 +152,5 @@ module.exports = {
   releasePublicFiles,
   publicFilesOfUser,
   groupPhotosOf,
-  _cheminsDisque: cheminsDisque,
+  _cleSupprimable: cleSupprimable,
 };

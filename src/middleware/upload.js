@@ -2,11 +2,8 @@ const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
 const os      = require('os');
-const crypto  = require('crypto');
 
-const { resolveUploadDirSync } = require('../services/mediaPartitions');
 const {
-  isB2Enabled,
   newMediaKey,
   newImageKey,
   newVoicemailGreetingKey,
@@ -21,9 +18,8 @@ const GREETING_MAX_BYTES = 2 * 1024 * 1024; // 2 MB — dix secondes de voix
 const RINGTONE_MAX_BYTES = 5 * 1024 * 1024; // 5 MB — une sonnerie, pas un album
 
 /**
- * Dossier de transit quand les médias vont chez Backblaze : multer y écrit,
- * le contrôleur dépose le fichier chez Backblaze puis le supprime. Hors de
- * `uploads/`, qui est servi en statique.
+ * Dossier de transit : multer y écrit, le contrôleur dépose le fichier chez
+ * Backblaze puis le supprime. Rien n'y reste.
  */
 const UPLOAD_TMP_DIR = path.join(os.tmpdir(), 'alanya-uploads');
 
@@ -64,35 +60,34 @@ async function cleanStaleUploadTmp({
   return supprimes;
 }
 
-// Sauvegarde : images (avatars, photos groupe)
-//
-// Stockage objet : la clé Backblaze est décidée ici et portée par `file` ;
-// le fichier ne fait que transiter par `UPLOAD_TMP_DIR`.
-const imageStorage = multer.diskStorage({
+/**
+ * Stockage de transit commun : la clé Backblaze est décidée À L'OUVERTURE du
+ * flux, par `cleDe(req, file)`, et portée par `file.storageKey` ; le fichier
+ * ne fait que passer par `UPLOAD_TMP_DIR`, que le contrôleur vide après le
+ * dépôt. Aucun fichier n'est plus rangé dans `uploads/`.
+ *
+ * Décider la clé ici, et non dans le contrôleur, ferme une fenêtre à minuit :
+ * un média commencé à 23:59:59 est rangé dans la partition du jour J, et une
+ * clé recalculée à 00:00:00 désignerait J+1.
+ */
+const stockageDeTransit = (cleDe) => multer.diskStorage({
   destination: (req, file, cb) => {
     try {
-      if (isB2Enabled()) {
-        file.storageKey = newImageKey({
-          alanyaID: req.user.alanyaID,
-          ext: safeExt(file.originalname),
-        });
-        ensureDir(UPLOAD_TMP_DIR);
-        return cb(null, UPLOAD_TMP_DIR);
-      }
-      const dir = path.join(__dirname, '../../uploads/images');
-      ensureDir(dir);
-      return cb(null, dir);
+      file.storageKey = cleDe(req, file);
+      ensureDir(UPLOAD_TMP_DIR);
+      return cb(null, UPLOAD_TMP_DIR);
     } catch (e) {
       return cb(e);
     }
   },
-  filename: (req, file, cb) => {
-    if (file.storageKey) return cb(null, path.basename(file.storageKey));
-    const ext  = path.extname(file.originalname).toLowerCase();
-    const name = `img_${req.user.alanyaID}_${Date.now()}${ext}`;
-    return cb(null, name);
-  },
+  filename: (req, file, cb) => cb(null, path.basename(file.storageKey)),
 });
+
+// Images : avatars, photos de groupe (`images/`, bucket public alanyaprofile).
+const imageStorage = stockageDeTransit((req, file) => newImageKey({
+  alanyaID: req.user.alanyaID,
+  ext: safeExt(file.originalname),
+}));
 
 /**
  * Sous-dossier d'un média d'après son type MIME.
@@ -105,76 +100,21 @@ const mediaSubDir = (mimetype = '') => {
   return 'files';
 };
 
-// Sauvegarde : médias messages (images, fichiers, audio)
-//
-// Le répertoire est décidé par `resolveUploadDirSync` : disposition
-// historique tant que l'interrupteur des partitions est éteint, tranche du
-// jour ensuite (`uploads/media/<AAAA-MM-JJ>/<sous-dossier>`).
-//
-// Le choix est fait ICI, à l'ouverture du flux, et le contrôleur relit ensuite
-// `req.file.destination` au lieu de recalculer. Ce n'est pas de l'élégance :
-// avec des partitions, recalculer la date au moment de composer l'URL ouvre
-// une fenêtre à minuit — un upload commencé à 23:59:59 atterrit dans la
-// partition du jour J, et une URL recomposée à 00:00:00 désignerait J+1, donc
-// un fichier qui n'y est pas. Une seule décision, relue, ferme la fenêtre.
-//
-// Stockage objet : même règle, la clé Backblaze (partition comprise) est
-// décidée ici et relue par le contrôleur via `file.storageKey`.
-const mediaStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    try {
-      if (isB2Enabled()) {
-        file.storageKey = newMediaKey({
-          kind: mediaSubDir(file.mimetype),
-          alanyaID: req.user.alanyaID,
-          ext: safeExt(file.originalname),
-        });
-        ensureDir(UPLOAD_TMP_DIR);
-        return cb(null, UPLOAD_TMP_DIR);
-      }
-      const { absolu } = resolveUploadDirSync(mediaSubDir(file.mimetype));
-      return cb(null, absolu);
-    } catch (e) {
-      return cb(e);
-    }
-  },
-  filename: (req, file, cb) => {
-    if (file.storageKey) return cb(null, path.basename(file.storageKey));
-    const ext  = path.extname(file.originalname).toLowerCase();
-    const name = `media_${req.user.alanyaID}_${Date.now()}${ext}`;
-    return cb(null, name);
-  },
-});
+// Médias de message : images, vidéos, audio, fichiers (`media/<jour>/<type>/`,
+// bucket privé alanyaprivate).
+const mediaStorage = stockageDeTransit((req, file) => newMediaKey({
+  kind: mediaSubDir(file.mimetype),
+  alanyaID: req.user.alanyaID,
+  ext: safeExt(file.originalname),
+}));
 
-// Sauvegarde : médias officiels (diffusions, messages d'accueil).
-//
-// `official/<type>/…`, jamais daté : ces médias n'expirent pas, et un même
-// fichier est partagé par autant de messages qu'il y a de destinataires. En
-// stockage objet, ils vont dans le bucket public `profilemedia`.
-const officialStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    try {
-      if (isB2Enabled()) {
-        file.storageKey = newOfficialKey({
-          kind: mediaSubDir(file.mimetype),
-          ext: safeExt(file.originalname),
-        });
-        ensureDir(UPLOAD_TMP_DIR);
-        return cb(null, UPLOAD_TMP_DIR);
-      }
-      const dir = path.join(__dirname, '../../uploads/official', mediaSubDir(file.mimetype));
-      ensureDir(dir);
-      return cb(null, dir);
-    } catch (e) {
-      return cb(e);
-    }
-  },
-  filename: (req, file, cb) => {
-    if (file.storageKey) return cb(null, path.basename(file.storageKey));
-    const ext = safeExt(file.originalname);
-    return cb(null, `off_${Date.now()}_${crypto.randomBytes(8).toString('hex')}${ext}`);
-  },
-});
+// Médias officiels : diffusions, messages d'accueil (`official/<type>/…`,
+// bucket public profilemedia). Jamais datés : ils n'expirent pas, et un même
+// fichier est partagé par autant de messages qu'il y a de destinataires.
+const officialStorage = stockageDeTransit((req, file) => newOfficialKey({
+  kind: mediaSubDir(file.mimetype),
+  ext: safeExt(file.originalname),
+}));
 
 // Types acceptés — exportés pour la route de ticket, qui applique les mêmes
 // règles avant d'autoriser un envoi direct.
@@ -219,41 +159,17 @@ const MEDIA_MIME_TYPES = [
 
 // Filtres de fichiers
 /**
- * Sauvegarde : annonces de répondeur.
+ * Annonces de répondeur (`voicemail/`, bucket public profilemedia).
  *
- * Répertoire à part, et c'est la raison d'être de ce troisième stockage.
- * `uploads/media/` est balayé par `sweepPartitions`, qui SUPPRIME le répertoire
- * daté entier sans consulter aucune table : une annonce rangée là disparaîtrait
- * d'elle-même au bout de la rétention, sans qu'aucune ligne `message` ne soit
- * en cause. `uploads/voicemail/`, comme `uploads/images/`, n'est balayé par
- * rien.
+ * Préfixe à part : une annonce n'est pas un message, elle ne doit pas être
+ * purgée comme un média de discussion. Le suffixe aléatoire du nom fait
+ * office d'empreinte : le cache de l'application indexe par nom de fichier,
+ * donc réenregistrer DOIT produire un autre nom.
  */
-const greetingStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    try {
-      if (isB2Enabled()) {
-        file.storageKey = newVoicemailGreetingKey({
-          alanyaID: req.user.alanyaID,
-          ext: safeExt(file.originalname),
-        });
-        ensureDir(UPLOAD_TMP_DIR);
-        return cb(null, UPLOAD_TMP_DIR);
-      }
-      const dir = path.join(__dirname, '../../uploads/voicemail');
-      ensureDir(dir);
-      return cb(null, dir);
-    } catch (e) {
-      return cb(e);
-    }
-  },
-  filename: (req, file, cb) => {
-    if (file.storageKey) return cb(null, path.basename(file.storageKey));
-    // Le hasard fait ici office d'empreinte : le cache client indexe par nom de
-    // fichier, donc réenregistrer DOIT produire un autre nom.
-    const ext = safeExt(file.originalname) || '.m4a';
-    return cb(null, `vm_${req.user.alanyaID}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}${ext}`);
-  },
-});
+const greetingStorage = stockageDeTransit((req, file) => newVoicemailGreetingKey({
+  alanyaID: req.user.alanyaID,
+  ext: safeExt(file.originalname) || '.m4a',
+}));
 
 const imageFilter = (req, file, cb) => {
   if (IMAGE_MIME_TYPES.includes(file.mimetype)) return cb(null, true);

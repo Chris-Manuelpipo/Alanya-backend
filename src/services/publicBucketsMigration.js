@@ -10,7 +10,7 @@
  * ce que la première a fait.
  *
  *  1. Copie. Tout fichier sous `images/`, `voicemail/`, `official/` ou
- *     `ringtones/`, dans le bucket privé ou sur le disque du VPS, est copié
+ *     `ringtones/`, dans le bucket privé, est copié
  *     dans son bucket public s'il n'y est pas déjà. Le contenu passe par la
  *     machine qui lance le script : chaque clé Backblaze est limitée à son
  *     bucket, aucune ne peut copier de l'un à l'autre.
@@ -26,12 +26,8 @@
  * copié. Jamais lancée par défaut : on vérifie d'abord, puis on nettoie.
  */
 
-const fs = require('fs');
-const path = require('path');
-
 const pool = require('../config/db');
 const storageReel = require('./mediaStorage');
-const { UPLOADS_DIR } = require('./mediaPartitions');
 const { ACCOUNT_TYPE } = require('../constants/accountTypes');
 
 const PREFIXES_PUBLICS = ['images', 'voicemail', 'official', 'ringtones'];
@@ -53,33 +49,12 @@ const COLONNES_PUBLIQUES = [
 
 const tableAbsente = (e) => e && (e.code === 'ER_NO_SUCH_TABLE' || e.code === 'ER_BAD_FIELD_ERROR');
 
-/** Fichiers du disque sous `uploads/<prefixe>/`, sous forme de clés. */
-function clesSurDisque(prefixe, { racine, estSure }) {
-  const out = [];
-  const parcourir = (dir, rel) => {
-    let entrees;
-    try {
-      entrees = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entrees) {
-      const cle = `${rel}/${e.name}`;
-      if (e.isDirectory()) parcourir(path.join(dir, e.name), cle);
-      else if (e.isFile() && estSure(cle)) out.push(cle);
-    }
-  };
-  parcourir(path.join(racine, prefixe), prefixe);
-  return out;
-}
-
-/** Copie `source` (clé du privé ou fichier du disque) sous `cible`, dans son bucket public. */
-async function copier({ storage, racine }, source, cible) {
-  const surDisque = storage.diskPathForKey(source, racine);
-  if (fs.existsSync(surDisque)) {
-    await storage.putFile(cible, surDisque);
-    return;
-  }
+/**
+ * Copie `source`, une clé du bucket privé, sous `cible`, dans son bucket
+ * public. Le contenu passe par la machine qui lance le script : chaque clé
+ * Backblaze est limitée à son bucket, aucune ne peut copier de l'un à l'autre.
+ */
+async function copier({ storage }, source, cible) {
   const objet = await storage.readPrivateObject(source);
   await storage.putBody(cible, objet.Body, { contentType: objet.ContentType });
 }
@@ -91,15 +66,14 @@ async function copier({ storage, racine }, source, cible) {
  *   `disponibles` : les clés présentes dans leur bucket public à l'issue de
  *   l'étape — ou qui le seraient, en simulation.
  */
-async function copierFichiersPublics({ storage, racine, appliquer, log }) {
+async function copierFichiersPublics({ storage, appliquer, log }) {
   const disponibles = new Set();
   const rapport = { dejaLa: 0, aCopier: 0, copies: 0, echecs: 0 };
   for (const prefixe of PREFIXES_PUBLICS) {
     for (const o of await storage.listPrefix(`${prefixe}/`)) disponibles.add(o.key);
     const prives = (await storage.listPrefix(`${prefixe}/`, { depuis: 'prive' })).map((o) => o.key);
-    const disque = clesSurDisque(prefixe, { racine, estSure: storage.isSafeKey });
 
-    for (const cle of new Set([...prives, ...disque])) {
+    for (const cle of new Set(prives)) {
       if (disponibles.has(cle)) {
         rapport.dejaLa += 1;
         continue;
@@ -111,7 +85,7 @@ async function copierFichiersPublics({ storage, racine, appliquer, log }) {
       }
       try {
         // eslint-disable-next-line no-await-in-loop
-        await copier({ storage, racine }, cle, cle);
+        await copier({ storage }, cle, cle);
         disponibles.add(cle);
         rapport.copies += 1;
       } catch (e) {
@@ -138,7 +112,7 @@ async function comptesOfficiels(db) {
   return [...ids].filter((n) => n > 0);
 }
 
-async function migrerMediasOfficiels({ db, storage, racine, appliquer, disponibles, log }) {
+async function migrerMediasOfficiels({ db, storage, appliquer, disponibles, log }) {
   const rapport = { adresses: 0, aCopier: 0, copies: 0, introuvables: 0, echecs: 0 };
   const expediteurs = await comptesOfficiels(db);
   const enClause = expediteurs.map(() => '?').join(',');
@@ -179,9 +153,8 @@ async function migrerMediasOfficiels({ db, storage, racine, appliquer, disponibl
     const nouvelle = storage.publicUrl(cible);
 
     if (!disponibles.has(cible)) {
-      const present = fs.existsSync(storage.diskPathForKey(source, racine))
-        // eslint-disable-next-line no-await-in-loop
-        || await storage.headObject(source, { depuis: 'prive' });
+      // eslint-disable-next-line no-await-in-loop
+      const present = await storage.headObject(source, { depuis: 'prive' });
       if (!present) {
         // Déjà expiré et supprimé : l'adresse est laissée telle quelle, le
         // serveur y répond « expiré ».
@@ -193,7 +166,7 @@ async function migrerMediasOfficiels({ db, storage, racine, appliquer, disponibl
       if (appliquer) {
         try {
           // eslint-disable-next-line no-await-in-loop
-          await copier({ storage, racine }, source, cible);
+          await copier({ storage }, source, cible);
           rapport.copies += 1;
         } catch (e) {
           rapport.echecs += 1;
@@ -308,21 +281,20 @@ async function executer({
   nettoyer = false,
   db = pool,
   storage = storageReel,
-  racine = UPLOADS_DIR,
   log = console.log,
 } = {}) {
   if (!storage.cibleDe('images/x').publique || !storage.cibleDe('voicemail/x').publique) {
     throw new Error(
-      'Buckets publics non configurés : MEDIA_STORAGE=b2, et B2_PROFILE_* et B2_PROFILEMEDIA_* '
+      'Buckets publics non configurés : B2_* (bucket privé), B2_PROFILE_* et B2_PROFILEMEDIA_* '
       + '(nom, clé, secret) dans le .env.',
     );
   }
   if (nettoyer) return { nettoyage: await nettoyerPrive({ storage, appliquer, log }) };
 
-  const { disponibles, rapport: copie } = await copierFichiersPublics({ storage, racine, appliquer, log });
-  const officiels = await migrerMediasOfficiels({ db, storage, racine, appliquer, disponibles, log });
+  const { disponibles, rapport: copie } = await copierFichiersPublics({ storage, appliquer, log });
+  const officiels = await migrerMediasOfficiels({ db, storage, appliquer, disponibles, log });
   const adresses = await reecrireAdresses({ db, storage, appliquer, disponibles });
   return { copie, officiels, adresses };
 }
 
-module.exports = { executer, PREFIXES_PUBLICS, _clesSurDisque: clesSurDisque };
+module.exports = { executer, PREFIXES_PUBLICS };
