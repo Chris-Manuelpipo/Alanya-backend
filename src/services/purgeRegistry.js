@@ -43,7 +43,7 @@ const DESCRIPTORS = {
   media: {
     label: 'Médias expirés',
     description:
-      "Vide `message.mediaUrl` et supprime le fichier (disque et Backblaze) au-delà "
+      "Vide `message.mediaUrl` et supprime le fichier chez Backblaze au-delà "
       + 'de la rétention. Le message lui-même est conservé : seule la pièce jointe '
       + 'disparaît. En phase payante, un média garde la durée Alanya Plus tant '
       + "qu'une personne de sa discussion y a droit. La nuit, la purge s'arrête "

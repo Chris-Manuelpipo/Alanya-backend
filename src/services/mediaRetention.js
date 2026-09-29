@@ -2,7 +2,7 @@
  * Médias de message — purge des fichiers physiques après rétention.
  *
  * Le message survit, le fichier non. Passé sa rétention, le fichier est
- * supprimé (disque et Backblaze, voir `deleteMediaFile`) et `message.mediaUrl`
+ * supprimé chez Backblaze (voir `deleteMediaFile`) et `message.mediaUrl`
  * est vidée — le message reste visible dans la conversation, seul le média
  * n'est plus servable depuis le serveur. Un appareil qui l'avait déjà
  * téléchargé garde sa copie locale indéfiniment (ce module ne touche jamais
