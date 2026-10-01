@@ -1,39 +1,35 @@
-const nodemailer = require('nodemailer');
+const providers = require('./mailProviders');
 const fs = require('fs');
 const path = require('path');
 
-const fromEmail = process.env.SMTP_FROM;
+// Adresse d'envoi : MAIL_FROM, ou SMTP_FROM pour les anciennes installations.
+// Chez Postmark et Bird, elle doit appartenir à un domaine/expéditeur vérifié.
+const fromEmail = process.env.MAIL_FROM || process.env.SMTP_FROM;
 const fromName = process.env.MAIL_FROM_NAME || 'Alanya';
 const appName = process.env.APP_NAME || 'Alanya';
 const logoUrl = process.env.LOGO_URL || '';
 const baseTemplatePath = path.join(__dirname, '..', 'templates', 'email-template.html');
 const baseTemplate = fs.readFileSync(baseTemplatePath, 'utf8');
 
-if (!process.env.SMTP_HOST) {
-  console.warn('mailService: SMTP_HOST not configured');
+// Ordre d'essai : le premier qui accepte le message gagne, les suivants ne
+// servent qu'en cas d'échec. MAIL_PROVIDERS=postmark,bird (défaut) ; `smtp`
+// reste disponible pour revenir à l'ancien envoi.
+const providerChain = () =>
+  (process.env.MAIL_PROVIDERS || 'postmark,bird')
+    .split(',')
+    .map((n) => n.trim().toLowerCase())
+    .filter(Boolean)
+    .map((n) => providers[n])
+    .filter((p) => p && p.send && p.isConfigured());
+
+const isConfigured = () => providerChain().length > 0;
+
+const defaultFrom = () =>
+  fromEmail ? (fromName ? `"${fromName}" <${fromEmail}>` : fromEmail) : undefined;
+
+if (!isConfigured()) {
+  console.warn('mailService: aucun fournisseur configuré (POSTMARK_SERVER_TOKEN / BIRD_API_KEY)');
 }
-
-const transporter = nodemailer.createTransport({
-  pool: true,
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: process.env.SMTP_SECURE === 'true',
-  auth: process.env.SMTP_USER && process.env.SMTP_PASS
-    ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-    : undefined,
-});
-
-const verifyTransporter = async () => {
-  try {
-    await transporter.verify();
-    console.info('mailService: transporter verified');
-  } catch (err) {
-    console.warn('mailService: transporter verification failed:', err && err.message ? err.message : err);
-  }
-};
-
-// Verify in background
-verifyTransporter();
 
 const escapeHtml = (value) => {
   return String(value ?? '')
@@ -53,7 +49,7 @@ const renderHtmlEmail = ({
   bodyHtml = '',
   accent = '#1f2937',
   footerNote = 'Cet email est envoyé automatiquement, merci de ne pas y répondre.',
-  supportEmail = process.env.SUPPORT_EMAIL || process.env.SMTP_FROM || '',
+  supportEmail = process.env.SUPPORT_EMAIL || fromEmail || '',
   ctaLabel = '',
   ctaUrl = '',
 }) => {
@@ -85,28 +81,34 @@ const renderHtmlEmail = ({
 };
 
 const sendMail = async ({ from, to, subject, text, html }) => {
-  const mailFrom = from || (fromName ? `"${fromName}" <${fromEmail}>` : fromEmail);
-  if (!mailFrom) throw new Error('L\'adresse email d\'envoi est requise (SMTP_FROM dans .env)');
+  const mailFrom = from || defaultFrom();
+  if (!mailFrom) throw new Error("L'adresse email d'envoi est requise (MAIL_FROM dans .env)");
 
-  try {
-    const info = await transporter.sendMail({
-      from: mailFrom,
-      to,
-      subject,
-      text,
-      html,
-    });
-    return info;
-  } catch (err) {
-    console.error('[mailService] sendMail error:', err);
-    throw err;
+  const chain = providerChain();
+  if (chain.length === 0) throw new Error("Le service email n'est pas configuré");
+
+  const errors = [];
+  for (const provider of chain) {
+    try {
+      const info = await provider.send({ from: mailFrom, to, subject, text, html });
+      if (errors.length > 0) {
+        console.warn(`[mailService] envoyé par ${provider.name} après échec de : ${errors.map((e) => e.message).join(' ; ')}`);
+      }
+      return { provider: provider.name, ...info };
+    } catch (err) {
+      console.error(`[mailService] ${provider.name} a échoué:`, err && err.message ? err.message : err);
+      errors.push(err);
+    }
   }
+  const e = new Error(`Échec de l'envoi : ${errors.map((x) => x.message).join(' ; ')}`);
+  e.causes = errors;
+  throw e;
 };
 
 module.exports = {
   sendMail,
   renderHtmlEmail,
   escapeHtml,
-  transporter,
-  verifyTransporter,
+  isConfigured,
+  defaultFrom,
 };

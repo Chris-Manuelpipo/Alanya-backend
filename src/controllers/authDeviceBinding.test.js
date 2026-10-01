@@ -127,7 +127,7 @@ require.cache[appareilsPath] = {
 const mailPath = require.resolve('../services/mailService');
 require.cache[mailPath] = {
   id: mailPath, filename: mailPath, loaded: true, paths: [], children: [],
-  exports: { sendMail: async () => {}, renderHtmlEmail: () => '', escapeHtml: (s) => s },
+  exports: { sendMail: async () => {}, renderHtmlEmail: () => '', escapeHtml: (s) => s, defaultFrom: () => undefined },
 };
 
 const { login, completePasswordReset } = require('./authCustomController');

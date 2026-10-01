@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
-const { sendMail, renderHtmlEmail, escapeHtml } = require('../services/mailService');
+const { sendMail, renderHtmlEmail, escapeHtml, defaultFrom } = require('../services/mailService');
 const { generateAccessToken, generateRefreshToken, JWT_REFRESH_SECRET } = require('../middleware/authCustom');
 const { normalize } = require('../utils/alanyaPhone');
 const { generateUniquePhone } = require('../services/alanyaPhoneService');
@@ -491,10 +491,8 @@ const sendOtpEmail = async ({
   preheader,
   footerNote,
 }) => {
-  const fromEmail = process.env.SMTP_FROM;
-  const fromName = process.env.MAIL_FROM_NAME || 'Alanya';
   const appName = process.env.APP_NAME || 'Alanya';
-  const supportEmail = process.env.SUPPORT_EMAIL || process.env.SMTP_FROM || 'support@example.com';
+  const supportEmail = process.env.SUPPORT_EMAIL || process.env.MAIL_FROM || process.env.SMTP_FROM || 'support@example.com';
   const expiryMin = Number(process.env.OTP_EXPIRY_MIN || 10);
 
   const text = `Bonjour,\n\n` +
@@ -524,16 +522,8 @@ const sendOtpEmail = async ({
     supportEmail,
   });
 
-  if (!fromEmail) {
-    throw new Error("L'adresse email d'envoi est requise (SMTP_FROM dans .env)");
-  }
-
-  if (!process.env.SMTP_HOST) {
-    throw new Error("Le service email n'est pas configuré");
-  }
-
   await sendMail({
-    from: `"${fromName}" <${fromEmail}>`,
+    from: defaultFrom(),
     to,
     subject,
     text,
