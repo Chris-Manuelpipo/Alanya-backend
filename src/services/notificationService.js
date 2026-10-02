@@ -603,17 +603,23 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
       groupAvatar,
       unreadTotal,
       mentions,
+      isEncrypted = false,
     } = fields;
 
     // Parsé UNE FOIS hors de la boucle : la colonne arrive avec la ligne
     // message que l'appelant a déjà chargée, donc zéro requête ici.
     const mentionList = parseMentionsColumn(mentions);
 
+    // Pour un message chiffré, `content` et `mediaName` n'existent pas ici :
+    // ils sont dans le corps scellé. `messagePreview` rend alors un libellé
+    // neutre. Le corps réel est composé par le client après déchiffrement —
+    // c'est la raison d'être du chemin data-only d'Android.
     const body = messagePreview({
       content,
       mediaName,
       type,
       isViewOnce,
+      isEncrypted,
       maxLen: 100,
     });
 
@@ -665,6 +671,7 @@ const notifyNewMessage = async (conversationID, senderID, senderName, fields = {
         groupName,
         groupAvatar,
         unreadTotal: unreadMap.get(recipientId) ?? 0,
+        isEncrypted,
       });
 
       const mentioned = isMentioned(mentionList, recipientId, senderID);

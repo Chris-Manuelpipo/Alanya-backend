@@ -56,6 +56,7 @@ function buildSentPayload({
   isViewOnce,
   mentions,
   senderIdentity,
+  encVersion,
 }) {
   const id = clientId || null;
   return {
@@ -69,6 +70,12 @@ function buildSentPayload({
 
     content: content ?? null,
     type: _int(type, 0),
+    // `enc_version` (migration 091) : la graphie de la colonne, puisque
+    // `MSG_SELECT` fait `m.*` et que le client lit la même clé qu'il reçoive
+    // ce payload construit en mémoire ou une ligne relue. Deux graphies
+    // auraient donné un message annoncé chiffré sur un chemin et en clair sur
+    // l'autre, pour la même ligne.
+    enc_version: encVersion === 1 ? 1 : 0,
     status: 1,
     sendAt: _date(sendAt) ?? new Date(),
     clickSentAt: _date(clickSentAt),

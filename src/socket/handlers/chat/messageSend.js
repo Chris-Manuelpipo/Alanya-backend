@@ -11,6 +11,11 @@ const {
   setCachedParticipants,
 } = require('../../../utils/conversationParticipantsCache');
 const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../../../utils/messageInsert');
+const {
+  normaliseChiffre,
+  ecritChiffre,
+  EnveloppeInvalide,
+} = require('../../../utils/messageEnvelopes');
 const { getSenderIdentity } = require('../../../utils/senderIdentityCache');
 const { buildSentPayload } = require('../../../utils/sentMessagePayload');
 const { MEDIA_THUMB_SELECT } = require('../../../utils/messageThumbSql');
@@ -105,6 +110,62 @@ function emitSendFailed(socket, {
   });
 }
 
+/**
+ * Insère le message, et son corps chiffré avec lui quand il y en a un.
+ *
+ * ── Pourquoi une transaction dès qu'il y a du chiffré ──
+ *
+ * Entre l'INSERT dans `message` et l'écriture de `message_e2ee`, une coupure
+ * laisserait une ligne annoncée chiffrée (`enc_version = 1`) sans corps. Elle
+ * serait servie à tous les destinataires, illisible pour chacun, et
+ * définitivement : le clair n'existe plus que sur le téléphone de l'émetteur,
+ * qui a déjà reçu son accusé et n'a donc plus rien à rejouer.
+ *
+ * Le chemin en clair garde son `pool.execute` nu. Rien de ce qui le suit n'en
+ * dépend, c'est lui qui porte tout le trafic d'aujourd'hui, et lui faire
+ * payer une transaction allongerait le chemin critique de l'accusé pour une
+ * garantie dont il n'a pas l'usage.
+ */
+async function insereMessage(params, chiffre) {
+  if (!chiffre) {
+    const [r] = await pool.execute(MESSAGE_INSERT_SQL, params);
+    return { msgID: r.insertId, isNewInsert: r.affectedRows === 1 };
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [r] = await conn.execute(MESSAGE_INSERT_SQL, params);
+    const msgID = r.insertId;
+    await ecritChiffre(conn, msgID, chiffre);
+    await conn.commit();
+    return { msgID, isNewInsert: r.affectedRows === 1 };
+  } catch (e) {
+    await conn.rollback().catch(() => {});
+    throw e;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
+ * Une enveloppe adressée à un appareil que `appareils` ne connaît plus.
+ *
+ * Le cas réel : l'appareil a été révoqué entre le moment où l'émetteur a
+ * récupéré la liste des cibles et celui où il envoie. La clé étrangère de
+ * `message_envelope` le refuse, et c'est bien ainsi — une enveloppe orpheline
+ * ne serait jamais remise à personne.
+ *
+ * On le distingue d'une vraie erreur serveur pour que le client rafraîchisse
+ * sa liste d'appareils et rejoue, au lieu de retenter à l'identique.
+ */
+function estAppareilInconnu(error) {
+  return error && (
+    error.code === 'ER_NO_REFERENCED_ROW_2'
+    || error.code === 'ER_NO_REFERENCED_ROW'
+  );
+}
+
 function logMsgPath(clientId, stage, t0) {
   const ms = t0 != null ? Date.now() - t0 : 0;
   console.log(`[MsgPath] clientId=${clientId} stage=${stage} ms_since_received=${ms}`);
@@ -187,11 +248,27 @@ const messageSend = (io, socket) => {
         return;
       }
 
-      if (!conversationID || (!content && !mediaUrl)) {
+      // Partie chiffrée, s'il y en a une. Validée AVANT l'INSERT et non
+      // réparée après : un message chiffré mal formé est perdu sans recours —
+      // l'émetteur a son accusé, le clair n'existe plus que chez lui, et le
+      // serveur n'a aucune clé pour rattraper quoi que ce soit.
+      let chiffre;
+      try {
+        chiffre = normaliseChiffre(data, socket.appareilId);
+      } catch (e) {
+        if (!(e instanceof EnveloppeInvalide)) throw e;
+        emitSendFailed(socket, { clientId, code: e.code, message: e.message });
+        return;
+      }
+
+      // Un message chiffré n'a ni `content` ni, forcément, de `mediaUrl` :
+      // son texte est dans le corps scellé. Sans ce troisième terme, tout
+      // envoi chiffré serait refusé comme payload vide.
+      if (!conversationID || (!content && !mediaUrl && !chiffre)) {
         emitSendFailed(socket, {
           clientId,
           code: 'INVALID_PAYLOAD',
-          message: 'conversationID and (content or mediaUrl) required',
+          message: 'conversationID and (content, mediaUrl or body) required',
         });
         return;
       }
@@ -263,31 +340,41 @@ const messageSend = (io, socket) => {
       const sendAt = new Date();
 
       // Idempotence via unique (senderID, clientID) : insertId = nouveau ou existant.
-      const [result] = await pool.execute(
-        MESSAGE_INSERT_SQL,
-        messageInsertParams({
-          senderID,
-          conversationID,
+      const insertParams = messageInsertParams({
+        senderID,
+        conversationID,
+        clientId,
+        content,
+        type,
+        sendAt,
+        clickSentAt,
+        mediaUrl,
+        mediaName,
+        mediaDuration,
+        mediaSize,
+        mediaPageCount,
+        replyToID: resolvedReplyToID,
+        replyToContent: resolvedReplyToContent,
+        isStatusReply,
+        isForwarded,
+        isViewOnce,
+        mentionsSerialized: serializeMentionsColumn(mentionsValue),
+        encVersion: chiffre ? 1 : 0,
+      });
+
+      let msgID;
+      let isNewInsert;
+      try {
+        ({ msgID, isNewInsert } = await insereMessage(insertParams, chiffre));
+      } catch (e) {
+        if (!estAppareilInconnu(e)) throw e;
+        emitSendFailed(socket, {
           clientId,
-          content,
-          type,
-          sendAt,
-          clickSentAt,
-          mediaUrl,
-          mediaName,
-          mediaDuration,
-          mediaSize,
-          mediaPageCount,
-          replyToID: resolvedReplyToID,
-          replyToContent: resolvedReplyToContent,
-          isStatusReply,
-          isForwarded,
-          isViewOnce,
-          mentionsSerialized: serializeMentionsColumn(mentionsValue),
-        }),
-      );
-      const msgID = result.insertId;
-      const isNewInsert = result.affectedRows === 1;
+          code: 'E2EE_ENVELOPPE_APPAREIL_INCONNU',
+          message: 'Un appareil destinataire n\'existe plus : rafraîchir la liste et rejouer',
+        });
+        return;
+      }
       logMsgPath(clientId, 'insert_done', t0);
 
       // Replay / course : message déjà présent → ack seulement, pas de double
@@ -337,6 +424,7 @@ const messageSend = (io, socket) => {
         isViewOnce,
         mentions: mentionsValue,
         senderIdentity,
+        encVersion: chiffre ? 1 : 0,
       });
 
       // Accusé expéditeur en premier : c'est lui qui fait passer la bulle de
@@ -368,7 +456,13 @@ const messageSend = (io, socket) => {
                lastMessageSenderID = ?, lastMessageType = ?, lastMessageStatus = 1
            WHERE conversID = ?`,
           [
-            resolveLastMessagePreview({ content, mediaName, type, isViewOnce }),
+            // Un message chiffré n'a pas d'aperçu calculable ici : le serveur
+            // n'a ni le texte ni le nom du fichier. L'aperçu stocké n'est
+            // qu'une amorce pour la liste de conversations — le client la
+            // remplace dès qu'il a déchiffré, et c'est lui qui la localise.
+            resolveLastMessagePreview({
+              content, mediaName, type, isViewOnce, isEncrypted: !!chiffre,
+            }),
             senderID, type, conversationID,
           ],
         );
@@ -387,6 +481,11 @@ const messageSend = (io, socket) => {
                 mediaName,
                 type,
                 isViewOnce,
+                // Le corps de la push ne peut plus être calculé ici. Sur
+                // Android, le chemin data-only laisse le client composer la
+                // notification après déchiffrement ; partout ailleurs, c'est
+                // un libellé neutre qui s'affiche — jamais un extrait.
+                isEncrypted: !!chiffre,
                 isGroup: ctx.isGroup,
                 groupName: ctx.groupName,
                 senderAvatar: ctx.senderAvatar,

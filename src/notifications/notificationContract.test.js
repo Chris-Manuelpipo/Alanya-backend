@@ -32,6 +32,35 @@ const run = () => {
   assert.strictEqual(direct.eventId, 'notif_test_1');
   assert.strictEqual(direct.callerId, '10');
   assert.strictEqual(typeof direct.sentAt, 'string');
+  assert.strictEqual(direct.enc, '0', 'un message en clair porte enc = 0');
+
+  // Message chiffré : `body` est un libellé neutre, pas le message. Sans le
+  // drapeau `enc`, les trois consommateurs (MessageNotificationHelper, NSE
+  // iOS, Flutter) afficheraient ce libellé en croyant afficher le message, et
+  // aucun ne saurait qu'il doit le remplacer après déchiffrement.
+  const chiffre = buildMessagePayload({
+    msgID: 124,
+    conversationId: 45,
+    senderId: 10,
+    senderName: 'Alice',
+    body: '🔒 Message chiffré',
+    isEncrypted: true,
+  });
+  assert.strictEqual(chiffre.enc, '1');
+  // Le préfixe de groupe s'applique aussi au libellé neutre : le titre reste
+  // le nom du groupe, et la ligne doit dire de qui vient le message.
+  const chiffreGroupe = buildMessagePayload({
+    msgID: 125,
+    conversationId: 46,
+    senderId: 11,
+    senderName: 'Bob',
+    body: '🔒 Message chiffré',
+    isGroup: true,
+    groupName: 'Equipe',
+    isEncrypted: 1,
+  });
+  assert.strictEqual(chiffreGroupe.enc, '1');
+  assert.strictEqual(chiffreGroupe.body, 'Bob: 🔒 Message chiffré');
 
   // Group message
   const group = buildMessagePayload({

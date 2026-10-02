@@ -127,11 +127,14 @@ const sanitizeAvatarUrl = (raw) => {
  * @param {string|Date} [input.sentAt]
  * @param {number|string} [input.unreadTotal]
  * @param {string} [input.eventId]
+ * @param {boolean} [input.isEncrypted] corps non calculable par le serveur
  * @returns {Record<string, string>}
  */
 const buildMessagePayload = (input = {}) => {
   const eventId = input.eventId || generateEventId();
   const isGroup = input.isGroup === true || input.isGroup === 1 || input.isGroup === '1';
+  const isEncrypted = input.isEncrypted === true || input.isEncrypted === 1
+    || input.isEncrypted === '1';
   const groupName = asString(input.groupName);
   const senderName = asString(input.senderName);
   const body = asString(input.body);
@@ -162,6 +165,12 @@ const buildMessagePayload = (input = {}) => {
     groupAvatar: sanitizeAvatarUrl(input.groupAvatar),
     sentAt,
     unreadTotal: input.unreadTotal ?? '',
+    // `enc` dit aux trois consommateurs (MessageNotificationHelper,
+    // NSE iOS, Flutter) que `body` est un libellé neutre et non le message :
+    // le serveur n'a pas le texte. Sans ce drapeau, chacun afficherait
+    // « Message chiffré » en croyant afficher le message, et personne ne
+    // saurait qu'il faut le remplacer après déchiffrement.
+    enc: isEncrypted ? '1' : '0',
     // Legacy aliases consumed by le client actuel
     callerId: input.senderId,
   });

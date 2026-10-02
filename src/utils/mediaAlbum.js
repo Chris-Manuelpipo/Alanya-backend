@@ -36,8 +36,12 @@ function albumPreviewFromMarker(marker) {
 /**
  * Aperçu lastMessage : délègue à messagePreview pour une logique unique.
  */
-function resolveLastMessagePreview({ content, mediaName, type, isViewOnce }) {
-  return messagePreview({ content, mediaName, type, isViewOnce, maxLen: 200 });
+function resolveLastMessagePreview({
+  content, mediaName, type, isViewOnce, isEncrypted = false,
+}) {
+  return messagePreview({
+    content, mediaName, type, isViewOnce, isEncrypted, maxLen: 200,
+  });
 }
 
 module.exports = {

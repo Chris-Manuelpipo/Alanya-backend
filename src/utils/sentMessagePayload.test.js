@@ -14,6 +14,10 @@ const { buildSentPayload } = require('./sentMessagePayload');
 // le client sait lire la nouvelle forme.
 const MSG_SELECT_KEYS = [
   'msgID', 'senderID', 'conversationID', 'clientID', 'content', 'type', 'status',
+  // `enc_version` (migration 091). La graphie est celle de la colonne, pas du
+  // camelCase : `MSG_SELECT` fait `m.*`, donc le client doit lire la même clé
+  // qu'il reçoive ce payload construit en mémoire ou une ligne relue.
+  'enc_version',
   'sendAt', 'readAt', 'deliveredAt', 'clickSentAt',
   'mediaUrl', 'mediaName', 'mediaDuration', 'mediaSize', 'mediaPageCount', 'mediaThumb',
   'isDeleted', 'deletedForID', 'isEdited', 'editedAt',
@@ -57,6 +61,18 @@ const payload = buildSentPayload({
     messageTzOffset: 1,
   },
 });
+
+// ── enc_version : strictement 1 ou 0 ──────────────────────────────────────
+//
+// Un message annoncé chiffré sans corps dans `message_e2ee` est illisible
+// pour tout le monde, définitivement. Le drapeau ne doit donc jamais passer à
+// 1 par la grâce d'un test de véracité sur une valeur inattendue.
+assert.strictEqual(payload.enc_version, 0, 'encVersion omis doit valoir 0');
+const chiffre = buildSentPayload({ msgID: 1, type: 0, encVersion: 1 });
+assert.strictEqual(chiffre.enc_version, 1);
+assert.strictEqual(buildSentPayload({ msgID: 1, encVersion: '1' }).enc_version, 0);
+assert.strictEqual(buildSentPayload({ msgID: 1, encVersion: true }).enc_version, 0);
+assert.strictEqual(buildSentPayload({ msgID: 1, encVersion: 2 }).enc_version, 0);
 
 // ── Contrat de clés ────────────────────────────────────────────────────────
 const keys = Object.keys(payload).sort();
