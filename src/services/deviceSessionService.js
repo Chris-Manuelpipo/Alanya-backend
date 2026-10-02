@@ -14,6 +14,7 @@
 
 const pool = require('../config/db');
 const { emitToUser, disconnectAppareilSockets } = require('../utils/userSocketRegistry');
+const { invalidateSenderDevices } = require('../utils/senderDevicesCache');
 
 const VALID_PLATFORMS = new Set([
   'android', 'ios', 'web', 'macos', 'windows', 'linux', 'unknown',
@@ -68,6 +69,7 @@ const recordLogin = async ({
     if (existing.length > 0 && existing[0].revoked_at != null) {
       await pool.execute('DELETE FROM appareils WHERE id = ?', [existing[0].id]);
       existing.length = 0;
+      invalidateSenderDevices(alanyaID);
     }
 
     if (existing.length > 0) {
@@ -87,6 +89,12 @@ const recordLogin = async ({
        VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       params,
     );
+    // Un appareil de plus : le cache qui sert à étiqueter les enveloppes du
+    // chiffrement devient faux. Son TTL de 60 s rattraperait, mais pendant
+    // cette minute l'appareil tout juste enrôlé afficherait les messages de
+    // son propriétaire comme entrants — du mauvais côté du fil, à l'instant
+    // précis où il regarde si l'enrôlement a marché.
+    invalidateSenderDevices(alanyaID);
     return result.insertId || null;
   } catch (error) {
     console.warn('[deviceSessionService] recordLogin failed:', error.message);

@@ -91,6 +91,18 @@ async function _registerSocket(socket, alanyaID, userSockets, io) {
   socket.join(`user_${alanyaID}`);
   const dRoom = deviceRoom(alanyaID, socket.deviceId);
   if (dRoom) socket.join(dRoom);
+  // Room par ligne de `appareils`, en plus de celle par identifiant matériel.
+  //
+  // Les enveloppes du chiffrement sont adressées par `appareil_id` : c'est la
+  // clé primaire de `appareils`, celle que porte le JWT, et celle que suit la
+  // révocation. Sans cette room, chaque envoi chiffré devrait traduire N
+  // `appareil_id` en N `device_id` pour savoir à qui émettre — une requête
+  // supplémentaire sur le chemin critique de l'accusé, pour une information
+  // que la socket connaît déjà d'elle-même.
+  //
+  // `deviceRoom` reste en service : elle sert les appels et le média, qui
+  // raisonnent sur l'appareil physique et non sur la session enrôlée.
+  if (socket.appareilId != null) socket.join(`appareil_${socket.appareilId}`);
   socket.emit('auth:verified', { success: true, alanyaID });
 
   // Reconnexion pendant un appel : ne PAS annuler la grâce disconnect tant que

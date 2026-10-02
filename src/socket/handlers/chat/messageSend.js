@@ -16,6 +16,11 @@ const {
   ecritChiffre,
   EnveloppeInvalide,
 } = require('../../../utils/messageEnvelopes');
+const {
+  chargeMesAppareils,
+  planRoutage,
+  emetEnveloppes,
+} = require('./envelopeRouting');
 const { getSenderIdentity } = require('../../../utils/senderIdentityCache');
 const { buildSentPayload } = require('../../../utils/sentMessagePayload');
 const { MEDIA_THUMB_SELECT } = require('../../../utils/messageThumbSql');
@@ -388,7 +393,17 @@ const messageSend = (io, socket) => {
         if (existing) {
           const payload = toClientMsg(existing, clientId);
           socket.emit('message:sent', payload);
-          socket.to(`user_${senderID}`).emit('message:sent', payload);
+          // Rejeu d'un message chiffré : on n'émet QUE vers la socket
+          // émettrice. Le payload relu ne porte aucune enveloppe, et en
+          // diffuser un aux autres appareils leur afficherait un message
+          // illisible alors qu'ils ont très probablement déjà reçu le leur au
+          // premier essai — un rejeu signifie que c'est l'accusé qui s'est
+          // perdu, pas forcément la livraison. Ce qui manque encore à un
+          // appareil lui arrive par le delta de synchronisation, qui sert les
+          // enveloppes.
+          if (!chiffre) {
+            socket.to(`user_${senderID}`).emit('message:sent', payload);
+          }
           logMsgPath(clientId, 'sender_ack_emit', t0);
           return;
         }
@@ -429,17 +444,42 @@ const messageSend = (io, socket) => {
 
       // Accusé expéditeur en premier : c'est lui qui fait passer la bulle de
       // l'horloge au ✓. Tout ce qui suit est hors du chemin critique.
+      //
+      // La socket émettrice reçoit le payload NU, même pour un message
+      // chiffré : elle détient le clair, lui renvoyer le corps scellé la
+      // ferait déchiffrer ce qu'elle vient d'écrire.
       socket.emit('message:sent', payload);
-      socket.to(`user_${senderID}`).emit('message:sent', payload);
       acked = true;
       logMsgPath(clientId, 'sender_ack_emit', t0);
 
-      if (!silentDrop && participants.length > 0) {
-        // Forme tableau : une seule émission, le payload n'est encodé qu'une fois
-        // (la boucle unitaire le sérialisait N fois sur l'event loop).
-        io.to(participants.map((p) => `user_${p.alanyaID}`))
-          .emit('message:received', payload);
-        logMsgPath(clientId, 'recipient_emit', t0);
+      if (chiffre) {
+        // Une émission par appareil : le corps est commun mais la clé de
+        // contenu est scellée séparément pour chacun. Voir `envelopeRouting`.
+        //
+        // Les autres appareils de l'expéditeur sont dans le même plan que les
+        // destinataires : ils reçoivent `message:sent` au lieu de
+        // `message:received`, mais par le même chemin. C'est ce qui remplace
+        // le `socket.to('user_<moi>')` du chemin en clair.
+        if (!silentDrop) {
+          const mesAppareils = await chargeMesAppareils(senderID);
+          const plan = planRoutage({
+            enveloppes: chiffre.enveloppes,
+            mesAppareils,
+            monAppareilId: socket.appareilId,
+          });
+          emetEnveloppes(io, { payload, chiffre, plan });
+          logMsgPath(clientId, 'recipient_emit', t0);
+        }
+      } else {
+        socket.to(`user_${senderID}`).emit('message:sent', payload);
+
+        if (!silentDrop && participants.length > 0) {
+          // Forme tableau : une seule émission, le payload n'est encodé qu'une fois
+          // (la boucle unitaire le sérialisait N fois sur l'event loop).
+          io.to(participants.map((p) => `user_${p.alanyaID}`))
+            .emit('message:received', payload);
+          logMsgPath(clientId, 'recipient_emit', t0);
+        }
       }
 
       // Vignette : le destinataire l'a déjà reçue dans le payload, l'écriture
