@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { fail } = require('../utils/apiError');
 const { deleteMediaFile } = require('../utils/mediaFile');
 const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
@@ -9,7 +10,17 @@ const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
 const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
-const { attacheChiffre } = require('../utils/messageEnvelopes');
+const {
+  attacheChiffre,
+  normaliseChiffre,
+  ecritChiffre,
+  EnveloppeInvalide,
+} = require('../utils/messageEnvelopes');
+const {
+  chargeMesAppareils,
+  planRoutage,
+  emetEnveloppes,
+} = require('../socket/handlers/chat/envelopeRouting');
 const { MEDIA_THUMB_SELECT } = require('../utils/messageThumbSql');
 const { copyForForward } = require('../services/mediaStorage');
 
@@ -133,19 +144,39 @@ const _emitSenderAck = (req, senderID, msg) => {
 const _deliverMessage = async (req, conversationID, senderID, msg, fields, silentDrop) => {
   if (silentDrop) return;
 
-  const { content, mediaName, type, isViewOnce, mentions } = fields;
+  const {
+    content, mediaName, type, isViewOnce, mentions, isEncrypted, chiffre,
+  } = fields;
   const io = req.app.get('io');
   if (io) {
-    const [participants] = await pool.execute(
-      'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
-      [conversationID, senderID]
-    );
-    if (participants.length > 0) {
-      // Forme tableau : une seule émission, encodage unique du payload.
-      io.to(participants.map((p) => `user_${p.alanyaID}`))
-        .emit('message:received', msg);
+    if (chiffre) {
+      // Une émission par appareil : le corps est commun mais la clé de
+      // contenu est scellée séparément pour chacun. Même routage que le
+      // chemin socket (voir `socket/handlers/chat/envelopeRouting`), et pour
+      // la même raison — diffuser toutes les enveloppes à tout le monde
+      // dirait à chacun combien d'appareils ont ses correspondants.
+      //
+      // `monAppareilId` est null ici : la requête est HTTP, il n'y a pas de
+      // socket émettrice à écarter. L'appareil qui a posté reçoit donc son
+      // enveloppe comme les autres — il ne l'ouvrira pas, puisqu'il détient
+      // le clair, mais `normaliseChiffre` l'a de toute façon interdite.
+      const mesAppareils = await chargeMesAppareils(senderID);
+      const plan = planRoutage({
+        enveloppes: chiffre.enveloppes, mesAppareils, monAppareilId: null,
+      });
+      emetEnveloppes(io, { payload: msg, chiffre, plan });
+    } else {
+      const [participants] = await pool.execute(
+        'SELECT alanyaID FROM conv_participants WHERE conversID = ? AND alanyaID != ?',
+        [conversationID, senderID]
+      );
+      if (participants.length > 0) {
+        // Forme tableau : une seule émission, encodage unique du payload.
+        io.to(participants.map((p) => `user_${p.alanyaID}`))
+          .emit('message:received', msg);
+      }
+      _emitSenderAck(req, senderID, msg);
     }
-    _emitSenderAck(req, senderID, msg);
   }
 
   // Fan-out FCM hors du cycle de la réponse HTTP (le chemin socket fait déjà
@@ -168,6 +199,9 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
         mediaName,
         type,
         isViewOnce,
+        // Le corps de la push ne peut pas être calculé ici : libellé neutre,
+        // et le client le remplace après déchiffrement.
+        isEncrypted: !!isEncrypted,
         isGroup: !!conv.isGroup,
         groupName: conv.GroupName ?? '',
         senderAvatar: sender[0]?.avatar_url ?? '',
@@ -192,6 +226,7 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     mediaSize, mediaPageCount,
     replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
     clickSentAt, clientId, mentions, mentionsAll = false,
+    chiffre = null,
   } = fields;
 
   if (clientId) {
@@ -218,6 +253,11 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
         // confiance au payload, qui peut avoir changé entre deux tentatives.
         fields: {
           content, mediaName, type, isViewOnce,
+          // Le drapeau vient de la LIGNE, pas du payload rejoué : c'est elle
+          // qui dit si le message a été écrit chiffré, et le payload d'un
+          // rejeu peut avoir changé entre deux tentatives.
+          isEncrypted: Number(existing[0].enc_version) === 1,
+          chiffre: null,
           mentions: existing[0].mentions,
         },
       };
@@ -276,6 +316,7 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
       isForwarded,
       isViewOnce,
       mentionsSerialized: serializeMentionsColumn(mentionsValue),
+      encVersion: chiffre ? 1 : 0,
     }),
   );
 
@@ -284,6 +325,14 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
   // affectedRows === 1 → ligne nouvelle ; sinon c'est un rejeu, on ne
   // touche ni unread ni lastMessage.
   const isNewInsert = result.affectedRows === 1;
+
+  // Corps chiffré et enveloppes, AVANT toute relecture et avant la réponse
+  // HTTP. Sur ce chemin l'appelant fournit une connexion (`conn`) et la
+  // transaction est tenue par `_persistAndDeliverMessage` : le message et son
+  // corps sont donc commis ensemble, ou pas du tout. Une ligne annoncée
+  // chiffrée sans corps serait illisible pour tous les destinataires, et
+  // définitivement — le clair n'existe plus que sur le téléphone émetteur.
+  if (chiffre) await ecritChiffre(conn ?? pool, msgID, chiffre);
 
   // Écriture séparée dans message_thumb (audit scalabilité 06/08/2026 §2.2,
   // migration 060) : idempotente, sûre à rejouer sur le chemin course.
@@ -311,6 +360,8 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
         mediaName,
         type,
         isViewOnce,
+        isEncrypted: !!chiffre,
+        chiffre,
         mentions: existingRows[0]?.mentions ?? mentionsValue,
       },
     };
@@ -324,7 +375,12 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
            message_count = message_count + 1
        WHERE conversID = ?`,
       [
-        resolveLastMessagePreview({ content, mediaName, type, isViewOnce }),
+        // Chiffré : le serveur n'a ni le texte ni le nom du fichier. L'aperçu
+        // stocké n'est qu'une amorce — le client le remplace et le localise
+        // dès qu'il a déchiffré.
+        resolveLastMessagePreview({
+          content, mediaName, type, isViewOnce, isEncrypted: !!chiffre,
+        }),
         senderID, type, conversationID,
       ]
     );
@@ -351,7 +407,11 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
     msg: rows[0],
     silentDrop,
     replayed: false,
-    fields: { content, mediaName, type, isViewOnce, mentions: mentionsValue },
+    fields: {
+      content, mediaName, type, isViewOnce,
+      isEncrypted: !!chiffre, chiffre,
+      mentions: mentionsValue,
+    },
   };
 };
 
@@ -390,15 +450,32 @@ const sendMessage = async (req, res, next) => {
     } = req.body;
     const senderID = req.user.alanyaID;
 
-    if (!content && !mediaUrl) {
-      return res.status(400).json({ error: 'content ou mediaUrl requis', code: 'CONTENT_REQUIRED' });
+    // Partie chiffrée, s'il y en a une. Validée AVANT l'INSERT, comme sur le
+    // chemin socket : un message chiffré mal formé est perdu sans recours.
+    let chiffre;
+    try {
+      chiffre = normaliseChiffre(req.body, req.user.appareilId);
+    } catch (e) {
+      if (!(e instanceof EnveloppeInvalide)) throw e;
+      // `fail` et non un `res.json` direct : il fait passer la prose par
+      // `scrubMessage`. Ce message-ci est écrit à la main et sans danger,
+      // mais la garde de couverture ne peut pas le savoir — et c'est bien
+      // qu'elle ne le sache pas : c'est ce qui a arrêté les fuites de
+      // messages de driver.
+      return fail(res, 400, e.code, e.message);
+    }
+
+    // Un message chiffré n'a ni `content` ni forcément de `mediaUrl` : son
+    // texte est dans le corps scellé.
+    if (!content && !mediaUrl && !chiffre) {
+      return res.status(400).json({ error: 'content, mediaUrl ou body requis', code: 'CONTENT_REQUIRED' });
     }
 
     const { msg } = await _persistAndDeliverMessage(req, id, senderID, {
       content, type, mediaUrl, mediaName, mediaDuration,
       mediaSize, mediaPageCount,
       replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce,
-      clickSentAt, clientId,
+      clickSentAt, clientId, chiffre,
     });
 
     res.json(msg);
@@ -438,6 +515,24 @@ const updateMessage = async (req, res) => {
 
     if (existing.length === 0) {
       return res.status(404).json({ error: 'Message introuvable ou non autorisé', code: 'MESSAGE_NOT_FOUND' });
+    }
+
+    // Modifier un message chiffré n'est pas écrire dans `content` : il
+    // faudrait rechiffrer le corps et resceller la clé pour chaque appareil,
+    // puis router `message:updated` appareil par appareil — alors qu'il part
+    // aujourd'hui vers la room `conversation_<id>`, commune à tous.
+    //
+    // Refuser est le seul comportement sûr en attendant. Écrire le nouveau
+    // texte dans `content` « en passant » déposerait le clair sur le serveur
+    // pour un message que l'auteur croit chiffré : exactement ce que le
+    // chiffrement de bout en bout promet d'empêcher. Et le client, voyant
+    // `enc_version = 1`, continuerait de déchiffrer l'ancien corps : la
+    // modification serait invisible pour tout le monde sauf la base.
+    if (Number(existing[0].enc_version) === 1) {
+      return res.status(409).json({
+        error: 'La modification d\'un message chiffré n\'est pas encore prise en charge',
+        code: 'E2EE_EDITION_NON_PRISE_EN_CHARGE',
+      });
     }
 
     const sentAt = new Date(existing[0].sendAt);

@@ -178,6 +178,7 @@ rattraper. D'où un refus avant écriture plutôt qu'une réparation après.
 | `E2EE_ENVELOPPE_EMETTEUR` | 400 | Enveloppe adressée à l'appareil émetteur, qui détient déjà le clair |
 | `E2EE_ENVELOPPE_TYPE` | 400 | `envType` inconnu, ou clé scellée incohérente avec le type |
 | `E2EE_ENVELOPPE_APPAREIL_INCONNU` | 400 | Un appareil destinataire a été révoqué entre-temps : rafraîchir `/api/e2ee/devices` et rejouer |
+| `E2EE_EDITION_NON_PRISE_EN_CHARGE` | 409 | Modifier un message chiffré demande de rechiffrer et de resceller pour chaque appareil : pas encore implémenté, et refusé plutôt que de déposer le clair sur le serveur |
 
 ### Droits et divers
 | Code | Statut | Sens |
