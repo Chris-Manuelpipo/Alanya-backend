@@ -1,0 +1,131 @@
+-- Migration 090 : clés publiques du chiffrement de bout en bout, par appareil
+--
+-- Appliquer après 089. Application MANUELLE, réexécutable sans erreur
+-- (CREATE TABLE IF NOT EXISTS). AVANT le déploiement du code qui s'en sert :
+-- les gardes de `routes/e2eeKeys.js` joignent ces tables à chaque publication
+-- de bundle, et l'absence de table rendrait 500 au lieu de 404.
+--
+-- Rien de secret ici. Ce sont les clés PUBLIQUES, et elles seules. Les clés
+-- privées restent dans le trousseau de l'appareil (`flutter_secure_storage`),
+-- ne transitent jamais par le réseau et ne figurent pas dans la sauvegarde
+-- Drive. Le serveur ne fait que distribuer de l'annuaire.
+--
+-- ── Pourquoi la clé primaire est l'APPAREIL, pas le compte ──
+--
+-- C'est la décision qui porte tout le reste. Un compte Alanya accepte
+-- plusieurs appareils en même temps : enrôlement par QR depuis un téléphone
+-- déjà connecté, mot de passe sur un second téléphone, réinscription de
+-- secours (`appareils.login_method`, migrations 026 et 083). La propriété
+-- d'appel se décide déjà par `appareilId`.
+--
+-- Une identité par COMPTE serait donc un piège : le second appareil écraserait
+-- le bundle du premier, et toutes les sessions déjà établies avec le premier
+-- deviendraient indéchiffrables — sans message d'erreur, sans retour
+-- possible, et seulement pour les correspondants qui avaient eu la malchance
+-- d'ouvrir une session avant le basculement.
+--
+-- Conséquence assumée : écrire à quelqu'un, c'est sceller la clé du message
+-- pour CHACUN de ses appareils actifs, et pour chacun des miens — sinon mon
+-- second téléphone ne verrait pas ce que j'écris depuis le premier.
+--
+-- ── Pourquoi l'ancien `signed_prekey` est conservé ──
+--
+-- Le signed prekey tourne tous les 30 jours. Mais un correspondant qui a
+-- récupéré le bundle lundi peut n'envoyer son premier message que jeudi : son
+-- amorçage X3DH est calculé sur le prekey qu'il a LU, pas sur celui du jour.
+-- Jeter l'ancien à la rotation ferait échouer tous les amorçages en vol, et
+-- l'échec serait silencieux (le destinataire n'a plus la clé privée
+-- correspondante). Les trois colonnes `prev_*` gardent la version précédente ;
+-- le client la retire au bout de 60 jours, bien au-delà de toute dérive
+-- d'horloge ou de tout téléphone resté éteint.
+--
+-- ── Pourquoi VARBINARY aux tailles exactes ──
+--
+-- 32 octets pour une clé publique X25519 comme Ed25519, 64 pour une signature
+-- Ed25519. La taille documente le protocole et la base refuse d'elle-même un
+-- client qui enverrait autre chose. VARBINARY et non BINARY : BINARY complète
+-- à droite avec des zéros, ce qui transformerait silencieusement une clé
+-- tronquée en clé valide-en-apparence.
+
+CREATE TABLE IF NOT EXISTS e2ee_device_keys (
+  -- `appareils.id`, celui que porte le JWT sous le nom `appareilId`. Pas
+  -- `device_id` (l'identifiant matériel) : seul `id` désigne une ligne, et
+  -- c'est lui que suit la révocation.
+  appareil_id            BIGINT        NOT NULL,
+  -- Dénormalisé depuis `appareils` : « tous les bundles de ce compte » est la
+  -- requête du chemin critique (une par message envoyé), et elle ne doit pas
+  -- payer une jointure pour retrouver une colonne que la ligne connaît déjà.
+  alanyaID               INT           NOT NULL,
+  -- Distingue deux installations successives sur le même appareil physique.
+  -- Sans lui, un correspondant ne saurait pas que la session qu'il garde en
+  -- mémoire s'adresse à une installation qui n'existe plus.
+  registration_id        INT UNSIGNED  NOT NULL,
+  -- X25519 : le demi-échange Diffie-Hellman du X3DH.
+  identity_key_dh        VARBINARY(32) NOT NULL,
+  -- Ed25519 : vérifie la signature du signed prekey. Deux clés distinctes
+  -- plutôt qu'une seule convertie (XEdDSA) — la conversion est une source
+  -- classique d'erreurs d'implémentation, et deux clés ne coûtent que 32
+  -- octets.
+  identity_key_sign      VARBINARY(32) NOT NULL,
+  signed_prekey_id       INT UNSIGNED  NOT NULL,
+  signed_prekey          VARBINARY(32) NOT NULL,
+  signed_prekey_sig      VARBINARY(64) NOT NULL,
+  prev_signed_prekey_id  INT UNSIGNED  NULL,
+  prev_signed_prekey     VARBINARY(32) NULL,
+  prev_signed_prekey_sig VARBINARY(64) NULL,
+  -- Date de la rotation qui a relégué l'ancien prekey. C'est d'elle que le
+  -- client déduit les 60 jours au bout desquels il cesse de le publier.
+  prev_retired_at        DATETIME      NULL,
+  created_at             DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at             DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP
+                           ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (appareil_id),
+  KEY idx_e2ee_keys_user (alanyaID),
+  CONSTRAINT fk_e2ee_keys_appareil FOREIGN KEY (appareil_id)
+    REFERENCES appareils(id) ON DELETE CASCADE,
+  CONSTRAINT fk_e2ee_keys_user FOREIGN KEY (alanyaID)
+    REFERENCES users(alanyaID) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ── Clés à usage unique (X3DH) ───────────────────────────────────────────
+--
+-- Elles ajoutent un quatrième demi-échange à l'amorçage, et c'est ce
+-- quatrième qui protège le premier message si la clé d'identité du
+-- destinataire finit par fuiter. Chacune est servie à UN SEUL correspondant,
+-- puis plus jamais.
+--
+-- ── Pourquoi `claimed_at` et non un drapeau `used` ──
+--
+-- Une date dit QUAND, et c'est ce dont la purge a besoin. Un drapeau ne dit
+-- rien : on ne saurait pas distinguer une clé consommée hier d'une clé
+-- consommée il y a un an, ni purger les unes sans les autres.
+--
+-- ── Pourquoi la ligne n'est pas supprimée à la consommation ──
+--
+-- Deux raisons. D'abord l'unicité : la contrainte `(appareil_id, key_id)` est
+-- ce qui empêche un appareil de republier un `key_id` déjà servi, et
+-- supprimer la ligne rendrait cette republication possible. Ensuite le
+-- diagnostic : un client qui réclame deux fois le même bundle se voit dans
+-- les lignes consommées, pas dans leur absence. Purge à 30 jours, par
+-- `purgeRegistry`.
+--
+-- Le stock peut tomber à zéro sans rien casser : l'amorçage se fait alors sur
+-- trois demi-échanges au lieu de quatre. C'est une dégradation, pas une
+-- panne — mais le client doit regarnir, et c'est à quoi sert
+-- `GET /e2ee/keys/count`.
+
+CREATE TABLE IF NOT EXISTS e2ee_one_time_prekeys (
+  id          BIGINT        NOT NULL AUTO_INCREMENT,
+  appareil_id BIGINT        NOT NULL,
+  key_id      INT UNSIGNED  NOT NULL,
+  public_key  VARBINARY(32) NOT NULL,
+  claimed_at  DATETIME      NULL,
+  created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_e2ee_otpk (appareil_id, key_id),
+  -- Sert les deux seules lectures : prendre la prochaine clé libre
+  -- (`claimed_at IS NULL ... LIMIT 1 FOR UPDATE`) et compter le stock.
+  KEY idx_e2ee_otpk_libre (appareil_id, claimed_at),
+  CONSTRAINT fk_e2ee_otpk_appareil FOREIGN KEY (appareil_id)
+    REFERENCES appareils(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
