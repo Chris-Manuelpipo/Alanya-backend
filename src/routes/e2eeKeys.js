@@ -1,0 +1,93 @@
+// Annuaire des clés publiques du chiffrement de bout en bout.
+//
+// Toutes les routes sont authentifiées et travaillent sur l'appareil du
+// jeton : rien ici ne prend d'identifiant d'appareil dans le corps de la
+// requête. Voir `controllers/e2eeKeysController.js`.
+
+const express = require('express');
+const router = express.Router();
+const auth = require('../middleware/auth');
+const {
+  postKeys,
+  postSignedPreKey,
+  postOneTimePreKeys,
+  getKeysState,
+} = require('../controllers/e2eeKeysController');
+
+/**
+ * @swagger
+ * /api/e2ee/keys:
+ *   post:
+ *     summary: Publie (ou remplace) le bundle de clés publiques de cet appareil
+ *     tags: [E2EE]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [registrationId, identityKeyDh, identityKeySign, signedPreKey]
+ *             properties:
+ *               registrationId:  { type: integer, description: 0 à 16383 }
+ *               identityKeyDh:   { type: string, description: X25519 publique, 32 octets en base64 }
+ *               identityKeySign: { type: string, description: Ed25519 publique, 32 octets en base64 }
+ *               signedPreKey:
+ *                 type: object
+ *                 required: [keyId, publicKey, signature]
+ *                 properties:
+ *                   keyId:     { type: integer }
+ *                   publicKey: { type: string }
+ *                   signature: { type: string, description: 64 octets en base64 }
+ *               oneTimePreKeys:
+ *                 type: array
+ *                 maxItems: 100
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     keyId:     { type: integer }
+ *                     publicKey: { type: string }
+ *     responses:
+ *       200: { description: Bundle publié }
+ *       400: { description: Bundle invalide (E2EE_CLE_*, E2EE_OTPK_*) }
+ *       409: { description: E2EE_APPAREIL_INCONNU — reconnexion requise }
+ */
+router.post('/keys', auth, postKeys);
+
+/**
+ * @swagger
+ * /api/e2ee/keys/signed-prekey:
+ *   post:
+ *     summary: Tourne le signed prekey de cet appareil (l'ancien reste servi)
+ *     tags: [E2EE]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: "Tourné, ou déjà en place (`tourne: false`)" }
+ */
+router.post('/keys/signed-prekey', auth, postSignedPreKey);
+
+/**
+ * @swagger
+ * /api/e2ee/keys/prekeys:
+ *   post:
+ *     summary: Regarnit le stock de clés à usage unique de cet appareil
+ *     tags: [E2EE]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: Stock mis à jour }
+ */
+router.post('/keys/prekeys', auth, postOneTimePreKeys);
+
+/**
+ * @swagger
+ * /api/e2ee/keys/state:
+ *   get:
+ *     summary: Bundle publié ? combien de clés à usage unique restent libres ?
+ *     tags: [E2EE]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: "{ publie, registrationId, signedPreKeyId, otpkLibres }" }
+ */
+router.get('/keys/state', auth, getKeysState);
+
+module.exports = router;

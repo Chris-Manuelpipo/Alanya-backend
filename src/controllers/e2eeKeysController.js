@@ -1,0 +1,105 @@
+/**
+ * Annuaire des clés publiques du chiffrement de bout en bout.
+ *
+ * Toutes les routes travaillent sur l'appareil de l'appelant, désigné par
+ * `req.user.appareilId` — jamais par un identifiant que le corps de la
+ * requête fournirait. Publier les clés d'un autre appareil n'aurait aucun
+ * sens (on ne détient pas sa privée) et serait une substitution d'identité.
+ */
+
+const { fail } = require('../utils/apiError');
+const { BundleInvalide } = require('../utils/e2eeBundle');
+const {
+  publieBundle,
+  tourneSignedPreKey,
+  regarnitOneTimePreKeys,
+  etatDesCles,
+} = require('../services/e2eeKeyService');
+
+/**
+ * Exige un `appareilId` sur le jeton.
+ *
+ * Les jetons émis avant la migration 026 n'en portent pas, et le garde
+ * d'authentification les accepte toujours pour ne pas déconnecter tout le
+ * monde d'un coup. Mais une identité de chiffrement s'ancre sur un appareil :
+ * sans `appareilId`, il n'y a rien à quoi l'attacher. On refuse avec un code
+ * nommé, que le client traduit par une reconnexion — plutôt que de poser les
+ * clés sur une ligne arbitraire.
+ */
+function exigeAppareil(req, res) {
+  const id = req.user && req.user.appareilId;
+  if (id == null) {
+    fail(res, 409, 'E2EE_APPAREIL_INCONNU',
+      'Session trop ancienne pour le chiffrement : reconnectez-vous');
+    return null;
+  }
+  return Number(id);
+}
+
+/** Traduit une erreur de validation en 400 nommé, le reste en 500. */
+function repondErreur(res, erreur, contexte) {
+  if (erreur instanceof BundleInvalide) {
+    return fail(res, 400, erreur.code, erreur.message, { champ: erreur.champ });
+  }
+  console.error(`[E2EE keys] ${contexte}:`, erreur.message);
+  return fail(res, 500, 'INTERNAL', 'Erreur interne');
+}
+
+/** POST /api/e2ee/keys — publie ou remplace le bundle de cet appareil. */
+const postKeys = async (req, res) => {
+  const appareilId = exigeAppareil(req, res);
+  if (appareilId == null) return;
+  try {
+    const r = await publieBundle(appareilId, req.user.alanyaID, req.body || {});
+    res.json(r);
+  } catch (e) {
+    repondErreur(res, e, 'publication');
+  }
+};
+
+/** POST /api/e2ee/keys/signed-prekey — tourne le signed prekey. */
+const postSignedPreKey = async (req, res) => {
+  const appareilId = exigeAppareil(req, res);
+  if (appareilId == null) return;
+  try {
+    const r = await tourneSignedPreKey(appareilId, req.body || {});
+    if (!r.tourne) {
+      // Ni une erreur ni un succès : le client avait déjà ce prekey en place.
+      // 200 avec `tourne: false` le lui dit sans le faire réessayer.
+      return res.json({ ...r, raison: 'DEJA_EN_PLACE' });
+    }
+    res.json(r);
+  } catch (e) {
+    repondErreur(res, e, 'rotation spk');
+  }
+};
+
+/** POST /api/e2ee/keys/prekeys — regarnit le stock à usage unique. */
+const postOneTimePreKeys = async (req, res) => {
+  const appareilId = exigeAppareil(req, res);
+  if (appareilId == null) return;
+  try {
+    const r = await regarnitOneTimePreKeys(appareilId, req.body || {});
+    res.json(r);
+  } catch (e) {
+    repondErreur(res, e, 'regarnissage');
+  }
+};
+
+/** GET /api/e2ee/keys/state — bundle publié ? combien de clés en stock ? */
+const getKeysState = async (req, res) => {
+  const appareilId = exigeAppareil(req, res);
+  if (appareilId == null) return;
+  try {
+    res.json(await etatDesCles(appareilId));
+  } catch (e) {
+    repondErreur(res, e, 'état');
+  }
+};
+
+module.exports = {
+  postKeys,
+  postSignedPreKey,
+  postOneTimePreKeys,
+  getKeysState,
+};

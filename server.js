@@ -55,6 +55,7 @@ const mapRoutes          = require('./src/routes/mapTiles');
 const adminRoutes        = require('./src/routes/admin');
 const welcomeRoutes      = require('./src/routes/welcome');
 const reportRoutes       = require('./src/routes/reports');
+const e2eeKeysRoutes     = require('./src/routes/e2eeKeys');
 const qrLandingRoutes    = require('./src/routes/qrLanding');
 const legalRoutes        = require('./src/routes/legal');
 const healthRoutes       = require('./src/routes/health');
@@ -209,6 +210,7 @@ app.use('/api/map',           mapRoutes);
 app.use('/api/admin',         adminRoutes);
 app.use('/api/welcome',       welcomeRoutes);
 app.use('/api/reports',       reportRoutes);
+app.use('/api/e2ee',          e2eeKeysRoutes);
 app.use('/notify',            notifyRoutes);
 
 // Pages légales publiques (accueil, confidentialité, CGU, licences) —
