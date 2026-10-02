@@ -144,3 +144,22 @@ CREATE TABLE IF NOT EXISTS message_envelope (
   CONSTRAINT fk_envelope_appareil FOREIGN KEY (appareil_id)
     REFERENCES appareils(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ── 4. La purge au registre ──────────────────────────────────────────────
+--
+-- `purgeRegistry` tolère l'absence de ligne (`enabled: true` et réglages par
+-- défaut), donc la purge tournerait sans ceci. La ligne est posée quand même,
+-- pour la même raison que la migration 074 pour `story` : sans elle, l'écran
+-- d'administration n'a rien à cocher, et « activée par défaut » ne se
+-- distingue pas de « inconnue du registre ».
+--
+-- `enabled` recopie l'état de la rétention générale : qui a coupé toutes les
+-- purges ne doit pas voir celle-ci démarrer seule à la mise à jour. La
+-- sous-requête est agrégée (MAX) pour rendre exactement une ligne même quand
+-- `data_retention` est absente, et pour lever l'interdiction MySQL de lire la
+-- table visée par l'INSERT.
+INSERT IGNORE INTO purge_settings (name, enabled)
+SELECT 'e2ee_envelope', COALESCE(src.enabled, 1)
+  FROM (SELECT MAX(enabled) AS enabled
+          FROM purge_settings
+         WHERE name = 'data_retention') AS src;

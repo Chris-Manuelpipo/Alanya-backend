@@ -23,7 +23,7 @@ const pool = require('../config/db');
 const mediaPolicy = require('../constants/mediaRetentionPolicy');
 const tripPolicy = require('../constants/tripPolicy');
 
-const NAMES = ['media', 'broadcast', 'story', 'welcome_status', 'trip', 'data_retention', 'backup_key_access'];
+const NAMES = ['media', 'broadcast', 'story', 'welcome_status', 'trip', 'data_retention', 'backup_key_access', 'e2ee_envelope'];
 
 /** Borne une valeur de réglage. Une saisie hors bornes est ramenée, jamais rejetée en silence. */
 function clampInt(value, { min, max, fallback }) {
@@ -258,6 +258,93 @@ const DESCRIPTORS = {
         [opts.retentionDays],
       );
       return { supprimees: res.affectedRows || 0 };
+    },
+  },
+
+  e2ee_envelope: {
+    label: 'Enveloppes de chiffrement',
+    description:
+      'Supprime les lignes de `message_envelope` dont le travail est fini, et '
+      + 'les clés à usage unique déjà servies. Une enveloppe porte la clé de '
+      + "contenu d'un message, scellée pour UN appareil : une fois remise, le "
+      + 'destinataire a déchiffré et rangé le clair chez lui, elle ne sert plus '
+      + "à rien. Le CORPS du message n'est jamais supprimé ici — il reste dans "
+      + '`message_e2ee` tant que le message existe, simplement illisible pour '
+      + "qui n'a plus d'enveloppe.",
+    knobs: [{
+      key: 'remisesDays',
+      label: 'Enveloppes remises',
+      unit: 'jours',
+      // Pas zéro : un appareil peut réinstaller juste après avoir reçu, avant
+      // d'avoir sauvegardé. Ces quelques jours sont la seule fenêtre où il
+      // peut encore rattraper un message par la synchronisation. Au-delà,
+      // c'est la sauvegarde Drive qui porte l'historique, pas le serveur.
+      min: 1,
+      max: 90,
+      default: () => 7,
+    }, {
+      key: 'attenteDays',
+      label: 'Enveloppes jamais remises',
+      unit: 'jours',
+      // Un appareil éteint depuis un mois n'a plus besoin de ce message en
+      // temps réel. Aligné sur la rétention des médias (30 jours) : garder
+      // l'enveloppe plus longtemps que la pièce jointe n'aurait pas de sens.
+      min: 7,
+      max: 365,
+      default: () => 30,
+    }],
+    async stats(opts) {
+      const [[remises]] = await pool.execute(
+        `SELECT COUNT(*) AS n FROM message_envelope
+          WHERE delivered_at IS NOT NULL
+            AND delivered_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+        [opts.remisesDays],
+      );
+      const [[attente]] = await pool.execute(
+        `SELECT COUNT(*) AS n FROM message_envelope
+          WHERE delivered_at IS NULL
+            AND created_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+        [opts.attenteDays],
+      );
+      const [[otpk]] = await pool.execute(
+        `SELECT COUNT(*) AS n FROM e2ee_one_time_prekeys
+          WHERE claimed_at IS NOT NULL
+            AND claimed_at < DATE_SUB(NOW(), INTERVAL 30 DAY)`,
+      );
+      return {
+        remises: Number(remises.n) || 0,
+        enAttente: Number(attente.n) || 0,
+        clesServies: Number(otpk.n) || 0,
+      };
+    },
+    async run(opts) {
+      const [r1] = await pool.execute(
+        `DELETE FROM message_envelope
+          WHERE delivered_at IS NOT NULL
+            AND delivered_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+        [opts.remisesDays],
+      );
+      const [r2] = await pool.execute(
+        `DELETE FROM message_envelope
+          WHERE delivered_at IS NULL
+            AND created_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+        [opts.attenteDays],
+      );
+      // Clés à usage unique déjà servies. Elles ne peuvent plus l'être une
+      // seconde fois, mais leur ligne retient le `key_id` sous l'index UNIQUE
+      // — c'est ce qui empêche un appareil de republier un identifiant déjà
+      // consommé. Trente jours après coup, le correspondant qui l'avait
+      // réclamée a soit ouvert sa session, soit abandonné.
+      const [r3] = await pool.execute(
+        `DELETE FROM e2ee_one_time_prekeys
+          WHERE claimed_at IS NOT NULL
+            AND claimed_at < DATE_SUB(NOW(), INTERVAL 30 DAY)`,
+      );
+      return {
+        remises: r1.affectedRows || 0,
+        enAttente: r2.affectedRows || 0,
+        clesServies: r3.affectedRows || 0,
+      };
     },
   },
 
