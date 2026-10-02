@@ -160,6 +160,24 @@ sont valides mais rendus par le repli lié au statut HTTP.
 | `E2EE_APPAREILS_INVALIDE` | 400 | `appareilIds` absent, vide ou sans aucun identifiant exploitable |
 | `E2EE_APPAREILS_TROP` | 400 | Plus de 200 appareils demandés en une requête : découper le lot |
 
+Les codes suivants refusent un envoi mal formé. Ils arrivent par
+`message:send_failed` sur le socket, et en 400 sur `POST /conversations/:id/messages`.
+Un envoi chiffré mal formé est **perdu sans recours** — l'émetteur a son accusé,
+le clair n'existe plus que chez lui, et le serveur n'a aucune clé pour
+rattraper. D'où un refus avant écriture plutôt qu'une réparation après.
+
+| Code | Statut | Sens |
+|---|---|---|
+| `E2EE_CORPS_MANQUANT` | 400 | Des enveloppes sans corps chiffré, ou un corps vide |
+| `E2EE_CORPS_TROP_GROS` | 400 | Corps chiffré au-delà de 512 Ko |
+| `E2EE_NONCE_TAILLE` | 400 | Le nonce du corps ne fait pas 12 octets |
+| `E2EE_ENVELOPPES_MANQUANTES` | 400 | Corps chiffré sans aucune enveloppe : personne ne pourrait l'ouvrir |
+| `E2EE_ENVELOPPES_TROP` | 400 | Plus de 400 enveloppes en un envoi : découper |
+| `E2EE_ENVELOPPE_INVALIDE` | 400 | Enveloppe sans appareil, sans en-tête, ou mal formée |
+| `E2EE_ENVELOPPE_DOUBLON` | 400 | Deux enveloppes pour le même appareil |
+| `E2EE_ENVELOPPE_EMETTEUR` | 400 | Enveloppe adressée à l'appareil émetteur, qui détient déjà le clair |
+| `E2EE_ENVELOPPE_TYPE` | 400 | `envType` inconnu, ou clé scellée incohérente avec le type |
+
 ### Droits et divers
 | Code | Statut | Sens |
 |---|---|---|
