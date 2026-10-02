@@ -15,6 +15,10 @@ const {
   regarnitOneTimePreKeys,
   etatDesCles,
 } = require('../services/e2eeKeyService');
+const {
+  serviceBundles,
+  normaliseAppareilIds,
+} = require('../services/e2eePrekeyStock');
 
 /**
  * Exige un `appareilId` sur le jeton.
@@ -97,9 +101,42 @@ const getKeysState = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/e2ee/bundles — sert les bundles demandés, une clé à usage unique
+ * réservée pour chacun.
+ *
+ * POST et non GET malgré la lecture : la requête consomme des clés à usage
+ * unique, donc elle n'est ni rejouable sans effet ni cachable. Un GET que les
+ * intermédiaires réessaient ou mettent en cache viderait des stocks sans que
+ * personne l'ait demandé.
+ */
+const postBundles = async (req, res) => {
+  const appareilId = exigeAppareil(req, res);
+  if (appareilId == null) return;
+  let ids;
+  try {
+    ids = normaliseAppareilIds((req.body || {}).appareilIds);
+  } catch (e) {
+    return fail(res, 400, e.code || 'E2EE_APPAREILS_INVALIDE', e.message);
+  }
+  try {
+    // L'appareil appelant ne se chiffre pas à lui-même : il détient déjà le
+    // clair. L'écarter ici évite de lui consommer une clé pour rien, et de
+    // laisser le client croire qu'il doit s'écrire.
+    const demandes = ids.filter((id) => id !== appareilId);
+    if (demandes.length === 0) {
+      return res.json({ bundles: [], sansCles: [], refuses: [] });
+    }
+    res.json(await serviceBundles(req.user.alanyaID, demandes));
+  } catch (e) {
+    repondErreur(res, e, 'service des bundles');
+  }
+};
+
 module.exports = {
   postKeys,
   postSignedPreKey,
   postOneTimePreKeys,
   getKeysState,
+  postBundles,
 };

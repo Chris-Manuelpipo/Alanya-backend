@@ -12,6 +12,7 @@ const {
   postSignedPreKey,
   postOneTimePreKeys,
   getKeysState,
+  postBundles,
 } = require('../controllers/e2eeKeysController');
 
 /**
@@ -89,5 +90,40 @@ router.post('/keys/prekeys', auth, postOneTimePreKeys);
  *       200: { description: "{ publie, registrationId, signedPreKeyId, otpkLibres }" }
  */
 router.get('/keys/state', auth, getKeysState);
+
+/**
+ * @swagger
+ * /api/e2ee/bundles:
+ *   post:
+ *     summary: Sert les bundles d'appareils tiers, une clé à usage unique réservée par appareil
+ *     description: >
+ *       POST et non GET malgré la lecture : chaque appel consomme des clés à
+ *       usage unique, donc il n'est ni rejouable sans effet ni cachable.
+ *       Un appareil n'est servi que s'il appartient à l'appelant ou à quelqu'un
+ *       avec qui l'appelant partage déjà une conversation.
+ *     tags: [E2EE]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [appareilIds]
+ *             properties:
+ *               appareilIds:
+ *                 type: array
+ *                 maxItems: 200
+ *                 items: { type: integer }
+ *     responses:
+ *       200:
+ *         description: >
+ *           `bundles` (servis), `sansCles` (appareil connu mais sans bundle
+ *           publié — l'émetteur enverra en clair), `refuses` (inconnu, révoqué
+ *           ou sans conversation partagée)
+ *       400: { description: E2EE_APPAREILS_INVALIDE / E2EE_APPAREILS_TROP }
+ *       409: { description: E2EE_APPAREIL_INCONNU — reconnexion requise }
+ */
+router.post('/bundles', auth, postBundles);
 
 module.exports = router;

@@ -157,6 +157,8 @@ sont valides mais rendus par le repli lié au statut HTTP.
 | `E2EE_OTPK_INVALIDE` | 400 | Liste de clés à usage unique mal formée |
 | `E2EE_OTPK_DOUBLON` | 400 | Deux clés à usage unique portent le même `keyId` |
 | `E2EE_OTPK_TROP` | 400 | Plus de 100 clés à usage unique en un seul envoi |
+| `E2EE_APPAREILS_INVALIDE` | 400 | `appareilIds` absent, vide ou sans aucun identifiant exploitable |
+| `E2EE_APPAREILS_TROP` | 400 | Plus de 200 appareils demandés en une requête : découper le lot |
 
 ### Droits et divers
 | Code | Statut | Sens |
