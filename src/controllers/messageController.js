@@ -9,6 +9,7 @@ const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
 const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
+const { attacheChiffre } = require('../utils/messageEnvelopes');
 const { MEDIA_THUMB_SELECT } = require('../utils/messageThumbSql');
 const { copyForForward } = require('../services/mediaStorage');
 
@@ -99,6 +100,10 @@ const getMessages = async (req, res) => {
         r.clientId = r.clientID;
       }
     }
+
+    // Corps et enveloppe des messages chiffrés, pour CET appareil seulement.
+    // Aucune requête si la page n'en contient aucun.
+    await attacheChiffre(pool, rows, req.user.appareilId);
 
     // Lecture / accusés : uniquement via message:read ou POST /:id/read
     // (markConversationReadBy), pour notifier lastMessageStatus correctement.
@@ -1185,6 +1190,8 @@ const getMessagesSince = async (req, res) => {
         r.clientId = r.clientID;
       }
     }
+
+    await attacheChiffre(pool, page, req.user.appareilId);
 
     res.json({ messages: page, hasMore });
   } catch (error) {

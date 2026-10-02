@@ -299,6 +299,53 @@ async function marqueRemises(conn, msgIDs, appareilId) {
   return r.affectedRows;
 }
 
+/**
+ * Greffe `body` et `envelope` sur les lignes chiffrées d'une page de lecture.
+ *
+ * Appelée par les deux chemins de lecture — l'historique d'une conversation
+ * et le delta de synchronisation — qui rendent tous deux des lignes `m.*`.
+ * Sans elle, un message chiffré arriverait avec `enc_version = 1`, un
+ * `content` NULL et rien pour l'ouvrir : une bulle vide, indiscernable d'un
+ * message réellement vide.
+ *
+ * C'est aussi le filet du temps réel. Une émission socket peut se perdre — le
+ * téléphone était éteint, la socket venait de tomber, l'enveloppe est partie
+ * pendant une bascule d'instance. Ce chemin-ci rattrape, et c'est pour cela
+ * que le rejeu d'envoi n'a pas à rediffuser aux autres appareils.
+ *
+ * Ne touche QUE les lignes chiffrées : une page sans message chiffré ne coûte
+ * aucune requête. C'est ce qui permet de livrer ce chemin avant qu'un seul
+ * client ne chiffre quoi que ce soit.
+ *
+ * `marqueRemises` est volontairement sans `await` et sans propagation
+ * d'erreur : elle n'alimente que la purge, jamais l'affichage ni les accusés.
+ * Faire échouer une lecture d'historique parce qu'une date de ménage n'a pas
+ * pu s'écrire serait une panne inventée de toutes pièces.
+ */
+async function attacheChiffre(conn, lignes, appareilId) {
+  if (!Array.isArray(lignes) || lignes.length === 0 || !appareilId) return lignes;
+
+  const ids = lignes
+    .filter((l) => Number(l.enc_version) === 1)
+    .map((l) => Number(l.msgID));
+  if (ids.length === 0) return lignes;
+
+  const paquets = await chargeChiffrePourAppareil(conn, ids, appareilId);
+  if (paquets.size === 0) return lignes;
+
+  for (const ligne of lignes) {
+    const paquet = paquets.get(Number(ligne.msgID));
+    if (!paquet) continue;
+    ligne.body = paquet.body;
+    ligne.envelope = paquet.envelope;
+  }
+
+  marqueRemises(conn, [...paquets.keys()], appareilId)
+    .catch((e) => console.warn('[E2EE] marqueRemises:', e.message));
+
+  return lignes;
+}
+
 module.exports = {
   NONCE_OCTETS,
   ENV_AMORCAGE,
@@ -312,4 +359,5 @@ module.exports = {
   chiffrePourClient,
   chargeChiffrePourAppareil,
   marqueRemises,
+  attacheChiffre,
 };

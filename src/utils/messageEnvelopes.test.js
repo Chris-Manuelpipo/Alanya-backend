@@ -25,6 +25,7 @@ const {
   ecritChiffre,
   chargeChiffrePourAppareil,
   marqueRemises,
+  attacheChiffre,
 } = require('./messageEnvelopes');
 
 const b64 = (n, r = 7) => Buffer.alloc(n, r).toString('base64');
@@ -292,6 +293,61 @@ assert.strictEqual(
     'ne réécrire que ce qui n\'est pas déjà remis : une date de remise ne bouge pas',
   );
   assert.strictEqual(await marqueRemises(connRemise, [], 20), 0);
+
+  // ── Greffe sur une page de lecture ────────────────────────────────────
+
+  // Une page SANS message chiffré ne coûte aucune requête. C'est ce qui
+  // permet de livrer ce chemin avant qu'un seul client ne chiffre quoi que
+  // ce soit : tant que personne n'envoie de chiffré, il est inerte.
+  const aucuneRequete = {
+    async query() { assert.fail('aucune requête pour une page sans message chiffré'); },
+  };
+  const enClair = [{ msgID: 1, enc_version: 0 }, { msgID: 2, enc_version: 0 }];
+  assert.strictEqual(await attacheChiffre(aucuneRequete, enClair, 20), enClair);
+  assert.ok(!('body' in enClair[0]), 'une ligne en clair ne reçoit pas de corps');
+
+  // Sans appareil sur le jeton (session d'avant la migration 026), on ne
+  // greffe rien plutôt que de deviner : il n'y a pas d'enveloppe à servir.
+  assert.strictEqual((await attacheChiffre(aucuneRequete, [{ msgID: 1, enc_version: 1 }], null))[0].body, undefined);
+  await attacheChiffre(aucuneRequete, [], 20);
+
+  // Page mixte : seules les lignes chiffrées sont lues et greffées.
+  const lues = [];
+  const connPage = {
+    async query(sql, params) {
+      lues.push({ sql, params });
+      if (/message_e2ee/.test(sql)) {
+        return [[{ msgID: 7, body: Buffer.alloc(8, 1), nonce: Buffer.alloc(12, 2) }], []];
+      }
+      if (/message_envelope/.test(sql) && /SELECT/.test(sql)) {
+        return [[{
+          msgID: 7, appareil_id: 20, header: '{"n":5}', env_type: 2,
+          wrapped_key: Buffer.alloc(48, 3),
+        }], []];
+      }
+      return [{ affectedRows: 1 }, []];
+    },
+  };
+  const page = [
+    { msgID: 6, enc_version: 0, content: 'en clair' },
+    { msgID: 7, enc_version: 1, content: null },
+    { msgID: 8, enc_version: 1, content: null },
+  ];
+  await attacheChiffre(connPage, page, 20);
+
+  // Seuls les msgID chiffrés sont demandés : la ligne en clair n'a rien à
+  // chercher, et l'inclure ferait lire des blobs pour rien.
+  assert.deepStrictEqual(
+    lues[0].params[0], [7, 8],
+    'seuls les msgID à enc_version = 1 sont demandés',
+  );
+  assert.strictEqual(page[1].body.ct, Buffer.alloc(8, 1).toString('base64'));
+  assert.strictEqual(page[1].envelope.header, '{"n":5}');
+  assert.ok(!('body' in page[0]), 'la ligne en clair reste intacte');
+  // Le message 8 est chiffré mais n'a ni corps ni enveloppe pour cet
+  // appareil : rien n'est greffé. Le client affichera « illisible sur cet
+  // appareil », ce qui est la vérité — et non une bulle vide.
+  assert.ok(!('body' in page[2]));
 
   console.log('messageEnvelopes.test.js OK');
 })().catch((e) => {
