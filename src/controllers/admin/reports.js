@@ -71,8 +71,9 @@ function buildReportsWhere(query) {
     where.push(`(ur.nom LIKE ? OR ur.pseudo LIKE ?
               OR ut.nom LIKE ? OR ut.pseudo LIKE ?
               OR us.nom LIKE ? OR us.pseudo LIKE ?
-              OR r.note LIKE ? OR m.content LIKE ?)`);
-    params.push(like, like, like, like, like, like, like, like);
+              OR r.note LIKE ? OR m.content LIKE ?
+              OR r.target_excerpt LIKE ?)`);
+    params.push(like, like, like, like, like, like, like, like, like);
   }
 
   return {
@@ -101,7 +102,26 @@ const getReports = async (req, res) => {
               r.note, r.state, r.created_at, r.updated_at,
               r.reporter_id, ur.nom AS reporter_nom, ur.pseudo AS reporter_pseudo,
               ut.nom AS target_nom, ut.pseudo AS target_pseudo, ut.exclus AS target_exclus,
-              m.senderID AS msg_sender_id, m.type AS msg_type, m.content AS msg_content,
+              m.senderID AS msg_sender_id, m.type AS msg_type,
+              -- L'extrait joint par la personne qui signale d'abord, puis
+              -- m.content en repli. Le repli n'est pas une négligence : il
+              -- sert les signalements déposés par un client trop ancien pour
+              -- joindre un extrait, et ceux de messages en clair — qui
+              -- resteront la majorité pendant toute la bascule.
+              --
+              -- Un COALESCE et non deux colonnes séparées : la console
+              -- affiche un seul bloc de texte, et lui en donner deux la
+              -- forcerait à rejouer cette priorité côté client, là où elle
+              -- divergerait.
+              COALESCE(r.target_excerpt, m.content) AS msg_content,
+              -- Dit d'où vient ce texte. Sans lui, la personne qui modère ne
+              -- peut pas distinguer « voici ce que la cible a écrit, lu sur le
+              -- serveur » de « voici ce que l'auteur du signalement affirme
+              -- avoir lu » — deux choses de poids très différent quand on
+              -- s'apprête à exclure un compte.
+              (r.target_excerpt IS NOT NULL) AS msg_content_from_reporter,
+              r.target_was_encrypted AS msg_was_encrypted,
+              r.context_excerpt AS msg_context,
               m.isDeleted AS msg_deleted, m.sendAt AS msg_sent_at,
               us.nom AS msg_sender_nom, us.pseudo AS msg_sender_pseudo,
               (SELECT COUNT(*) FROM report_action a WHERE a.report_id = r.id) AS actions

@@ -25,7 +25,7 @@
         "test:presence": "NODE_ENV=test node src/utils/userSocketRegistry.test.js",
         "test:i18n": "NODE_ENV=test node src/utils/localeContent.test.js && NODE_ENV=test node src/services/welcomeBlockI18n.test.js",
         "test:welcome": "NODE_ENV=test node src/services/welcomeBlockI18n.test.js && NODE_ENV=test node src/services/welcomeStatusBlocks.test.js",
-        "test:reports": "NODE_ENV=test node src/services/reportService.test.js && NODE_ENV=test node src/services/reportService.db.test.js && NODE_ENV=test node src/controllers/admin/reports.test.js",
+        "test:reports": "NODE_ENV=test node src/services/reportExcerpt.test.js && NODE_ENV=test node src/services/reportService.test.js && NODE_ENV=test node src/services/reportService.db.test.js && NODE_ENV=test node src/controllers/admin/reports.test.js",
         "test:audit": "NODE_ENV=test node src/middleware/adminAudit.test.js && NODE_ENV=test node src/middleware/adminAudit.record.test.js",
         "test:roles": "NODE_ENV=test node src/constants/adminRoles.test.js",
         "test:socle": "NODE_ENV=test node src/utils/soclePayload.test.js",
