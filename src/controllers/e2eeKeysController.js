@@ -19,6 +19,7 @@ const {
   serviceBundles,
   normaliseAppareilIds,
 } = require('../services/e2eePrekeyStock');
+const { appareilsDeConversation } = require('../utils/conversationDevices');
 
 /**
  * Exige un `appareilId` sur le jeton.
@@ -133,10 +134,42 @@ const postBundles = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/e2ee/devices?conversationID=… — pour qui chiffrer dans ce fil.
+ *
+ * GET et non POST : contrairement à `/bundles`, cet appel ne consomme rien.
+ * Le client l'interroge à chaque ouverture de conversation et à chaque
+ * changement de composition d'un groupe.
+ */
+const getConversationDevices = async (req, res) => {
+  const appareilId = exigeAppareil(req, res);
+  if (appareilId == null) return;
+
+  const conversationID = parseInt(req.query.conversationID, 10);
+  if (!conversationID || conversationID < 1) {
+    return fail(res, 400, 'VALIDATION_FAILED', 'conversationID requis');
+  }
+
+  try {
+    const r = await appareilsDeConversation(
+      conversationID, req.user.alanyaID, appareilId,
+    );
+    // Non participant et conversation inexistante rendent la même chose :
+    // distinguer les deux dirait qui parle à qui.
+    if (!r) {
+      return fail(res, 404, 'NOT_A_MEMBER', 'Conversation introuvable ou non autorisée');
+    }
+    res.json(r);
+  } catch (e) {
+    repondErreur(res, e, 'appareils de conversation');
+  }
+};
+
 module.exports = {
   postKeys,
   postSignedPreKey,
   postOneTimePreKeys,
   getKeysState,
   postBundles,
+  getConversationDevices,
 };

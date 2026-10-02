@@ -13,6 +13,7 @@ const {
   postOneTimePreKeys,
   getKeysState,
   postBundles,
+  getConversationDevices,
 } = require('../controllers/e2eeKeysController');
 
 /**
@@ -125,5 +126,30 @@ router.get('/keys/state', auth, getKeysState);
  *       409: { description: E2EE_APPAREIL_INCONNU — reconnexion requise }
  */
 router.post('/bundles', auth, postBundles);
+
+/**
+ * @swagger
+ * /api/e2ee/devices:
+ *   get:
+ *     summary: Appareils à qui chiffrer dans une conversation
+ *     description: >
+ *       `cibles` liste les appareils actifs des autres participants ET les
+ *       autres appareils de l'appelant. `chiffrable` est faux dès qu'un
+ *       appareil tiers n'a pas publié de bundle : l'émetteur envoie alors en
+ *       clair, et aucun cadenas n'est affiché.
+ *     tags: [E2EE]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: conversationID
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200: { description: "{ conversationID, chiffrable, cibles, autresSansCles, mesAppareilsSansCles }" }
+ *       400: { description: VALIDATION_FAILED }
+ *       404: { description: NOT_A_MEMBER }
+ *       409: { description: E2EE_APPAREIL_INCONNU — reconnexion requise }
+ */
+router.get('/devices', auth, getConversationDevices);
 
 module.exports = router;
