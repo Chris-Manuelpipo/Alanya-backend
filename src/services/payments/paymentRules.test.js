@@ -67,6 +67,27 @@ assert.strictEqual(addMonths(new Date('2026-12-15T00:00:00Z'), 1).toISOString(),
   );
 }
 
+{
+  // Payer pendant l'essai ne le consomme pas : la période commence à sa fin.
+  const now = new Date('2026-09-22T12:00:00Z');
+  assert.strictEqual(
+    nextPeriodStart({ now, trialEnd: '2026-12-01T00:00:00Z' }).toISOString(),
+    '2026-12-01T00:00:00.000Z',
+  );
+  assert.strictEqual(
+    nextPeriodStart({ now, trialEnd: '2026-12-01T00:00:00Z', graceUntil: '2027-01-01T00:00:00Z' }).toISOString(),
+    '2027-01-01T00:00:00.000Z', 'la grâce la plus tardive l\'emporte',
+  );
+  assert.strictEqual(
+    nextPeriodStart({ now, currentEnd: '2027-03-01T00:00:00Z', trialEnd: '2026-12-01T00:00:00Z' }).toISOString(),
+    '2027-03-01T00:00:00.000Z', 'une période qui court déjà reste devant',
+  );
+  assert.strictEqual(
+    nextPeriodStart({ now, trialEnd: '2026-01-01T00:00:00Z' }).toISOString(),
+    now.toISOString(), 'essai fini : maintenant',
+  );
+}
+
 assert.strictEqual(PAYMENT_STATUS_NAME[2], 'succeeded');
 
 // ── Comptes testeurs ───────────────────────────────────────────────────────

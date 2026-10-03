@@ -11,9 +11,9 @@
  */
 
 const pool = require('../../config/db');
-const { MIN_GRACE_DAYS } = require('../../constants/billing');
+const { MIN_GRACE_DAYS, BILLING_MODEL } = require('../../constants/billing');
 const { BillingError } = require('./errors');
-const { DAY_MS, phaseAt, activationBlocker, paymentProvider } = require('./rules');
+const { DAY_MS, phaseAt, activationBlockerFor, paymentProvider } = require('./rules');
 
 const TTL_MS = 30_000;
 let _cache = null;
@@ -22,12 +22,14 @@ let _cache = null;
 const DEFAULTS = Object.freeze({
   id: 1,
   paid_enabled: 0,
+  model: BILLING_MODEL.PLUS,
   activated_at: null,
   grace_until: null,
   deactivated_at: null,
   default_grace_days: 30,
   trial_days: 0,
   retention_days: 30,
+  pay_url: null,
   updated_by: null,
   updated_at: null,
 });
@@ -90,12 +92,15 @@ async function updateSettings(patch, adminId) {
  * payant sans grâce.
  */
 async function activate({ graceDays, adminId, now = new Date(), env = process.env }) {
-  const blocker = activationBlocker(env);
-  if (blocker) {
-    throw new BillingError(blocker, 409,
-      'Activation refusée : le fournisseur de paiement est le simulateur');
-  }
   await withLockedSettings(async (conn, row) => {
+    // Le garde dépend du régime : Alanya Plus exige un vrai fournisseur de
+    // paiement, l'essai exige le secret qui signe les codes.
+    const blocker = activationBlockerFor(row.model, env);
+    if (blocker) {
+      throw new BillingError(blocker, 409, blocker === 'BILLING_CODE_SECRET_MISSING'
+        ? 'Activation refusée : ACTIVATION_CODE_SECRET n\'est pas posé sur le serveur'
+        : 'Activation refusée : le fournisseur de paiement est le simulateur');
+    }
     if (Number(row.paid_enabled) === 1) {
       throw new BillingError('BILLING_ALREADY_ACTIVE', 409, 'Le payant est déjà activé');
     }
@@ -109,6 +114,32 @@ async function activate({ graceDays, adminId, now = new Date(), env = process.en
           SET paid_enabled = 1, activated_at = ?, grace_until = ?, updated_by = ?
         WHERE id = 1`,
       [now, new Date(now.getTime() + days * DAY_MS), adminId],
+    );
+  });
+  return getBillingSettings();
+}
+
+/**
+ * Choisit le régime. Seulement payant éteint : passé payant allumé, l'essai
+ * d'un compte ancien serait déjà écoulé et l'envoi se fermerait d'un coup pour
+ * tous. Le régime TRIAL s'installe donc toujours par l'activation, avec sa grâce.
+ */
+async function setModel({ model, adminId }) {
+  if (model !== BILLING_MODEL.PLUS && model !== BILLING_MODEL.TRIAL) {
+    throw new BillingError('INVALID_BILLING_SETTING', 400, 'model doit valoir 1 ou 2');
+  }
+  await withLockedSettings(async (conn, row) => {
+    if (row.model === undefined) {
+      throw new BillingError('BILLING_NOT_CONFIGURED', 503, 'Migration 090 non appliquée');
+    }
+    if (Number(row.paid_enabled) === 1) {
+      throw new BillingError('BILLING_MODEL_LOCKED', 409,
+        'Le régime ne se change que payant éteint');
+    }
+    if (Number(row.model) === model) return;
+    await conn.execute(
+      'UPDATE billing_settings SET model = ?, updated_by = ? WHERE id = 1',
+      [model, adminId],
     );
   });
   return getBillingSettings();
@@ -158,5 +189,6 @@ module.exports = {
   activate,
   deactivate,
   extendGrace,
+  setModel,
   paymentProvider,
 };

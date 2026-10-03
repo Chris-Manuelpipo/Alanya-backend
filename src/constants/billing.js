@@ -26,12 +26,31 @@ const FEATURE = Object.freeze({
   VOICEMAIL: 'voicemail',
 });
 
+/**
+ * `billing_settings.model` (migration 090) : lequel des deux régimes est en
+ * vigueur. PLUS = Alanya Plus (fonctionnalités annexes payantes, paiement dans
+ * l'app) ; TRIAL = trois mois gratuits, puis réception seule jusqu'à
+ * l'activation d'un code. Ne se change que payant éteint.
+ */
+const BILLING_MODEL = Object.freeze({
+  PLUS: 1,
+  TRIAL: 2,
+});
+
 /** `subscription_period.source` */
 const PERIOD_SOURCE = Object.freeze({
   PAYMENT: 0,
   TRIAL: 1,
   GIFT: 2,
   COMPENSATION: 3,
+  // Période née d'un code d'activation saisi dans l'application (migration 090).
+  CODE: 4,
+});
+
+/** `trial_notice.kind` (migration 090) */
+const TRIAL_NOTICE = Object.freeze({
+  ENDING: 1,
+  ENDED: 2,
 });
 
 /** `payment.status` */
@@ -100,6 +119,8 @@ const OFFLINE_TRUST_DAYS = 7;
 module.exports = {
   PHASE,
   FEATURE,
+  BILLING_MODEL,
+  TRIAL_NOTICE,
   PERIOD_SOURCE,
   PAYMENT_STATUS,
   PAYMENT_PURPOSE,

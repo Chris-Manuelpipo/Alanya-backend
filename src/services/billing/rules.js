@@ -7,7 +7,9 @@
  * et appeler ces fonctions.
  */
 
-const { PHASE, MIN_GRACE_DAYS, OFFLINE_TRUST_DAYS } = require('../../constants/billing');
+const {
+  PHASE, BILLING_MODEL, MIN_GRACE_DAYS, OFFLINE_TRUST_DAYS,
+} = require('../../constants/billing');
 
 const DAY_MS = 86_400_000;
 
@@ -36,6 +38,70 @@ function phaseAt(settings, now = new Date()) {
   const graceUntil = toDate(settings.grace_until);
   if (graceUntil && now < graceUntil) return PHASE.GRACE;
   return PHASE.PAID;
+}
+
+/** Régime en vigueur. Sans réglage (migration 090 absente), c'est Alanya Plus. */
+function billingModel(settings) {
+  return Number(settings?.model) === BILLING_MODEL.TRIAL
+    ? BILLING_MODEL.TRIAL
+    : BILLING_MODEL.PLUS;
+}
+
+/**
+ * Fin de l'essai d'un compte (régime TRIAL) : trois mois après l'inscription,
+ * repoussés à la fin de la grâce quand le payant vient d'être allumé — c'est
+ * ce qui donne trois mois aux comptes déjà là le jour de l'activation.
+ *
+ * Se déduit, ne se stocke pas : aucune ligne par inscription, et régler
+ * `trial_days` vaut pour tout le monde. Nulle sans date d'inscription.
+ */
+function trialEndsAt({ createdAt, settings }) {
+  const created = toDate(createdAt);
+  if (!created) return null;
+  const natural = new Date(created.getTime() + (Number(settings?.trial_days) || 0) * DAY_MS);
+  const grace = Number(settings?.paid_enabled) === 1 ? toDate(settings.grace_until) : null;
+  return grace && grace > natural ? grace : natural;
+}
+
+/**
+ * Jusqu'où une nouvelle période ne peut pas commencer à cause de l'essai :
+ * payer pendant l'essai ne le consomme pas, la période d'un an commence à sa
+ * fin. Nulle en régime PLUS, ou l'essai fini.
+ */
+function trialFloor({ settings, createdAt, now = new Date() }) {
+  if (billingModel(settings) !== BILLING_MODEL.TRIAL) return null;
+  const end = trialEndsAt({ createdAt, settings });
+  return end && end > now ? end : null;
+}
+
+/**
+ * Le compte peut-il ÉMETTRE (envoyer un message, lancer un appel) ?
+ *
+ * Seule règle de l'envoi : le verrou serveur et `features.outgoing` des droits
+ * l'appellent, pour ne jamais diverger. Recevoir n'est jamais soumis à rien.
+ *
+ * `until` : l'instant où cette réponse cesse de valoir (fin d'essai, fin de la
+ * période qui couvre), pour que le verrou ne garde pas un « oui » trop
+ * longtemps. Nul quand rien de connu ne la fera changer.
+ *
+ * @param {object} p
+ * @param {object} p.settings
+ * @param {string} p.phase                 free | grace | paid (déjà ajustée pour un testeur)
+ * @param {Date|string|null} p.createdAt   users.created_at
+ * @param {boolean} [p.exempt]             équipe ou compte officiel
+ * @param {Date|string|null} [p.coveredUntil] fin de la période qui couvre `now`, s'il y en a une
+ * @returns {{ allowed: boolean, until: Date|null }}
+ */
+function outgoingDecision({
+  settings, phase, createdAt, exempt = false, coveredUntil = null, now = new Date(),
+}) {
+  if (billingModel(settings) !== BILLING_MODEL.TRIAL) return { allowed: true, until: null };
+  if (phase !== PHASE.PAID || exempt) return { allowed: true, until: null };
+  const trialEnd = trialEndsAt({ createdAt, settings });
+  if (trialEnd && now < trialEnd) return { allowed: true, until: trialEnd };
+  const covered = toDate(coveredUntil);
+  if (covered && covered > now) return { allowed: true, until: covered };
+  return { allowed: false, until: null };
 }
 
 /**
@@ -93,6 +159,7 @@ function resolvePeriods(periods, now = new Date()) {
  * @param {Date|string} [p.lastEnd]    fin de la dernière chaîne (subscriber.current_end)
  * @param {Date|string} [p.purgeAfter] données payantes conservées jusque-là
  * @param {Date|string} [p.purgedAt]   … puis effacées à cette date
+ * @param {Date|string} [p.createdAt]  inscription du compte (fin d'essai, régime TRIAL)
  * @param {{standardDays: number, plusDays: number}} [p.mediaDays]
  *        durées de conservation des médias (réglages de la purge `media`)
  * @param {Date}     [p.now]
@@ -107,12 +174,23 @@ function decideEntitlements({
   lastEnd = null,
   purgeAfter = null,
   purgedAt = null,
+  createdAt = null,
   mediaDays = null,
   now = new Date(),
 }) {
   const phase = phaseAt(settings, now);
   const { current, upcoming, chainEnd } = resolvePeriods(periods, now);
   const included = current ? planFeatures : [];
+
+  // Régime TRIAL : pendant l'essai, tout est ouvert ; ensuite, seul un
+  // abonnement rouvre les fonctionnalités et l'envoi. En phase gratuite,
+  // aucun décompte n'est montré — il serait faux à l'activation, qui rouvre
+  // une grâce.
+  const model = billingModel(settings);
+  const trialEnd = model === BILLING_MODEL.TRIAL && !exempt && phase !== PHASE.FREE
+    ? trialEndsAt({ createdAt, settings })
+    : null;
+  const inTrial = Boolean(trialEnd) && now < trialEnd;
 
   const features = {};
   for (const f of catalog) {
@@ -121,9 +199,15 @@ function decideEntitlements({
       Number(f.is_paid) === 0
       || phase !== PHASE.PAID
       || exempt
+      || inTrial
       || included.includes(f.code)
     );
   }
+  // Le droit d'émettre n'est pas au catalogue : l'administration ne peut ni le
+  // rendre gratuit ni le retirer d'un plan.
+  features.outgoing = outgoingDecision({
+    settings, phase, createdAt, exempt, coveredUntil: current ? chainEnd : null, now,
+  }).allowed;
 
   const graceUntil = phase === PHASE.GRACE ? toDate(settings.grace_until) : null;
   const describe = (p, endsAt) => (p
@@ -138,7 +222,9 @@ function decideEntitlements({
 
   return {
     phase,
+    model,
     graceUntil: iso(graceUntil),
+    trial: trialEnd ? { endsAt: iso(trialEnd), active: inTrial } : null,
     period: describe(current, chainEnd),
     upcoming: describe(upcoming),
     exempt: Boolean(exempt),
@@ -155,7 +241,12 @@ function decideEntitlements({
     purgedAt: !current && !upcoming ? iso(purgedAt) : null,
     // Au-delà, le téléphone doit redemander ses droits : la fin de
     // l'abonnement, la fin de la grâce, ou une semaine au plus.
-    validUntil: iso(earliest(chainEnd, graceUntil, new Date(now.getTime() + OFFLINE_TRUST_DAYS * DAY_MS))),
+    validUntil: iso(earliest(
+      chainEnd,
+      graceUntil,
+      inTrial ? trialEnd : null,
+      new Date(now.getTime() + OFFLINE_TRUST_DAYS * DAY_MS),
+    )),
     // Durée pendant laquelle CE compte peut télécharger un média depuis le
     // serveur. Le fichier peut vivre plus longtemps, gardé par un autre membre
     // abonné de la discussion : c'est au téléphone de s'arrêter à cette durée,
@@ -228,6 +319,20 @@ function activationBlocker(env = process.env) {
     return 'BILLING_PROVIDER_SIMULATED';
   }
   return null;
+}
+
+/**
+ * Le régime TRIAL se paie par des codes : sans le secret qui les signe, on ne
+ * peut en émettre aucun, ni en vérifier un. Trente-deux caractères au moins,
+ * comme `VAULT_KEY` : un secret court se devine.
+ */
+function codeSecretBlocker(env = process.env) {
+  return String(env.ACTIVATION_CODE_SECRET || '').length >= 32 ? null : 'BILLING_CODE_SECRET_MISSING';
+}
+
+/** Ce qui empêche d'activer le payant, selon le régime en vigueur. */
+function activationBlockerFor(model, env = process.env) {
+  return Number(model) === BILLING_MODEL.TRIAL ? codeSecretBlocker(env) : activationBlocker(env);
 }
 
 /**
@@ -562,12 +667,18 @@ module.exports = {
   isBillingTester,
   earliest,
   phaseAt,
+  billingModel,
+  trialEndsAt,
+  trialFloor,
+  outgoingDecision,
   resolvePeriods,
   decideEntitlements,
   mediaRetentionCovered,
   mediaRetentionDays,
   paymentProvider,
   activationBlocker,
+  activationBlockerFor,
+  codeSecretBlocker,
   purchaseBlocker,
   parseSettingsPatch,
   parsePlanPayload,

@@ -8,11 +8,13 @@
  */
 
 const pool = require('../../config/db');
-const { PERIOD_SOURCE } = require('../../constants/billing');
+const { PERIOD_SOURCE, BILLING_MODEL } = require('../../constants/billing');
 const { emitToUser } = require('../../utils/userSocketRegistry');
 const { BillingError } = require('./errors');
 const { getBillingSettings } = require('./settings');
-const { DAY_MS, phaseAt } = require('./rules');
+const {
+  DAY_MS, phaseAt, trialFloor, billingModel,
+} = require('./rules');
 const { addMonths, nextPeriodStart } = require('../payments/paymentRules');
 const { scheduleChainJobs } = require('./billingSchedule');
 
@@ -63,6 +65,15 @@ async function lockSubscriber(conn, alanyaID) {
   return row;
 }
 
+/** Fin de l'essai du compte si elle est à venir (régime TRIAL), sinon null. */
+async function trialFloorFor(conn, alanyaID, now) {
+  const settings = await getBillingSettings();
+  // Régime Alanya Plus : pas d'essai, donc pas de lecture du compte.
+  if (billingModel(settings) !== BILLING_MODEL.TRIAL) return null;
+  const [[user]] = await conn.execute('SELECT created_at FROM users WHERE alanyaID = ?', [alanyaID]);
+  return trialFloor({ settings, createdAt: user?.created_at, now });
+}
+
 /**
  * Ajoute une période à la suite de ce qui court déjà. À appeler dans une
  * transaction ouverte.
@@ -75,7 +86,13 @@ async function appendPeriod(conn, {
   grantsBadge = true,
 }) {
   const sub = await lockSubscriber(conn, alanyaID);
-  const start = nextPeriodStart({ now, currentEnd: sub.current_end, graceUntil });
+  // Régime TRIAL : payer, être offert ou activer un code pendant l'essai ne le
+  // consomme pas. Cherché ICI et non chez chaque appelant : aucun chemin ne
+  // peut l'oublier.
+  const trialEnd = await trialFloorFor(conn, alanyaID, now);
+  const start = nextPeriodStart({
+    now, currentEnd: sub.current_end, graceUntil, trialEnd,
+  });
   // En jours pour une compensation (la durée d'une phase gratuite), en mois
   // sinon.
   const end = days

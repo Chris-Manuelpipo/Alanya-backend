@@ -96,11 +96,17 @@ const time = (v) => {
 
 /**
  * Début d'une nouvelle période : maintenant, sauf si une période court encore
- * (payer en avance prolonge, sans chevauchement) ou si la grâce n'est pas
- * finie (payer pendant la grâce ne consomme pas les jours gratuits).
+ * (payer en avance prolonge, sans chevauchement), si la grâce n'est pas finie
+ * (payer pendant la grâce ne consomme pas les jours gratuits) ou si l'essai du
+ * compte court encore (payer pendant l'essai ne le consomme pas non plus : la
+ * période commence à sa fin).
  */
-function nextPeriodStart({ now = new Date(), currentEnd = null, graceUntil = null }) {
-  return new Date(Math.max(now.getTime(), time(currentEnd), time(graceUntil)));
+function nextPeriodStart({
+  now = new Date(), currentEnd = null, graceUntil = null, trialEnd = null,
+}) {
+  return new Date(Math.max(
+    now.getTime(), time(currentEnd), time(graceUntil), time(trialEnd),
+  ));
 }
 
 module.exports = {

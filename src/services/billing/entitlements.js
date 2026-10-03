@@ -24,7 +24,7 @@ async function entitlementsFor(alanyaID, now = new Date()) {
   const effective = tester ? { ...settings, paid_enabled: 1, grace_until: null } : settings;
 
   const [[user]] = await pool.execute(
-    'SELECT type_compte, account_type, verification_status, verified_until FROM users WHERE alanyaID = ?',
+    'SELECT type_compte, account_type, verification_status, verified_until, created_at FROM users WHERE alanyaID = ?',
     [alanyaID],
   );
   // L'équipe et le compte officiel ne sont jamais soumis à l'offre.
@@ -62,6 +62,7 @@ async function entitlementsFor(alanyaID, now = new Date()) {
     lastEnd: sub?.current_end ?? null,
     purgeAfter: sub?.purge_after ?? null,
     purgedAt: sub?.purged_at ?? null,
+    createdAt: user?.created_at ?? null,
     mediaDays,
     now,
   });

@@ -19,6 +19,12 @@ const {
   parsePlanPayload,
   parseFeaturePatch,
   parseReason,
+  billingModel,
+  trialEndsAt,
+  trialFloor,
+  outgoingDecision,
+  activationBlockerFor,
+  codeSecretBlocker,
 } = require('./rules');
 
 const NOW = new Date('2026-09-22T12:00:00Z');
@@ -336,6 +342,135 @@ assert.strictEqual(parseReason({}).code, 'REASON_REQUIRED');
   // Un compte testeur est toujours en phase payante.
   assert.strictEqual(effectivePhase(OFF, 12, NOW, { BILLING_TEST_USERS: '12' }), 'paid');
   assert.strictEqual(effectivePhase(OFF, 13, NOW, { BILLING_TEST_USERS: '12' }), 'free');
+}
+
+// ── Régime TRIAL (v2) : essai de trois mois, puis réception seule ──────────
+{
+  // Sans réglage ou régime 1 : Alanya Plus, aucun verrou d'envoi.
+  assert.strictEqual(billingModel(null), 1);
+  assert.strictEqual(billingModel({ model: 1 }), 1);
+  assert.strictEqual(billingModel({ model: 2 }), 2);
+  assert.strictEqual(billingModel({ model: 'x' }), 1, 'une valeur inconnue ne verrouille rien');
+}
+{
+  const T = (extra = {}) => ({ model: 2, paid_enabled: 1, grace_until: day(-30), trial_days: 90, ...extra });
+  const created = day(-100);
+
+  // Fin d'essai : inscription + trial_days.
+  assert.strictEqual(trialEndsAt({ createdAt: created, settings: T() }).toISOString(), day(-10).toISOString());
+  assert.strictEqual(trialEndsAt({ createdAt: null, settings: T() }), null);
+  // Un compte ancien reçoit la grâce de l'activation : trois mois à partir d'elle.
+  assert.strictEqual(
+    trialEndsAt({ createdAt: day(-400), settings: T({ grace_until: day(90) }) }).toISOString(),
+    day(90).toISOString(),
+    'la grâce repousse la fin d\'essai des comptes existants',
+  );
+  // Un compte récent garde ses trois mois pleins, même si la grâce finit avant.
+  assert.strictEqual(
+    trialEndsAt({ createdAt: day(-5), settings: T({ grace_until: day(10) }) }).toISOString(),
+    day(85).toISOString(),
+    'la grâce ne raccourcit jamais l\'essai',
+  );
+  // Payant éteint : la grâce n'entre pas dans le calcul.
+  assert.strictEqual(
+    trialEndsAt({ createdAt: day(-5), settings: T({ paid_enabled: 0, grace_until: day(200) }) }).toISOString(),
+    day(85).toISOString(),
+  );
+
+  // outgoingDecision
+  const out = (o) => outgoingDecision({ settings: T(), phase: 'paid', createdAt: created, now: NOW, ...o });
+  assert.strictEqual(out({ settings: { ...T(), model: 1 } }).allowed, true, 'régime 1 : jamais de verrou');
+  assert.strictEqual(out({ phase: 'free' }).allowed, true, 'payant éteint');
+  assert.strictEqual(out({ phase: 'grace' }).allowed, true, 'grâce');
+  assert.strictEqual(out({ exempt: true }).allowed, true, 'équipe et compte officiel');
+  assert.strictEqual(out({}).allowed, false, 'essai fini, aucune période : réception seule');
+  assert.strictEqual(out({ createdAt: day(-50) }).allowed, true, 'en essai');
+  assert.strictEqual(out({ createdAt: day(-50) }).until.toISOString(), day(40).toISOString(),
+    'le oui vaut jusqu\'à la fin d\'essai');
+  assert.strictEqual(out({ coveredUntil: day(200) }).allowed, true, 'une période couvre');
+  assert.strictEqual(out({ coveredUntil: day(200) }).until.toISOString(), day(200).toISOString());
+  assert.strictEqual(out({ coveredUntil: day(-1) }).allowed, false, 'période échue');
+  assert.strictEqual(out({ coveredUntil: NOW }).allowed, false, 'une période qui finit maintenant ne couvre plus');
+  // L'instant exact de la fin d'essai : fermé (strict).
+  assert.strictEqual(out({ createdAt: day(-90) }).allowed, false, 'à l\'instant de la fin, c\'est fini');
+
+  // trialFloor : nul hors régime TRIAL, nul l'essai fini.
+  assert.strictEqual(trialFloor({ settings: { ...T(), model: 1 }, createdAt: day(-5), now: NOW }), null);
+  assert.strictEqual(trialFloor({ settings: T(), createdAt: created, now: NOW }), null);
+  assert.strictEqual(
+    trialFloor({ settings: T(), createdAt: day(-5), now: NOW }).toISOString(),
+    day(85).toISOString(),
+  );
+}
+{
+  // decideEntitlements, régime TRIAL.
+  const T = { model: 2, paid_enabled: 1, grace_until: day(-30), trial_days: 90 };
+  const run = (o) => decideEntitlements({
+    settings: T, catalog: CATALOG, planFeatures: ALL_PAID, now: NOW, ...o,
+  });
+
+  // En essai : tout est ouvert, avec le décompte.
+  const inTrial = run({ createdAt: day(-20) });
+  assert.strictEqual(inTrial.model, 2);
+  assert.strictEqual(inTrial.features.outgoing, true);
+  assert.strictEqual(inTrial.features.translation, true, 'les fonctionnalités annexes sont ouvertes pendant l\'essai');
+  assert.strictEqual(inTrial.features.backup, true);
+  assert.strictEqual(inTrial.trial.active, true);
+  assert.strictEqual(inTrial.trial.endsAt, day(70).toISOString());
+  assert.strictEqual(inTrial.validUntil, day(7).toISOString(), 'au plus une semaine hors ligne');
+  assert.strictEqual(run({ createdAt: day(-88) }).validUntil, day(2).toISOString(),
+    'le téléphone relit ses droits à la fin d\'essai');
+
+  // Essai fini, sans abonnement : tout est fermé, sauf recevoir.
+  const over = run({ createdAt: day(-200), lastEnd: null });
+  assert.strictEqual(over.features.outgoing, false);
+  assert.strictEqual(over.features.translation, false);
+  assert.strictEqual(over.trial.active, false);
+  assert.strictEqual(over.period, null);
+
+  // Essai fini, abonnement en cours : tout est rouvert.
+  const periods = [{ plan_code: 'plus_annuel', starts_at: day(-10), ends_at: day(355), source: 4 }];
+  const paid = run({ createdAt: day(-200), periods });
+  assert.strictEqual(paid.features.outgoing, true);
+  assert.strictEqual(paid.features.translation, true);
+  assert.strictEqual(paid.period.source, 4);
+
+  // Payé pendant l'essai : la période est « à venir », l'essai continue.
+  const early = run({
+    createdAt: day(-20),
+    periods: [{ plan_code: 'plus_annuel', starts_at: day(70), ends_at: day(435), source: 4 }],
+  });
+  assert.strictEqual(early.features.outgoing, true);
+  assert.strictEqual(early.period, null);
+  assert.strictEqual(early.upcoming.startsAt, day(70).toISOString());
+
+  // Payant éteint : aucun décompte, tout est ouvert.
+  const off = run({ settings: { ...T, paid_enabled: 0 }, createdAt: day(-200) });
+  assert.strictEqual(off.features.outgoing, true);
+  assert.strictEqual(off.trial, null);
+  // Équipe : jamais soumise à l'offre, aucun décompte.
+  const staff = run({ createdAt: day(-200), exempt: true });
+  assert.strictEqual(staff.features.outgoing, true);
+  assert.strictEqual(staff.trial, null);
+  // Régime 1 : rien de nouveau, mais le droit d'émettre est vrai pour tous.
+  const plus = decideEntitlements({
+    settings: { ...T, model: 1 }, catalog: CATALOG, planFeatures: ALL_PAID, createdAt: day(-200), now: NOW,
+  });
+  assert.strictEqual(plus.model, 1);
+  assert.strictEqual(plus.features.outgoing, true);
+  assert.strictEqual(plus.features.translation, false, 'régime 1 : annexes fermées sans abonnement, comme avant');
+  assert.strictEqual(plus.trial, null);
+}
+{
+  // Le garde d'activation dépend du régime.
+  const prodSim = { NODE_ENV: 'production', PAYMENT_PROVIDER: 'simulated' };
+  assert.strictEqual(activationBlockerFor(1, prodSim), 'BILLING_PROVIDER_SIMULATED');
+  assert.strictEqual(activationBlockerFor(2, prodSim), 'BILLING_CODE_SECRET_MISSING');
+  assert.strictEqual(
+    activationBlockerFor(2, { ...prodSim, ACTIVATION_CODE_SECRET: 'x'.repeat(32) }), null,
+    'le régime 2 n\'a pas besoin de fournisseur de paiement',
+  );
+  assert.strictEqual(codeSecretBlocker({ ACTIVATION_CODE_SECRET: 'court' }), 'BILLING_CODE_SECRET_MISSING');
 }
 
 console.log('billing rules.test.js OK');
