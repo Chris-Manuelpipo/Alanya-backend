@@ -78,7 +78,7 @@ async function trialFloorFor(conn, alanyaID, now) {
  * Ajoute une période à la suite de ce qui court déjà. À appeler dans une
  * transaction ouverte.
  *
- * @returns {Promise<{ start: Date, end: Date }>}
+ * @returns {Promise<{ start: Date, end: Date, periodId: number }>}
  */
 async function appendPeriod(conn, {
   alanyaID, plan, now = new Date(), graceUntil = null, source,
@@ -90,15 +90,18 @@ async function appendPeriod(conn, {
   // consomme pas. Cherché ICI et non chez chaque appelant : aucun chemin ne
   // peut l'oublier.
   const trialEnd = await trialFloorFor(conn, alanyaID, now);
-  const start = nextPeriodStart({
+  // Sans millisecondes : la colonne est un DATETIME, qui les retire. Ce que
+  // nous écrivons doit être ce que nous relirons, sinon les jobs d'échéance,
+  // posés sur la date calculée ici, ne reconnaissent pas la ligne.
+  const start = new Date(Math.floor(nextPeriodStart({
     now, currentEnd: sub.current_end, graceUntil, trialEnd,
-  });
+  }).getTime() / 1000) * 1000);
   // En jours pour une compensation (la durée d'une phase gratuite), en mois
   // sinon.
   const end = days
     ? new Date(start.getTime() + days * DAY_MS)
     : addMonths(start, months ?? Number(plan.duration_months));
-  await conn.execute(
+  const [inserted] = await conn.execute(
     `INSERT INTO subscription_period
        (alanyaID, plan_id, starts_at, ends_at, source, grants_badge, payment_id, granted_by, reason)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -113,7 +116,7 @@ async function appendPeriod(conn, {
       WHERE alanyaID = ?`,
     [end, plan.id, alanyaID],
   );
-  return { start, end };
+  return { start, end, periodId: inserted.insertId };
 }
 
 /** Grâce à ne pas consommer, si elle est en cours. */

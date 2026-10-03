@@ -67,6 +67,27 @@ const phoneCheckLimiter = rateLimit({
   message: { error: 'Trop de vérifications, patientez un instant', code: 'RATE_LIMITED' },
 });
 
+// Saisie d'un code d'activation : 40 par quart d'heure et par connexion.
+// Le verrou par compte (5 échecs, code_attempt) arrête qui s'acharne sur UN
+// compte ; ce plafond arrête qui essaierait d'en user plusieurs depuis une
+// même connexion. Un humain n'en tape pas quarante.
+const codeRedeemLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de tentatives, patientez un instant', code: 'RATE_LIMITED' },
+});
+
+// Prix public lu par le site de paiement, sans authentification.
+const publicOfferLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de requêtes, patientez un instant', code: 'RATE_LIMITED' },
+});
+
 //  API générale
 // 300 requêtes par minute par IP
 const generalLimiter = rateLimit({
@@ -79,6 +100,8 @@ const generalLimiter = rateLimit({
 
 module.exports = { authLimiter, registerLimiter, messageLimiter, uploadLimiter, qrResolveLimiter, generalLimiter,
   phoneCheckLimiter,
+  codeRedeemLimiter,
+  publicOfferLimiter,
   broadcastSendLimiter: rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 10,

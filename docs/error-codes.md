@@ -119,6 +119,12 @@ sont valides mais rendus par le repli lié au statut HTTP.
 | `INVALID_CHANNEL` | 400 | Moyen de paiement non proposé |
 | `PLAN_NOT_FOUND` | 404 | Plan inconnu ou retiré |
 | `PAYMENT_PROVIDER_ERROR` | 502 | Fournisseur de paiement injoignable |
+| `INVALID_CODE_FORMAT` | 400 | Code d'activation mal saisi (faute de frappe, ne compte pas comme un essai) |
+| `INVALID_CODE` | 404 | Code d'activation inconnu (compte comme un essai) |
+| `CODE_ALREADY_USED` | 409 | Code déjà utilisé par un autre compte |
+| `CODE_EXPIRED` | 410 | Code expiré |
+| `CODE_REVOKED` | 410 | Code annulé |
+| `CODE_LOCKED` | 429 | Cinq échecs en quinze minutes (`retryAfterSeconds` joint) |
 
 ### Numéro Alanya choisi
 | Code | Statut | Sens |
@@ -197,6 +203,8 @@ correctif — un code non traduit ne fait rien afficher de brut.
 - `INVALID_MSG_IDS` · `INVALID_MUTED_UNTIL` · `INVALID_PARTICIPANT_ID`
 - `INVALID_PASSWORD` · `INVALID_PAYLOAD` · `INVALID_PHONE`
 - `INVALID_PHONE_LENGTH` · `INVALID_PLAN` · `INVALID_PREFERENCES`
+- `BILLING_CODE_SECRET_MISSING` · `BILLING_MODEL_LOCKED` · `CODE_NOT_FOUND`
+- `INVALID_CODE_BATCH` · `INVALID_CODE_FILTER` · `INVALID_CODE_ORDER`
 - `INVALID_QR` · `INVALID_REFERENCE` · `INVALID_ROLE`
 - `INVALID_ROOM_ID` · `INVALID_SECURITY_SETTING` · `INVALID_SIGNATURE`
 - `INVALID_TOKEN`

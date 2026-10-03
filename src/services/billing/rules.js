@@ -376,8 +376,37 @@ function parseSettingsPatch(body) {
     }
     value[key] = n;
   }
+  // Le régime a son verbe (POST /admin/billing/model) : motif obligatoire, et
+  // seulement payant éteint. Le laisser passer ici contournerait les deux.
+  if (src.model !== undefined) {
+    return bad('FIELD_IMMUTABLE', 'Le régime se change par /admin/billing/model');
+  }
+  if (src.pay_url !== undefined) {
+    const url = parsePayUrl(src.pay_url);
+    if (url === undefined) return bad('INVALID_BILLING_SETTING', 'pay_url doit être une adresse https de 255 caractères au plus');
+    value.pay_url = url;
+  }
   if (!Object.keys(value).length) return bad('NO_FIELDS_TO_UPDATE', 'Aucune modification');
   return { ok: true, value };
+}
+
+/**
+ * Adresse du site de paiement : https obligatoire (l'application l'ouvre dans le
+ * navigateur, et un code se saisit après un paiement), ni identifiants ni
+ * fragment. Vide ou nulle : effacée, le bouton de l'application se grise.
+ *
+ * @returns {string|null|undefined} undefined si invalide
+ */
+function parsePayUrl(v) {
+  if (v === null || (typeof v === 'string' && v.trim() === '')) return null;
+  if (typeof v !== 'string' || v.trim().length > 255) return undefined;
+  try {
+    const u = new URL(v.trim());
+    if (u.protocol !== 'https:' || u.username || u.password || u.hash || !u.hostname.includes('.')) return undefined;
+    return u.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 const PLAN_CODE_RE = /^[a-z0-9_]{3,40}$/;
@@ -530,10 +559,18 @@ function parseReason(body) {
 /** Dernier avertissement avant la purge. */
 const PURGE_WARNING_DAYS = 7;
 
+/**
+ * Deux dates désignent-elles le même instant ? À la seconde près.
+ *
+ * Les colonnes sont des DATETIME : MySQL en retire les millisecondes (ou les
+ * arrondit). Un job posé avec la date calculée en JavaScript (`…782227`) et la
+ * ligne relue en base (`…782000`) ne se seraient jamais reconnus, et la relance
+ * ou l'avertissement de purge restaient inertes sans que rien ne le dise.
+ */
 const sameInstant = (a, b) => {
   const x = toDate(a);
   const y = toDate(b);
-  return Boolean(x && y && x.getTime() === y.getTime());
+  return Boolean(x && y && Math.abs(x.getTime() - y.getTime()) < 1000);
 };
 
 /**
@@ -681,6 +718,7 @@ module.exports = {
   codeSecretBlocker,
   purchaseBlocker,
   parseSettingsPatch,
+  parsePayUrl,
   parsePlanPayload,
   parseFeaturePatch,
   parseReason,

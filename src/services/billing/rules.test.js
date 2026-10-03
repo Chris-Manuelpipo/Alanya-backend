@@ -19,12 +19,14 @@ const {
   parsePlanPayload,
   parseFeaturePatch,
   parseReason,
+  parsePayUrl,
   billingModel,
   trialEndsAt,
   trialFloor,
   outgoingDecision,
   activationBlockerFor,
   codeSecretBlocker,
+  sameInstant,
 } = require('./rules');
 
 const NOW = new Date('2026-09-22T12:00:00Z');
@@ -342,6 +344,41 @@ assert.strictEqual(parseReason({}).code, 'REASON_REQUIRED');
   // Un compte testeur est toujours en phase payante.
   assert.strictEqual(effectivePhase(OFF, 12, NOW, { BILLING_TEST_USERS: '12' }), 'paid');
   assert.strictEqual(effectivePhase(OFF, 13, NOW, { BILLING_TEST_USERS: '12' }), 'free');
+}
+
+// ── Réglages : lien de paiement et régime ──────────────────────────────────
+{
+  assert.strictEqual(parsePayUrl('https://pay.alanya237.com/abonnement'), 'https://pay.alanya237.com/abonnement');
+  assert.strictEqual(parsePayUrl('  https://pay.alanya237.com  '), 'https://pay.alanya237.com/');
+  assert.strictEqual(parsePayUrl(''), null, 'vide : effacé');
+  assert.strictEqual(parsePayUrl(null), null);
+  assert.strictEqual(parsePayUrl('http://pay.alanya237.com'), undefined, 'https obligatoire');
+  assert.strictEqual(parsePayUrl('https://user:pass@pay.alanya237.com'), undefined, 'pas d\'identifiants');
+  assert.strictEqual(parsePayUrl('https://pay.alanya237.com/#x'), undefined, 'pas de fragment');
+  assert.strictEqual(parsePayUrl('javascript:alert(1)'), undefined);
+  assert.strictEqual(parsePayUrl('https://localhost'), undefined, 'un vrai nom de domaine');
+  assert.strictEqual(parsePayUrl(`https://a.co/${'x'.repeat(260)}`), undefined, '255 caractères au plus');
+  assert.strictEqual(parsePayUrl(42), undefined);
+
+  assert.deepStrictEqual(parseSettingsPatch({ pay_url: 'https://pay.alanya237.com/' }).value, { pay_url: 'https://pay.alanya237.com/' });
+  assert.deepStrictEqual(parseSettingsPatch({ pay_url: '' }).value, { pay_url: null });
+  assert.strictEqual(parseSettingsPatch({ pay_url: 'ftp://x.com' }).code, 'INVALID_BILLING_SETTING');
+  // Le régime ne se règle pas ici : il a son verbe, avec motif.
+  assert.strictEqual(parseSettingsPatch({ model: 2 }).code, 'FIELD_IMMUTABLE');
+  assert.strictEqual(parseSettingsPatch({ trial_days: 90 }).value.trial_days, 90);
+}
+
+// ── sameInstant : la base retire les millisecondes ─────────────────────────
+{
+  const exact = new Date('2026-10-03T10:00:00.227Z');
+  assert.ok(sameInstant(exact, new Date('2026-10-03T10:00:00.000Z')), 'DATETIME tronqué');
+  assert.ok(sameInstant(exact, new Date('2026-10-03T10:00:01.000Z')), 'DATETIME arrondi au-dessus');
+  assert.ok(!sameInstant(exact, new Date('2026-10-03T10:00:02.000Z')), 'deux secondes : autre instant');
+  assert.ok(!sameInstant(exact, null));
+  // Une relance posée sur la fin calculée reconnaît la ligne relue en base.
+  const jobEnd = new Date('2026-12-01T09:00:00.782Z');
+  const stored = new Date('2026-12-01T09:00:00.000Z');
+  assert.strictEqual(reminderApplies({ phase: 'paid', currentEnd: stored, jobEnd, now: new Date('2026-11-01T00:00:00Z') }), true);
 }
 
 // ── Régime TRIAL (v2) : essai de trois mois, puis réception seule ──────────

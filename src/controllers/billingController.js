@@ -2,7 +2,11 @@ const pool = require('../config/db');
 const { fail, failInternal } = require('../utils/apiError');
 const { BillingError } = require('../services/billing/errors');
 const { entitlementsFor } = require('../services/billing/entitlements');
-const { listPlans, listFeatures } = require('../services/billing/catalog');
+const { listPlans, listFeatures, getPlan } = require('../services/billing/catalog');
+const { getBillingSettings } = require('../services/billing/settings');
+const { billingModel } = require('../services/billing/rules');
+const { BILLING_MODEL } = require('../constants/billing');
+const { redeemCode, getSalePlan } = require('../services/billing/activationCodes');
 const payments = require('../services/payments/paymentService');
 const providers = require('../services/payments/providers');
 const { PAYMENT_STATUS_NAME, paymentProduct } = require('../services/payments/paymentRules');
@@ -36,17 +40,28 @@ const getOffer = async (req, res) => {
       listFeatures(),
       entitlementsFor(req.user.alanyaID),
     ]);
+    const settings = await getBillingSettings();
+    const trial = billingModel(settings) === BILLING_MODEL.TRIAL;
+    // Régime essai : on ne paie pas dans l'application, mais sur le site, puis
+    // par un code. Aucun fournisseur à proposer ; `payUrl` mène au site (nul
+    // tant qu'il n'existe pas : l'application grise alors le bouton).
     let provider = null;
-    try {
-      const p = providers.active();
-      provider = { name: p.name, channels: p.channels, simulated: p.name === 'simulated' };
-    } catch {
-      provider = null;
+    if (!trial) {
+      try {
+        const p = providers.active();
+        provider = { name: p.name, channels: p.channels, simulated: p.name === 'simulated' };
+      } catch {
+        provider = null;
+      }
     }
     res.json({
+      model: trial ? BILLING_MODEL.TRIAL : BILLING_MODEL.PLUS,
       phase: entitlements.phase,
       graceUntil: entitlements.graceUntil,
-      purchasable: entitlements.phase !== 'free' && provider != null,
+      purchasable: trial
+        ? entitlements.phase !== 'free'
+        : entitlements.phase !== 'free' && provider != null,
+      payUrl: trial ? settings.pay_url ?? null : null,
       plans: plans.map((p) => ({
         code: p.code,
         name: p.name_i18n,
@@ -81,6 +96,53 @@ const postCheckout = async (req, res) => {
     res.status(201).json(result);
   } catch (err) {
     return sendError(res, err, 'demande de paiement');
+  }
+};
+
+/**
+ * POST /api/billing/redeem — { code }
+ *
+ * Active un code d'activation : une période d'un an à la suite de ce qui court
+ * (l'essai compris). Rejouable par le même compte sans effet de plus.
+ */
+const postRedeem = async (req, res) => {
+  const alanyaID = req.user.alanyaID;
+  try {
+    const result = await redeemCode({ alanyaID, rawCode: req.body?.code });
+    res.json({
+      startsAt: result.startsAt,
+      endsAt: result.endsAt,
+      alreadyApplied: result.alreadyApplied,
+      entitlements: await entitlementsFor(alanyaID),
+    });
+  } catch (err) {
+    return sendError(res, err, 'activation d\'un code');
+  }
+};
+
+/**
+ * GET /api/billing/public-offer — sans authentification.
+ *
+ * Ce que le site de paiement affiche : le plan vendu, au prix réglé dans
+ * l'administration. Le site n'a ainsi aucun prix à lui, donc aucun à tenir à jour.
+ */
+const getPublicOffer = async (req, res) => {
+  try {
+    const [settings, sale] = await Promise.all([getBillingSettings(), getSalePlan()]);
+    const plan = sale ? await getPlan(sale.id) : null;
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json({
+      model: billingModel(settings),
+      plan: plan && {
+        code: plan.code,
+        name: plan.name_i18n,
+        durationMonths: Number(plan.duration_months),
+        price: Number(plan.price_amount),
+        currency: plan.currency,
+      },
+    });
+  } catch (err) {
+    return sendError(res, err, 'offre publique');
   }
 };
 
@@ -179,6 +241,8 @@ module.exports = {
   getMyEntitlements,
   getOffer,
   postCheckout,
+  postRedeem,
+  getPublicOffer,
   getPayment,
   getHistory,
   putPreferences,

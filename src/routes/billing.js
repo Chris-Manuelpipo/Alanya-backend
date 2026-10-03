@@ -4,10 +4,13 @@ const {
   getMyEntitlements,
   getOffer,
   postCheckout,
+  postRedeem,
+  getPublicOffer,
   getPayment,
   getHistory,
   putPreferences,
 } = require('../controllers/billingController');
+const { codeRedeemLimiter, publicOfferLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
@@ -65,6 +68,46 @@ router.get('/offer', auth, getOffer);
  *         description: BILLING_NOT_ACTIVE, ou PAYMENT_PENDING (un paiement attend déjà)
  */
 router.post('/checkout', auth, postCheckout);
+
+/**
+ * @swagger
+ * /api/billing/redeem:
+ *   post:
+ *     summary: Activer un code d'activation (régime essai)
+ *     tags: [Billing]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               code: { type: string, example: "7K2QX-M9P4B-T3VHE" }
+ *     responses:
+ *       200:
+ *         description: "{ startsAt, endsAt, alreadyApplied, entitlements }"
+ *       400:
+ *         description: INVALID_CODE_FORMAT (faute de frappe, ne compte pas comme un essai)
+ *       404:
+ *         description: INVALID_CODE (code inconnu, compte comme un échec)
+ *       409:
+ *         description: CODE_ALREADY_USED, BILLING_NOT_ACTIVE
+ *       410:
+ *         description: CODE_EXPIRED, CODE_REVOKED
+ *       429:
+ *         description: CODE_LOCKED (5 échecs en 15 minutes), avec retryAfterSeconds
+ */
+router.post('/redeem', auth, codeRedeemLimiter, postRedeem);
+
+/**
+ * @swagger
+ * /api/billing/public-offer:
+ *   get:
+ *     summary: Le plan vendu et son prix, sans authentification (pour le site de paiement)
+ *     tags: [Billing]
+ */
+router.get('/public-offer', publicOfferLimiter, getPublicOffer);
 
 /**
  * @swagger
