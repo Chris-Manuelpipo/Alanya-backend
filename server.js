@@ -101,6 +101,7 @@ const { startJobWorker, stopJobWorker } = require('./src/services/jobQueue');
 const { setBillingIo } = require('./src/services/billing/subscriptions');
 const { registerPaymentJobHandlers } = require('./src/services/payments/paymentService');
 const { startBillingSweep, stopBillingSweep } = require('./src/services/billing/billingSweep');
+const { startTrialSweep, stopTrialSweep } = require('./src/services/billing/trialSweep');
 const { registerBillingJobHandlers } = require('./src/services/billing/billingJobs');
 const { withLease } = require('./src/services/schedulerLease');
 const { runDataRetentionPurge } = require('./src/services/dataRetentionService');
@@ -404,6 +405,7 @@ async function start() {
     // place au balayage de l'abonnement : la coche suit désormais l'abonnement,
     // et ses relances sont celles de l'échéance (billingJobs.js).
     startBillingSweep();
+    startTrialSweep();
     stopAccountLifecycleSchedulers = startAccountLifecycleSchedulers();
 
     // Balayage de rétention. Chaque purge passe par le registre
@@ -518,6 +520,7 @@ async function arretPropre(code, cause) {
     //    du pool écrirait sur une connexion morte.
     stopMeetingScheduler();
     stopBillingSweep();
+    stopTrialSweep();
     stopJobWorker();
     stopTripStaleSweeper();
     stopAccountLifecycleSchedulers();

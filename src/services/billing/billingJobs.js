@@ -15,11 +15,11 @@ const {
   publishBroadcast, findBroadcastByClientId, estimateAudience,
 } = require('../broadcastService');
 const { ACCOUNT_TYPE } = require('../../constants/accountTypes');
-const { PERIOD_SOURCE } = require('../../constants/billing');
+const { PERIOD_SOURCE, BILLING_MODEL } = require('../../constants/billing');
 const { getBillingSettings } = require('./settings');
 const {
   DAY_MS, sameInstant, effectivePhase, reminderApplies, autoRenewApplies,
-  expiryDecision, purgeDecision, purgeWarningApplies, compensationDays,
+  expiryDecision, purgeDecision, purgeWarningApplies, compensationDays, billingModel,
 } = require('./rules');
 const {
   notifyEntitlementsChanged, emitToEveryone, grantPeriod,
@@ -27,7 +27,9 @@ const {
 const { schedulePurgeJobs } = require('./billingSchedule');
 const { purgeFeatureData } = require('./featurePurge');
 const { recomputeAllVerifications } = require('./verification');
-const { pushBilling, messages, fmtDay } = require('./billingNotify');
+const { pushBilling, messages } = require('./billingNotify');
+const { graceText, graceReminderText } = require('./billingTexts');
+const { getSalePlan } = require('./activationCodes');
 
 const readSubscriber = async (alanyaID) => {
   const [[sub]] = await pool.execute('SELECT * FROM subscriber WHERE alanyaID = ?', [alanyaID]);
@@ -45,12 +47,17 @@ async function handleReminder({ alanyaID, end }, now = new Date()) {
   await pushBilling(alanyaID, messages.reminder({
     daysLeft: daysUntil(sub.current_end, now),
     autoRenew: Number(sub.auto_renew) === 1,
+    model: settings.model,
   }));
 }
 
 async function handleAutoRenew({ alanyaID, end }, now = new Date()) {
   const [settings, sub] = await Promise.all([getBillingSettings(), readSubscriber(alanyaID)]);
   const phase = effectivePhase(settings, alanyaID, now);
+  // Régime essai : on ne paie plus dans l'application, aucun renouvellement
+  // automatique n'existe. (Les renouvellements déjà posés par le régime
+  // précédent s'effacent ici, sans rien demander à personne.)
+  if (billingModel(settings) === BILLING_MODEL.TRIAL) return;
   // Phase gratuite : les renouvellements automatiques sont suspendus.
   if (!autoRenewApplies({ phase, sub, jobEnd: end, now })) return;
   // Requis à l'appel : paymentService requiert ce module par billingSchedule.
@@ -85,7 +92,9 @@ async function handleExpire({ alanyaID }, now = new Date()) {
 
   notifyEntitlementsChanged(alanyaID);
   await schedulePurgeJobs(alanyaID, decision.purgeAfter, now);
-  if (decision.notify) await pushBilling(alanyaID, messages.expired({ purgeAfter: decision.purgeAfter }));
+  if (decision.notify) {
+    await pushBilling(alanyaID, messages.expired({ purgeAfter: decision.purgeAfter, model: settings.model }));
+  }
 }
 
 async function handlePurgeWarning({ alanyaID, purgeAfter }, now = new Date()) {
@@ -163,28 +172,22 @@ async function broadcastToEveryone(clientId, translations) {
   return true;
 }
 
-const graceText = (graceUntil) => ({
-  fr: `Alanya Plus arrive. Jusqu'au ${fmtDay(graceUntil)}, traduction, sauvegarde, trajets de confiance et sonneries par liste restent gratuits. Ensuite, ils rejoignent l'offre annuelle à 1 000 F, qui inclut aussi la coche « Abonné Alanya Plus ». Abonnez-vous dès maintenant depuis votre profil : votre première période et votre coche commencent à cette date.`,
-  en: `Alanya Plus is coming. Until ${fmtDay(graceUntil, 'en-GB')}, translation, backup, trusted trips and list ringtones stay free. Then they join the yearly offer at 1,000 F, which also includes the “Alanya Plus subscriber” badge. Subscribe now from your profile: your first period and badge start on that date.`,
-  zh: `Alanya Plus 即将推出。在 ${fmtDay(graceUntil, 'zh-CN')} 之前，翻译、备份、可信行程和列表铃声仍然免费。之后它们将纳入每年 1,000 F 的方案，并附带「Alanya Plus 订阅用户」标记。现在即可在个人资料中订阅：您的第一个周期和标记将从该日期开始。`,
-});
-
-const graceReminderText = (graceUntil) => ({
-  fr: `Plus que 7 jours : à partir du ${fmtDay(graceUntil)}, traduction, sauvegarde, trajets et sonneries par liste font partie d'Alanya Plus (1 000 F / an, avec la coche). Déjà abonné ? Rien à faire.`,
-  en: `7 days left: from ${fmtDay(graceUntil, 'en-GB')}, translation, backup, trips and list ringtones will be part of Alanya Plus (1,000 F / year, with the badge). Already subscribed? Nothing to do.`,
-  zh: `还剩 7 天：自 ${fmtDay(graceUntil, 'zh-CN')} 起，翻译、备份、行程和列表铃声将属于 Alanya Plus（每年 1,000 F，含标记）。已经订阅？无需任何操作。`,
-});
-
 /** L'activation tient toujours (pas désactivée ni rejouée entre-temps). */
 const stillActivated = (s, activatedAt) =>
   Number(s.paid_enabled) === 1 && sameInstant(s.activated_at, activatedAt);
+
+/** Le prix du plan vendu, tel qu'il est AU MOMENT de l'annonce. */
+async function salePrice() {
+  const plan = await getSalePlan();
+  return plan ? Number(plan.price_amount) : 0;
+}
 
 async function handleAnnounce({ activatedAt, graceUntil }) {
   const s = await getBillingSettings();
   if (!stillActivated(s, activatedAt) || !s.grace_until) return;
   await broadcastToEveryone(
     `billing-activation:${new Date(activatedAt).getTime()}`,
-    graceText(s.grace_until ?? graceUntil),
+    graceText({ model: s.model, graceUntil: s.grace_until ?? graceUntil, price: await salePrice() }),
   );
 }
 
@@ -194,7 +197,7 @@ async function handleGraceReminder({ graceUntil }, now = new Date()) {
   if (new Date(graceUntil) <= now) return;
   await broadcastToEveryone(
     `billing-grace-reminder:${new Date(graceUntil).getTime()}`,
-    graceReminderText(graceUntil),
+    graceReminderText({ model: s.model, graceUntil, price: await salePrice() }),
   );
 }
 

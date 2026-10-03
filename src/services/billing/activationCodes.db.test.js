@@ -27,6 +27,11 @@ if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
 }
 process.env.ACTIVATION_CODE_SECRET = process.env.ACTIVATION_CODE_SECRET || 'secret-de-test-'.repeat(3);
 
+// Le .env du dépôt déclare des comptes testeurs (BILLING_TEST_USERS) : leurs
+// identifiants finiraient par désigner un compte jetable de ce test. Vide, et
+// posé AVANT le chargement du .env, qui n'écrase jamais une variable existante.
+process.env.BILLING_TEST_USERS = '';
+
 const pool = require('../../config/db');
 const { invalidateBillingSettings, getBillingSettings, setModel, activate } = require('./settings');
 const codes = require('./activationCodes');
@@ -365,6 +370,28 @@ const dansMois = (from, n) => {
       // Le même garde, régime 1 : le simulateur reste refusé en production.
       await setSettings({ paid_enabled: 0, model: 1 });
       await echec(activate({ adminId: null, env: prodSimule }), 'BILLING_PROVIDER_SIMULATED');
+    }
+
+    /* ── Régime essai : le paiement simulé de l'application est fermé ── */
+    {
+      const payments = require('../payments/paymentService');
+      const j = await creerCompte('test-checkout', 300);
+      await setSettings({ model: 2, paid_enabled: 1, grace_until: new Date(Date.now() - 30 * DAY) });
+      await echec(
+        payments.checkout({ alanyaID: j, planCode: 'plus_annuel', channel: 'orange_money', msisdn: '699000003' }),
+        'PLUS_CHECKOUT_DISABLED',
+      );
+      assert.strictEqual(await payments.initiateRenewal({ alanyaID: j }), null);
+      const [[{ n }]] = await pool.execute('SELECT COUNT(*) AS n FROM payment WHERE alanyaID = ?', [j]);
+      assert.strictEqual(Number(n), 0, 'aucune demande de paiement n\'a été créée');
+      // Régime 1, payant allumé : le chemin d'origine reste ouvert (jusqu'au fournisseur).
+      await setSettings({ model: 1 });
+      const k = await creerCompte('test-checkout-v1', 300);
+      const started = await payments.checkout({
+        alanyaID: k, planCode: 'plus_annuel', channel: 'orange_money', msisdn: '699000003',
+      });
+      assert.strictEqual(started.status, 'pending', 'régime 1 : le paiement démarre comme avant');
+      await setSettings({ model: 2 });
     }
 
     console.log('activationCodes.db.test.js OK');

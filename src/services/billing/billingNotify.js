@@ -11,15 +11,10 @@ const { sendToUser } = require('../notificationService');
 const { buildBillingPayload } = require('../../notifications/notificationContract');
 const { getBillingIo } = require('./subscriptions');
 const { formatDisplay } = require('../../utils/alanyaPhone');
+const { BILLING_MODEL } = require('../../constants/billing');
+const { fmtDay } = require('./billingTexts');
 
-const TZ = 'Africa/Douala';
-
-/** « 17 novembre 2026 » (ou la langue demandée). */
-function fmtDay(d, locale = 'fr-FR') {
-  return new Date(d).toLocaleDateString(locale, {
-    day: 'numeric', month: 'long', year: 'numeric', timeZone: TZ,
-  });
-}
+const isTrial = (model) => Number(model) === BILLING_MODEL.TRIAL;
 
 /**
  * @param {number} alanyaID
@@ -52,23 +47,47 @@ const PHONE_FAILURE_TEXT = {
 };
 
 const messages = {
-  reminder: ({ daysLeft, autoRenew }) => ({
+  reminder: ({ daysLeft, autoRenew, model }) => (isTrial(model)
+    ? {
+      type: 'billing_reminder',
+      title: daysLeft <= 1 ? 'Votre abonnement Alanya prend fin demain' : `Votre abonnement Alanya prend fin dans ${daysLeft} jours`,
+      body: 'Prenez un nouveau code sur le site pour continuer à envoyer des messages et à appeler.',
+    }
+    : {
+      type: 'billing_reminder',
+      title: daysLeft <= 1 ? 'Alanya Plus prend fin demain' : `Alanya Plus prend fin dans ${daysLeft} jours`,
+      body: autoRenew
+        ? 'Le renouvellement automatique vous demandera de confirmer le paiement la veille.'
+        : 'Renouvelez pour garder vos fonctionnalités et votre coche.',
+    }),
+  // Régime essai. Pas de type neuf : l'application ouvre déjà l'écran de
+  // l'abonnement sur `billing_reminder` et `billing_expired`.
+  trialEnding: ({ daysLeft, endsAt }) => ({
     type: 'billing_reminder',
-    title: daysLeft <= 1 ? 'Alanya Plus prend fin demain' : `Alanya Plus prend fin dans ${daysLeft} jours`,
-    body: autoRenew
-      ? 'Le renouvellement automatique vous demandera de confirmer le paiement la veille.'
-      : 'Renouvelez pour garder vos fonctionnalités et votre coche.',
+    title: daysLeft <= 1 ? 'Votre essai gratuit se termine demain' : `Votre essai gratuit se termine dans ${daysLeft} jours`,
+    body: `Après le ${fmtDay(endsAt)}, vous recevrez toujours vos messages et vos appels, mais il faudra un abonnement pour envoyer et appeler. Vous pouvez le prendre dès maintenant : il commencera à la fin de l'essai.`,
+  }),
+  trialEnded: () => ({
+    type: 'billing_expired',
+    title: 'Votre essai gratuit est terminé',
+    body: 'Vous recevez toujours vos messages et vos appels. Pour envoyer des messages et appeler de nouveau, activez un abonnement.',
   }),
   renewalRequested: ({ brand, amount }) => ({
     type: 'billing_reminder',
     title: 'Renouvellement d\'Alanya Plus',
     body: `${brand} vous demande de confirmer ${amount} F avec votre code.`,
   }),
-  expired: ({ purgeAfter }) => ({
-    type: 'billing_expired',
-    title: 'Alanya Plus a pris fin',
-    body: `Vos réglages et votre historique sont conservés jusqu'au ${fmtDay(purgeAfter)}. Réabonnez-vous pour tout retrouver.`,
-  }),
+  expired: ({ purgeAfter, model }) => (isTrial(model)
+    ? {
+      type: 'billing_expired',
+      title: 'Votre abonnement Alanya a pris fin',
+      body: `Vous recevez toujours vos messages et vos appels, mais vous ne pouvez plus envoyer ni appeler. Entrez un nouveau code pour reprendre. Vos réglages et votre historique sont conservés jusqu'au ${fmtDay(purgeAfter)}.`,
+    }
+    : {
+      type: 'billing_expired',
+      title: 'Alanya Plus a pris fin',
+      body: `Vos réglages et votre historique sont conservés jusqu'au ${fmtDay(purgeAfter)}. Réabonnez-vous pour tout retrouver.`,
+    }),
   purgeWarning: ({ purgeAfter }) => ({
     type: 'billing_purge_warning',
     title: `Vos données Alanya Plus seront effacées le ${fmtDay(purgeAfter)}`,

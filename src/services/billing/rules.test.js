@@ -27,6 +27,7 @@ const {
   activationBlockerFor,
   codeSecretBlocker,
   sameInstant,
+  trialNoticeFor,
 } = require('./rules');
 
 const NOW = new Date('2026-09-22T12:00:00Z');
@@ -366,6 +367,19 @@ assert.strictEqual(parseReason({}).code, 'REASON_REQUIRED');
   // Le régime ne se règle pas ici : il a son verbe, avec motif.
   assert.strictEqual(parseSettingsPatch({ model: 2 }).code, 'FIELD_IMMUTABLE');
   assert.strictEqual(parseSettingsPatch({ trial_days: 90 }).value.trial_days, 90);
+}
+
+// ── Quelle notification de fin d'essai ? ───────────────────────────────────
+{
+  const at = (n) => day(n);
+  assert.strictEqual(trialNoticeFor({ endsAt: at(5), now: NOW }), 'ending');
+  assert.strictEqual(trialNoticeFor({ endsAt: at(7), now: NOW }), 'ending', 'sept jours exactement');
+  assert.strictEqual(trialNoticeFor({ endsAt: at(8), now: NOW }), null, 'trop tôt');
+  assert.strictEqual(trialNoticeFor({ endsAt: at(0), now: NOW }), 'ended', 'l\'instant même : fini');
+  assert.strictEqual(trialNoticeFor({ endsAt: at(-10), now: NOW }), 'ended');
+  assert.strictEqual(trialNoticeFor({ endsAt: at(-14), now: NOW }), 'ended', 'quatorze jours exactement');
+  assert.strictEqual(trialNoticeFor({ endsAt: at(-15), now: NOW }), null, 'trop tard : le compte a déjà vu le refus');
+  assert.strictEqual(trialNoticeFor({ endsAt: null, now: NOW }), null);
 }
 
 // ── sameInstant : la base retire les millisecondes ─────────────────────────

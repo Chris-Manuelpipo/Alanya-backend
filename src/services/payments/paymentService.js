@@ -11,11 +11,11 @@ const crypto = require('crypto');
 const pool = require('../../config/db');
 const { registerJobHandler } = require('../jobQueue');
 const {
-  PAYMENT_STATUS: P, PAYMENT_PURPOSE, PERIOD_SOURCE, PHASE,
+  PAYMENT_STATUS: P, PAYMENT_PURPOSE, PERIOD_SOURCE, PHASE, BILLING_MODEL,
 } = require('../../constants/billing');
 const { BillingError } = require('../billing/errors');
 const { getBillingSettings } = require('../billing/settings');
-const { phaseAt, isBillingTester } = require('../billing/rules');
+const { phaseAt, isBillingTester, billingModel } = require('../billing/rules');
 const {
   appendPeriod, graceToPreserve, notifyEntitlementsChanged, emitToAccount,
 } = require('../billing/subscriptions');
@@ -48,6 +48,12 @@ function emitPaymentUpdate(alanyaID, paymentId, status) {
  */
 async function checkout({ alanyaID, planCode, channel, msisdn, autoRenew, now = new Date() }) {
   const settings = await getBillingSettings();
+  // Régime essai : l'abonnement se paie sur le site, puis par un code. Ce
+  // chemin confirmerait un paiement fictif avec le simulateur : n'importe qui
+  // obtiendrait une année gratuite. Il est fermé, pas seulement masqué.
+  if (billingModel(settings) === BILLING_MODEL.TRIAL) {
+    throw new BillingError('PLUS_CHECKOUT_DISABLED', 410, 'L\'abonnement se prend sur le site, avec un code');
+  }
   const effective = isBillingTester(alanyaID) ? { ...settings, paid_enabled: 1, grace_until: null } : settings;
   if (phaseAt(effective, now) === PHASE.FREE) {
     throw new BillingError('BILLING_NOT_ACTIVE', 409, 'L\'offre n\'est pas encore proposée');
@@ -111,6 +117,7 @@ async function pendingPaymentId(alanyaID, now = new Date()) {
  * @returns {Promise<object|null>} la demande, ou null s'il n'y a rien à faire
  */
 async function initiateRenewal({ alanyaID, now = new Date() }) {
+  if (billingModel(await getBillingSettings()) === BILLING_MODEL.TRIAL) return null;
   const [[sub]] = await pool.execute('SELECT * FROM subscriber WHERE alanyaID = ?', [alanyaID]);
   if (!sub || Number(sub.auto_renew) !== 1 || !sub.renew_msisdn || !sub.renew_channel) return null;
   const [[plan]] = await pool.execute(

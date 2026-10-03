@@ -74,6 +74,29 @@ function trialFloor({ settings, createdAt, now = new Date() }) {
   return end && end > now ? end : null;
 }
 
+/** Combien de jours avant la fin d'essai on prévient, et combien après on s'en abstient. */
+const TRIAL_ENDING_DAYS = 7;
+const TRIAL_ENDED_GRACE_DAYS = 14;
+
+/**
+ * Quelle notification de fin d'essai un compte mérite-t-il maintenant ?
+ *
+ * `ending` dans les sept derniers jours ; `ended` jusqu'à quatorze jours après
+ * (au-delà, prévenir serait du bruit : le compte a déjà vu le refus). La
+ * requête du balayage ne fait que dégrossir — c'est CETTE règle qui tranche,
+ * si bien qu'une requête trop large n'envoie jamais un mauvais message.
+ *
+ * @returns {'ending'|'ended'|null}
+ */
+function trialNoticeFor({ endsAt, now = new Date() }) {
+  const end = toDate(endsAt);
+  if (!end) return null;
+  const ms = end.getTime() - now.getTime();
+  if (ms > 0 && ms <= TRIAL_ENDING_DAYS * DAY_MS) return 'ending';
+  if (ms <= 0 && -ms <= TRIAL_ENDED_GRACE_DAYS * DAY_MS) return 'ended';
+  return null;
+}
+
 /**
  * Le compte peut-il ÉMETTRE (envoyer un message, lancer un appel) ?
  *
@@ -707,6 +730,9 @@ module.exports = {
   billingModel,
   trialEndsAt,
   trialFloor,
+  trialNoticeFor,
+  TRIAL_ENDING_DAYS,
+  TRIAL_ENDED_GRACE_DAYS,
   outgoingDecision,
   resolvePeriods,
   decideEntitlements,
