@@ -81,6 +81,9 @@ const bird = {
         subject,
         html,
         text,
+        // Sans ce champ, Bird classe l'envoi en `marketing` : désabonnement,
+        // coupe-circuit sur plaintes, et Gmail le range en promotions ou spam.
+        category: 'transactional',
       },
     );
     // 202 Accepted : l'envoi est asynchrone.

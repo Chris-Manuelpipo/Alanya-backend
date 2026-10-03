@@ -53,6 +53,7 @@ const msg = { to: 'a@b.cm', subject: 'Code', text: 'txt', html: '<p>h</p>' };
   assert.strictEqual(appels[1].opts.headers.Authorization, 'Bearer bk_us1_test');
   assert.deepStrictEqual(appels[1].body.from, { email: 'info@alanya.cloud', name: 'Alanya' });
   assert.deepStrictEqual(appels[1].body.to, ['a@b.cm']);
+  assert.strictEqual(appels[1].body.category, 'transactional');
 
   // 3. Postmark répond 200 mais avec une ErrorCode : c'est un échec.
   appels.length = 0;
