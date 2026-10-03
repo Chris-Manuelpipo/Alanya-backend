@@ -14,6 +14,7 @@ const {
 const { maxParticipants, maxInvitees } = require('../../constants/participantLimits');
 const { isBlockedEitherWay } = require('../../utils/blockUtils');
 const { isOfficialAccount } = require('../../utils/officialAccountGuard');
+const { checkOutgoing, OUTGOING_DENIED } = require('../../services/billing/outgoingGate');
 const { getClientIp, parseCallMode } = require('../../utils/clientIp');
 const { buildDirectConversationLookup } = require('../../utils/directConversation');
 const pendingCalls = require('../state/pendingCalls');
@@ -997,6 +998,17 @@ const callUser = (io, socket, userSockets) => {
       if (!targetID || !offer) {
         console.warn('[Socket call_user] ** Données invalides', { targetID, offerExists: !!offer });
         socket.emit('call_failed', { reason: 'Données d\'appel invalides' });
+        return;
+      }
+
+      // Essai fini et aucun abonnement : le compte reçoit, il n'appelle pas.
+      // Avant tout état d'appel : rien à défaire, aucune sonnerie posée.
+      if (!(await checkOutgoing(callerID)).allowed) {
+        socket.emit('call_failed', {
+          reason: OUTGOING_DENIED.message,
+          code: OUTGOING_DENIED.code,
+          feature: OUTGOING_DENIED.feature,
+        });
         return;
       }
 
@@ -2080,6 +2092,9 @@ const addParticipant = (io, socket, userSockets) => {
 
       if (!inviteeID || !requesterID) return reject('INVALID');
       if (inviteeID === requesterID) return reject('TARGET_SELF');
+      // Inviter quelqu'un, c'est émettre : refusé sans abonnement, même au milieu
+      // d'un appel que le compte a reçu.
+      if (!(await checkOutgoing(requesterID)).allowed) return reject(OUTGOING_DENIED.code);
 
       const entry = await callState.getEntry(requesterID);
       if (!entry || entry.status !== 'in_call' || entry.peerId == null) {
@@ -2512,6 +2527,14 @@ const createGroupCall = (io, socket, userSockets) => {
       if (callerId != null && toInt(callerId) != null && toInt(callerId) !== callerID) {
         console.warn(`[Socket create_group_call] callerId spoof payload=${callerId} socket=${callerID}`);
         return socket.emit('call_error', { code: 'CALLER_ID_MISMATCH' });
+      }
+      // Essai fini et aucun abonnement : on rejoint un appel de groupe sur
+      // invitation (join_group_call), on n'en lance pas.
+      if (!(await checkOutgoing(callerID)).allowed) {
+        return socket.emit('call_error', {
+          code: OUTGOING_DENIED.code,
+          feature: OUTGOING_DENIED.feature,
+        });
       }
       const inviteLimit = maxInvitees(videoCall);
       const uniqueTargets = [...new Set(

@@ -14,6 +14,7 @@ const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require(
 const { getSenderIdentity } = require('../../../utils/senderIdentityCache');
 const { buildSentPayload } = require('../../../utils/sentMessagePayload');
 const { MEDIA_THUMB_SELECT } = require('../../../utils/messageThumbSql');
+const { checkOutgoing, OUTGOING_DENIED } = require('../../../services/billing/outgoingGate');
 
 // `mt.thumb` rejoint APRÈS m.* et réencodé en base64 : mysql2 retourne un
 // objet JS où la dernière colonne du même nom l'emporte, donc `mediaThumb`
@@ -92,11 +93,15 @@ async function loadParticipantsExcept(conversationID, senderID) {
   return participants;
 }
 
-function emitSendFailed(socket, { clientId, code, message }) {
+function emitSendFailed(socket, {
+  clientId, code, message, feature,
+}) {
   socket.emit('message:send_failed', {
     clientId: clientId || null,
     code,
     message,
+    // Seulement pour SUBSCRIPTION_REQUIRED : le panneau de l'offre dit pourquoi.
+    ...(feature ? { feature } : {}),
   });
 }
 
@@ -189,6 +194,24 @@ const messageSend = (io, socket) => {
           message: 'conversationID and (content or mediaUrl) required',
         });
         return;
+      }
+
+      // Essai fini et aucun abonnement : le compte ne fait que recevoir. Avant
+      // toute lecture de la conversation — c'est le refus le moins cher, et
+      // `clientId` permet au téléphone de marquer CETTE bulle, sans rejeu.
+      const outgoing = await checkOutgoing(senderID);
+      if (!outgoing.allowed) {
+        emitSendFailed(socket, {
+          clientId,
+          code: OUTGOING_DENIED.code,
+          message: OUTGOING_DENIED.message,
+          feature: OUTGOING_DENIED.feature,
+        });
+        return socket.emit('error', {
+          message: OUTGOING_DENIED.message,
+          code: OUTGOING_DENIED.code,
+          feature: OUTGOING_DENIED.feature,
+        });
       }
 
       // Appartenance, mode annonce, compte officiel et blocages en une passe :

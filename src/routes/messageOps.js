@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const requireOutgoing = require('../middleware/requireOutgoing');
 const { updateMessage, deleteMessage, batchDeleteMessages, batchForwardMessages, pinMessage, markMessageViewed, setReaction, removeReaction, getMessagesSince, getMessageStatusByClientId, getPendingOutgoingMessages, markMessagesDelivered } = require('../controllers/messageController');
 
 /**
@@ -60,10 +61,10 @@ router.post('/delivered', auth, markMessagesDelivered);
 router.get('/status', auth, getMessageStatusByClientId);
 router.get('/pending', auth, getPendingOutgoingMessages);
 router.post('/batch-delete', auth, batchDeleteMessages);
-router.post('/batch-forward', auth, batchForwardMessages);
-router.put('/:id/reactions', auth, setReaction);
+router.post('/batch-forward', auth, requireOutgoing, batchForwardMessages);
+router.put('/:id/reactions', auth, requireOutgoing, setReaction);
 router.delete('/:id/reactions', auth, removeReaction);
-router.put('/:id', auth, updateMessage);
+router.put('/:id', auth, requireOutgoing, updateMessage);
 router.delete('/:id', auth, deleteMessage);
 router.patch('/:id/pin', auth, pinMessage);
 router.post('/:id/view', auth, markMessageViewed);

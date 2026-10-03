@@ -6,6 +6,7 @@ const meetingDevicePresence = require('../state/meetingDevicePresence');
 const { loadMeetingAccess } = require('../../services/meetingAccess');
 const { verdictEntree } = require('../../services/meetingAccessRules');
 const { solderMeeting } = require('../../services/meetingClosure');
+const { checkOutgoing, OUTGOING_DENIED } = require('../../services/billing/outgoingGate');
 
 function toInt(v) {
   const n = parseInt(v, 10);
@@ -272,11 +273,20 @@ const meetingEnd = (io, socket, userSockets) => {
 };
 
 const meetingChat = (io, socket, userSockets) => {
-  socket.on('meeting:chat', (data) => {
+  socket.on('meeting:chat', async (data) => {
     if (!socket.authenticated) return;
     const { meetingID, userID, message } = data;
     // N'accepter le chat que d'un socket réellement présent dans la room.
     if (socket.currentMeetingID !== toInt(meetingID)) return;
+    // Rejoindre une réunion sur invitation reste permis sans abonnement ; y
+    // écrire, non. Aucun accusé n'existe pour ce message : un refus part en `error`.
+    if (!(await checkOutgoing(socket.alanyaID)).allowed) {
+      return socket.emit('error', {
+        message: OUTGOING_DENIED.message,
+        code: OUTGOING_DENIED.code,
+        feature: OUTGOING_DENIED.feature,
+      });
+    }
     io.to(`meeting_${meetingID}`).emit('meeting:message', {
       meetingID,
       userID,

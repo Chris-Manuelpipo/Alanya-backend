@@ -17,6 +17,7 @@ const {
 } = require('./rules');
 const { addMonths, nextPeriodStart } = require('../payments/paymentRules');
 const { scheduleChainJobs } = require('./billingSchedule');
+const { invalidateOutgoing } = require('./outgoingGate');
 
 let _io = null;
 
@@ -40,6 +41,9 @@ function emitToEveryone(event, payload) {
  * droits eux-mêmes — un seul chemin de calcul, celui de la route.
  */
 function notifyEntitlementsChanged(alanyaID) {
+  // Le verrou de l'émission retient sa réponse quelques secondes : un code tout
+  // juste activé ne doit pas attendre qu'elle expire.
+  invalidateOutgoing(alanyaID);
   // Requis à l'appel : verification.js requiert les droits, qui requièrent
   // les réglages — pas de cycle à la charge.
   const { recomputeVerification } = require('./verification');

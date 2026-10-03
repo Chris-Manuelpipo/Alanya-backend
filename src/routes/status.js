@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const requireOutgoing = require('../middleware/requireOutgoing');
 const {
   getStatus,
   getMyStatus,
@@ -50,7 +51,7 @@ const {
  *         description: Statut créé
  */
 router.get('/',            auth, getStatus);
-router.post('/',           auth, createStatus);
+router.post('/',           auth, requireOutgoing, createStatus);
 
 /**
  * @swagger

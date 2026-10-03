@@ -1,5 +1,6 @@
 const express = require('express');
 const auth    = require('../middleware/auth');
+const requireOutgoing = require('../middleware/requireOutgoing');
 const { sendToUser } = require('../services/notificationService');
 
 const router = express.Router();
@@ -50,7 +51,8 @@ const router = express.Router();
  *                 ok:
  *                   type: boolean
  */
-router.post('/', auth, async (req, res, next) => {
+// Un push brut vers n'importe quel compte : c'est de l'émission, comme un message.
+router.post('/', auth, requireOutgoing, async (req, res, next) => {
   try {
     const {
       toUserId,

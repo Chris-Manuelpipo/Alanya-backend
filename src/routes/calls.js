@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const requireOutgoing = require('../middleware/requireOutgoing');
 const { getCalls, createCall, endCall, rejectCallHttp } = require('../controllers/callController');
 
 /**
@@ -57,7 +58,7 @@ const { getCalls, createCall, endCall, rejectCallHttp } = require('../controller
  *         description: Appel créé
  */
 router.get('/', auth, getCalls);
-router.post('/', auth, createCall);
+router.post('/', auth, requireOutgoing, createCall);
 
 /**
  * @swagger

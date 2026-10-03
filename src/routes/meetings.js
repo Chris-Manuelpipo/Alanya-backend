@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const requireOutgoing = require('../middleware/requireOutgoing');
 const {
   requireMeetingParticipant,
   requireMeetingOrganiser,
@@ -63,7 +64,7 @@ const {
  *         description: Réunion créée
  */
 router.get('/', auth, getMeetings);
-router.post('/', auth, createMeeting);
+router.post('/', auth, requireOutgoing, createMeeting);
 
 /**
  * @swagger
@@ -233,7 +234,7 @@ router.post('/:id/leave', auth, leaveMeeting);
  *       200:
  *         description: Participants invités
  */
-router.post('/:id/invite', auth, inviteParticipants);
+router.post('/:id/invite', auth, requireOutgoing, inviteParticipants);
 
 // Les routes accept/:userId et decline/:userId, et le RSVP qu'elles
 // servaient, ont été retirées : aucun appelant côté application, et leur

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const requireOutgoing = require('../middleware/requireOutgoing');
 const { getMessages, sendMessage, getConversationReactions } = require('../controllers/messageController');
 
 /**
@@ -76,6 +77,6 @@ const { getMessages, sendMessage, getConversationReactions } = require('../contr
  */
 router.get('/:id/reactions', auth, getConversationReactions);
 router.get('/:id/messages', auth, getMessages);
-router.post('/:id/messages', auth, sendMessage);
+router.post('/:id/messages', auth, requireOutgoing, sendMessage);
 
 module.exports = router;

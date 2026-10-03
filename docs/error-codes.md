@@ -112,7 +112,7 @@ sont valides mais rendus par le repli lié au statut HTTP.
 ### Abonnement
 | Code | Statut | Sens |
 |---|---|---|
-| `SUBSCRIPTION_REQUIRED` | 403 | Fonctionnalité Alanya Plus (`feature` joint) — l'application ouvre le panneau de l'offre |
+| `SUBSCRIPTION_REQUIRED` | 403 | Fonctionnalité Alanya Plus (`feature` joint) — l'application ouvre le panneau de l'offre. `feature: "outgoing"` : essai fini sans abonnement, le compte ne peut ni envoyer ni appeler (aussi sur `message:send_failed`, `call_failed`, `call_error`, `call_add_rejected` et `error`) |
 | `BILLING_NOT_ACTIVE` | 409 | Payant éteint : rien à payer |
 | `PAYMENT_PENDING` | 409 | Un paiement attend déjà (`paymentId` joint) — l'application reprend son attente |
 | `INVALID_MSISDN` | 400 | Numéro mobile money invalide |
