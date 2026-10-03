@@ -20,6 +20,7 @@ const {
   deleteVoicemailGreeting,
 } = require('../controllers/voicemailGreetingController');
 const { uploadLimiter } = require('../middleware/rateLimiter');
+const { enforceMediaTier } = require('../middleware/mediaTier');
 
 /**
  * @swagger
@@ -114,6 +115,7 @@ router.post(
   '/media',
   auth,
   uploadLimiter,
+  enforceMediaTier,
   multerMedia.single('file'),
   handleMulterError,
   uploadMediaCtrl

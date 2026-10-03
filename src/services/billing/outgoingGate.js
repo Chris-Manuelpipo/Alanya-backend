@@ -113,6 +113,7 @@ const OUTGOING_DENIED = Object.freeze({
 });
 
 module.exports = {
+  loadFacts,
   createOutgoingGate,
   checkOutgoing: gate.checkOutgoing,
   invalidateOutgoing: gate.invalidateOutgoing,

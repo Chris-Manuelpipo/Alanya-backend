@@ -13,6 +13,7 @@ const {
   RINGTONE_MAX_BYTES,
 } = require('../middleware/upload');
 const { entitlementsOrNull } = require('../services/billing/entitlements');
+const { limitsFor } = require('../services/billing/uploadLimits');
 const { FEATURE } = require('../constants/billing');
 const { invalidateSenderIdentity } = require('../utils/senderIdentityCache');
 const { releasePublicFiles } = require('../utils/mediaFile');
@@ -106,6 +107,16 @@ const uploadMedia = async (req, res) => {
     const filename = file.filename;
     const mimetype = file.mimetype;
 
+    // Plafond du palier du compte (posé par enforceMediaTier avant multer) :
+    // relu contre la taille RÉELLE, qu'un `Content-Length` absent ou menteur
+    // n'a pas arrêtée. Les médias officiels n'en posent pas : le plafond
+    // standard, celui de leur multer, leur suffit.
+    const maxBytes = req.mediaMaxBytes ?? MEDIA_MAX_BYTES;
+    if (file.size > maxBytes) {
+      await fs.promises.unlink(file.path).catch(() => {});
+      return fail(res, 413, 'FILE_TOO_LARGE', 'Fichier trop volumineux', { maxBytes });
+    }
+
     // La clé, partition du jour comprise, a été décidée par multer à
     // l'ouverture du flux (`file.storageKey`) : elle est relue, jamais
     // recalculée, sans quoi un envoi commencé à 23:59:59 recevrait l'adresse
@@ -160,8 +171,11 @@ const uploadTicket = async (req, res) => {
   if (!Number.isInteger(octets) || octets <= 0) {
     return fail(res, 400, 'VALIDATION_FAILED', 'Taille de fichier invalide');
   }
-  if (octets > (avatar ? AVATAR_MAX_BYTES : MEDIA_MAX_BYTES)) {
-    return fail(res, 413, 'FILE_TOO_LARGE', 'Fichier trop volumineux');
+  // Une photo de profil a son plafond ; un média, celui du palier du compte
+  // (50 Mo, 200 Mo pour qui a payé — voir uploadLimits.js).
+  const maxBytes = avatar ? AVATAR_MAX_BYTES : (await limitsFor(req.user.alanyaID)).maxUploadBytes;
+  if (octets > maxBytes) {
+    return fail(res, 413, 'FILE_TOO_LARGE', 'Fichier trop volumineux', { maxBytes });
   }
 
   if (!storage.isB2Enabled()) return stockageIndisponible(res);

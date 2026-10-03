@@ -107,6 +107,21 @@ const PHONE_CHANGE = Object.freeze({
   quarantineDays: 90,
 });
 
+const MB = 1024 * 1024;
+
+/**
+ * Ce qu'un compte peut envoyer en une fois, selon qu'il a payé ou non.
+ *
+ * « A payé » = phase payante ET (abonnement en cours OU compte exempté) : en
+ * essai, en grâce ou payant éteint, tout le monde est au palier standard. La
+ * durée de conservation des médias sur le serveur suit la même ligne de partage
+ * mais se règle ailleurs (page Purges : durée standard et durée Alanya Plus).
+ */
+const TIER_LIMITS = Object.freeze({
+  standard: Object.freeze({ maxUploadBytes: 50 * MB, maxAlbumItems: 30 }),
+  paid: Object.freeze({ maxUploadBytes: 200 * MB, maxAlbumItems: 100 }),
+});
+
 /** Aucun passage au payant sans préavis (contrainte ck_billing_grace). */
 const MIN_GRACE_DAYS = 7;
 
@@ -129,4 +144,5 @@ module.exports = {
   PHONE_CHANGE,
   MIN_GRACE_DAYS,
   OFFLINE_TRUST_DAYS,
+  TIER_LIMITS,
 };
