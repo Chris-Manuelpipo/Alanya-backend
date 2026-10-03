@@ -1,4 +1,4 @@
-const { sendMail, renderHtmlEmail, escapeHtml } = require('../../services/mailService');
+const { sendMail, renderHtmlEmail, escapeHtml, defaultFrom } = require('../../services/mailService');
 
 // Helper pour `from` par défaut
 const _daysAgoIso = (days) => {
@@ -39,11 +39,7 @@ const _relativeTime = (date) => {
 
 const _appName = process.env.APP_NAME || 'Alanya';
 
-const _buildUserMailFrom = () => {
-  const fromEmail = process.env.SMTP_FROM;
-  const fromName = process.env.MAIL_FROM_NAME || _appName;
-  return fromEmail ? `"${fromName}" <${fromEmail}>` : undefined;
-};
+const _buildUserMailFrom = () => defaultFrom();
 
 const _notifyUserAccountAction = async ({ email, nom, action, reason }) => {
   if (!email) return;
