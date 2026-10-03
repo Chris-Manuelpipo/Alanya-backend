@@ -101,12 +101,15 @@ const ACTIONS = {
   // Abonnement. Les transitions de l'interrupteur exigent un motif : il est
   // recopié ici (`body.reason`).
   'PUT /billing/settings': { action: 'billing.settings', targetType: 'billing' },
+  'POST /billing/model': { action: 'billing.model', targetType: 'billing' },
   'POST /billing/activate': { action: 'billing.activate', targetType: 'billing' },
   'POST /billing/deactivate': { action: 'billing.deactivate', targetType: 'billing' },
   'POST /billing/extend-grace': { action: 'billing.grace', targetType: 'billing' },
   'POST /billing/plans': { action: 'billing.plans.create', targetType: 'plan' },
   'PUT /billing/plans/:id': { action: 'billing.plans.update', targetType: 'plan', param: 'id' },
   'PUT /billing/features/:code': { action: 'billing.features.update', targetType: 'feature', param: 'code' },
+  'POST /billing/codes': { action: 'billing.codes.generate', targetType: 'billing' },
+  'POST /billing/codes/:id/revoke': { action: 'billing.codes.revoke', targetType: 'code', param: 'id' },
   'POST /users/:id/billing/gift': { action: 'billing.gift', targetType: 'user', param: 'id' },
   'POST /users/:id/badge/revoke': { action: 'badge.revoke', targetType: 'user', param: 'id' },
   'POST /users/:id/badge/restore': { action: 'badge.restore', targetType: 'user', param: 'id' },

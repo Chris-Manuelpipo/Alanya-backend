@@ -127,6 +127,9 @@ const SUPER_ADMIN_ONLY = [
   'billing.plans',
   // Offrir un abonnement : une période sans paiement, donc de l'argent.
   'billing.gift',
+  // Générer ou annuler des codes d'activation : chaque code est une année
+  // d'abonnement. Même niveau que l'abonnement offert.
+  'billing.codes',
 ];
 
 const ROLE_USER = 0;

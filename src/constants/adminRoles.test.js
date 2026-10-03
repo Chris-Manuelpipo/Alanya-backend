@@ -33,6 +33,11 @@ assert.strictEqual(can(ROLE_ADMIN, 'permission.inventée'), false);
 assert.strictEqual(can(ROLE_ADMIN, 'users.ban'), false, 'bannir remonte au super-admin');
 assert.strictEqual(can(ROLE_ADMIN, 'users.unban'), false, 'débannir suit bannir');
 assert.strictEqual(can(ROLE_SUPER_ADMIN, 'users.ban'), true);
+// Les codes d'activation sont des années d'abonnement : générer ou annuler reste
+// au super-admin, comme offrir un abonnement. Les lister est une lecture.
+assert.strictEqual(can(ROLE_ADMIN, 'billing.codes'), false, 'générer des codes : super-admin');
+assert.strictEqual(can(ROLE_SUPER_ADMIN, 'billing.codes'), true);
+assert.strictEqual(can(ROLE_ADMIN, 'billing.read'), true, 'lister les codes : lecture');
 // Ce que l'admin garde : lire, diagnostiquer, retirer un contenu.
 assert.strictEqual(can(ROLE_ADMIN, 'users.read'), true);
 assert.strictEqual(can(ROLE_ADMIN, 'audit.read'), true);

@@ -892,6 +892,7 @@ router.post('/ai/review', adminAuth, requirePermission('ai.editorial'), aiEditor
 const {
   getBillingSettings,
   updateBillingSettings,
+  setBillingModel,
   activateBilling,
   deactivateBilling,
   extendBillingGrace,
@@ -901,6 +902,11 @@ const {
   listBillingFeatures,
   updateBillingFeature,
 } = require('../controllers/admin/billing');
+const {
+  generateBillingCodes,
+  listBillingCodes,
+  revokeBillingCode,
+} = require('../controllers/admin/billingCodes');
 
 // Abonnement Alanya Plus. Lecture au niveau admin ; l'interrupteur, ses
 // réglages et le catalogue au super-admin. Une route par transition — activer,
@@ -908,6 +914,7 @@ const {
 // préconditions, et le journal enregistre un verbe explicite avec le motif.
 router.get('/billing/settings',           adminAuth, requirePermission('billing.read'), getBillingSettings);
 router.put('/billing/settings',           adminAuth, requirePermission('billing.settings'), updateBillingSettings);
+router.post('/billing/model',             adminAuth, requirePermission('billing.settings'), setBillingModel);
 router.post('/billing/activate',          adminAuth, requirePermission('billing.settings'), activateBilling);
 router.post('/billing/deactivate',        adminAuth, requirePermission('billing.settings'), deactivateBilling);
 router.post('/billing/extend-grace',      adminAuth, requirePermission('billing.settings'), extendBillingGrace);
@@ -916,6 +923,13 @@ router.post('/billing/plans',             adminAuth, requirePermission('billing.
 router.put('/billing/plans/:id',          adminAuth, requirePermission('billing.plans'), updateBillingPlan);
 router.get('/billing/features',           adminAuth, requirePermission('billing.read'), listBillingFeatures);
 router.put('/billing/features/:code',     adminAuth, requirePermission('billing.plans'), updateBillingFeature);
+
+// Codes d'activation (régime essai). Les lister est une lecture ; en générer ou
+// en annuler un décide de l'argent des autres : super-admin, avec motif pour
+// l'annulation. Les codes en clair ne sortent que de la génération.
+router.get('/billing/codes',              adminAuth, requirePermission('billing.read'), listBillingCodes);
+router.post('/billing/codes',             adminAuth, requirePermission('billing.codes'), generateBillingCodes);
+router.post('/billing/codes/:id/revoke',  adminAuth, requirePermission('billing.codes'), revokeBillingCode);
 
 const {
   listBillingPayments,

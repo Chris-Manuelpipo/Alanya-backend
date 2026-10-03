@@ -28,7 +28,7 @@ if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
 process.env.ACTIVATION_CODE_SECRET = process.env.ACTIVATION_CODE_SECRET || 'secret-de-test-'.repeat(3);
 
 const pool = require('../../config/db');
-const { invalidateBillingSettings } = require('./settings');
+const { invalidateBillingSettings, getBillingSettings, setModel, activate } = require('./settings');
 const codes = require('./activationCodes');
 const { generateCode, formatCode } = require('./codeFormat');
 const { entitlementsFor } = require('./entitlements');
@@ -338,6 +338,33 @@ const dansMois = (from, n) => {
     {
       const i = await creerCompte('test-inconnu', 300);
       await echec(codes.redeemCode({ alanyaID: i, rawCode: formatCode(generateCode()) }), 'INVALID_CODE');
+    }
+
+    /* ── Le régime ne change que payant éteint ───────────────────────── */
+    {
+      await setSettings({ paid_enabled: 1, model: 2 });
+      await echec(setModel({ model: 1, adminId: null }), 'BILLING_MODEL_LOCKED');
+      assert.strictEqual(Number((await getBillingSettings()).model), 2, 'refusé : rien n\'a changé');
+
+      await setSettings({ paid_enabled: 0 });
+      await setModel({ model: 1, adminId: null });
+      assert.strictEqual(Number((await getBillingSettings()).model), 1);
+      await setModel({ model: 1, adminId: null }); // rejoué : sans effet
+      await echec(setModel({ model: 3, adminId: null }), 'INVALID_BILLING_SETTING');
+      await setModel({ model: 2, adminId: null });
+      assert.strictEqual(Number((await getBillingSettings()).model), 2);
+
+      // L'activation du régime essai exige le secret des codes, pas un vrai fournisseur.
+      const prodSimule = { NODE_ENV: 'production', PAYMENT_PROVIDER: 'simulated' };
+      await echec(activate({ adminId: null, env: prodSimule }), 'BILLING_CODE_SECRET_MISSING');
+      await activate({ adminId: null, env: { ...prodSimule, ACTIVATION_CODE_SECRET: 'x'.repeat(40) } });
+      const s = await getBillingSettings();
+      assert.strictEqual(Number(s.paid_enabled), 1);
+      assert.ok(s.grace_until, 'la grâce de l\'activation est posée');
+      assert.strictEqual(Math.round((new Date(s.grace_until) - Date.now()) / DAY), 90, 'trois mois pour les comptes existants');
+      // Le même garde, régime 1 : le simulateur reste refusé en production.
+      await setSettings({ paid_enabled: 0, model: 1 });
+      await echec(activate({ adminId: null, env: prodSimule }), 'BILLING_PROVIDER_SIMULATED');
     }
 
     console.log('activationCodes.db.test.js OK');

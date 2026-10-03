@@ -18,9 +18,11 @@ const { enqueue } = require('../../services/jobQueue');
 /** La phase vient de changer : l'échéance de chaque coche aussi (par lots, hors requête). */
 const recomputeBadgesLater = () => enqueue('verification_recompute_all', {})
   .catch((err) => console.error('[admin/billing] recalcul des coches :', err.message));
+const { emitToEveryone } = require('../../services/billing/subscriptions');
 const {
   phaseAt,
-  activationBlocker,
+  billingModel,
+  activationBlockerFor,
   paymentProvider,
   parseSettingsPatch,
   parsePlanPayload,
@@ -64,8 +66,11 @@ async function settingsPayload() {
   return {
     settings: s,
     phase: phaseAt(s),
+    // Le régime en vigueur (1 = Alanya Plus, 2 = essai) et ce qui empêcherait
+    // d'activer le payant sous ce régime.
+    model: billingModel(s),
     provider: paymentProvider(),
-    activationBlockedBy: activationBlocker(),
+    activationBlockedBy: activationBlockerFor(s.model),
     preview: await activationPreview(),
   };
 }
@@ -86,6 +91,28 @@ const updateBillingSettings = async (req, res) => {
     res.json(await settingsPayload());
   } catch (err) {
     return sendError(res, err, 'réglages');
+  }
+};
+
+/**
+ * Choisit le régime : 1 (Alanya Plus) ou 2 (essai de trois mois). Un verbe à
+ * part, avec motif : changer de régime modifie ce que chaque compte peut faire.
+ * Refusé payant allumé (BILLING_MODEL_LOCKED) — on passe par l'activation.
+ */
+const setBillingModel = async (req, res) => {
+  const reason = parseReason(req.body);
+  if (!reason.ok) return reject(res, reason);
+  const model = req.body?.model;
+  if (model !== 1 && model !== 2) {
+    return fail(res, 400, 'INVALID_BILLING_SETTING', 'model doit valoir 1 ou 2');
+  }
+  try {
+    await settings.setModel({ model, adminId: req.user.alanyaID });
+    // Les téléphones relisent leurs droits : l'écran de l'offre dépend du régime.
+    emitToEveryone('entitlements:updated', { at: new Date().toISOString() });
+    res.json(await settingsPayload());
+  } catch (err) {
+    return sendError(res, err, 'régime');
   }
 };
 
@@ -192,6 +219,7 @@ const updateBillingFeature = async (req, res) => {
 module.exports = {
   getBillingSettings,
   updateBillingSettings,
+  setBillingModel,
   activateBilling,
   deactivateBilling,
   extendBillingGrace,
