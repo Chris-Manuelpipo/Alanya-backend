@@ -1,5 +1,11 @@
 const assert = require('assert');
-const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('./messageInsert');
+const {
+  MESSAGE_INSERT_SQL,
+  MESSAGE_INSERT_CHIFFRE_SQL,
+  messageInsertSql,
+  messageInsertParams,
+  insertMessageThumb,
+} = require('./messageInsert');
 
 const placeholders = (MESSAGE_INSERT_SQL.match(/\?/g) || []).length;
 const sendAt = new Date('2026-09-01T10:00:00.000Z');
@@ -26,8 +32,8 @@ const params = messageInsertParams({
 
 assert.strictEqual(
   placeholders,
-  19,
-  `INSERT : 19 placeholders attendus, ${placeholders} trouvés`,
+  18,
+  `INSERT : 18 placeholders attendus, ${placeholders} trouvés`,
 );
 assert.strictEqual(
   params.length,
@@ -52,11 +58,12 @@ const sansSendAt = messageInsertParams({
 });
 assert.ok(sansSendAt[5] instanceof Date, 'sendAt omis doit retomber sur maintenant');
 
-const cols = MESSAGE_INSERT_SQL.match(/INSERT INTO message\s*\(([^)]+)\)/s)[1]
+const colonnes = (sql) => sql.match(/INSERT INTO message\s*\(([^)]+)\)/s)[1]
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-assert.strictEqual(cols.length, 20, '20 colonnes (status en littéral, mediaThumb exclue)');
+const cols = colonnes(MESSAGE_INSERT_SQL);
+assert.strictEqual(cols.length, 19, '19 colonnes (status en littéral, mediaThumb exclue)');
 assert.ok(
   !/NOW\(\)/.test(MESSAGE_INSERT_SQL),
   'sendAt doit être un paramètre, pas NOW() : sinon l\'accusé ne peut pas connaître la date sans relire la ligne',
@@ -66,38 +73,30 @@ assert.ok(MESSAGE_INSERT_SQL.includes('ON DUPLICATE KEY UPDATE'));
 
 // ── enc_version (migration 092) ───────────────────────────────────────────
 //
-// Elle est DANS l'INSERT et non posée par un UPDATE qui suivrait : entre les
-// deux écritures, une relecture concurrente verrait un message annoncé en
-// clair dont `content` est NULL — donc une bulle vide.
-assert.strictEqual(
-  cols[cols.length - 1], 'enc_version',
-  'enc_version doit être la dernière colonne, pour correspondre au dernier param',
+// La forme en clair ne nomme pas la colonne : c'est ce qui la rend
+// indépendante de l'ordre de déploiement. Poussée avant la migration 092, elle
+// doit continuer d'écrire tous les messages en clair.
+assert.ok(
+  !cols.includes('enc_version'),
+  'la forme en clair ne doit pas dépendre de la colonne enc_version',
 );
 
-const champsMinimaux = {
-  senderID: 1, conversationID: 2, clientId: 'c', content: null, type: 0,
-  clickSentAt: null, mediaUrl: null, mediaName: null, mediaDuration: null,
-  mediaSize: null, mediaPageCount: null, replyToID: null, replyToContent: null,
-  isStatusReply: 0, isForwarded: 0, isViewOnce: 0, mentionsSerialized: null,
-};
-const dernier = (champs) => {
-  const p = messageInsertParams(champs);
-  return p[p.length - 1];
-};
+// La forme chiffrée la pose DANS l'INSERT et non par un UPDATE qui suivrait :
+// entre les deux écritures, une relecture concurrente verrait un message
+// annoncé en clair dont `content` est NULL — donc une bulle vide.
+const colsChiffre = colonnes(MESSAGE_INSERT_CHIFFRE_SQL);
+assert.strictEqual(colsChiffre.length, 20);
+assert.strictEqual(colsChiffre[colsChiffre.length - 1], 'enc_version');
+assert.deepStrictEqual(colsChiffre.slice(0, -1), cols, 'mêmes colonnes, plus enc_version');
+// Littéral, comme `status` : les deux formes prennent les mêmes paramètres.
+assert.strictEqual((MESSAGE_INSERT_CHIFFRE_SQL.match(/\?/g) || []).length, placeholders);
+assert.ok(/\?, 1\)\s*ON DUPLICATE KEY UPDATE/.test(MESSAGE_INSERT_CHIFFRE_SQL));
+assert.ok(MESSAGE_INSERT_CHIFFRE_SQL.includes('ON DUPLICATE KEY UPDATE'));
 
-// Les appelants qui ne chiffrent pas — messages système, bienvenue,
-// diffusions, trajets, traces d'appel — ne passent rien du tout.
-assert.strictEqual(
-  dernier(champsMinimaux), 0,
-  'encVersion omis doit valoir 0 : « en clair », ce que sont ces messages',
-);
-assert.strictEqual(dernier({ ...champsMinimaux, encVersion: 1 }), 1);
-// Strictement 1 ou 0 : une valeur inattendue ne doit pas devenir « chiffré »
-// par la grâce d'un test de véracité. Un message annoncé chiffré sans corps
-// dans `message_e2ee` est illisible pour tout le monde, définitivement.
-assert.strictEqual(dernier({ ...champsMinimaux, encVersion: 2 }), 0);
-assert.strictEqual(dernier({ ...champsMinimaux, encVersion: true }), 0);
-assert.strictEqual(dernier({ ...champsMinimaux, encVersion: '1' }), 0);
+// Choix de la forme : chiffrée seulement quand il y a un corps.
+assert.strictEqual(messageInsertSql(null), MESSAGE_INSERT_SQL);
+assert.strictEqual(messageInsertSql(undefined), MESSAGE_INSERT_SQL);
+assert.strictEqual(messageInsertSql({ body: Buffer.from('x') }), MESSAGE_INSERT_CHIFFRE_SQL);
 
 // insertMessageThumb : no-op silencieux si aucune vignette fournie.
 (async () => {

@@ -9,7 +9,7 @@ const { markConversationDeliveredBy } = require('../utils/deliveryReceiptUtils')
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
-const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
+const { messageInsertSql, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
 const {
   attacheChiffre,
   normaliseChiffre,
@@ -294,7 +294,7 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
 
   const [result] = await _execute(
     conn,
-    MESSAGE_INSERT_SQL,
+    messageInsertSql(chiffre),
     messageInsertParams({
       senderID,
       conversationID,
@@ -316,7 +316,6 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
       isForwarded,
       isViewOnce,
       mentionsSerialized: serializeMentionsColumn(mentionsValue),
-      encVersion: chiffre ? 1 : 0,
     }),
   );
 

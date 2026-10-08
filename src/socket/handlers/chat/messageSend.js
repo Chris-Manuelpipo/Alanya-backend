@@ -10,7 +10,7 @@ const {
   getCachedParticipants,
   setCachedParticipants,
 } = require('../../../utils/conversationParticipantsCache');
-const { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb } = require('../../../utils/messageInsert');
+const { messageInsertSql, messageInsertParams, insertMessageThumb } = require('../../../utils/messageInsert');
 const {
   normaliseChiffre,
   ecritChiffre,
@@ -133,14 +133,14 @@ function emitSendFailed(socket, {
  */
 async function insereMessage(params, chiffre) {
   if (!chiffre) {
-    const [r] = await pool.execute(MESSAGE_INSERT_SQL, params);
+    const [r] = await pool.execute(messageInsertSql(null), params);
     return { msgID: r.insertId, isNewInsert: r.affectedRows === 1 };
   }
 
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    const [r] = await conn.execute(MESSAGE_INSERT_SQL, params);
+    const [r] = await conn.execute(messageInsertSql(chiffre), params);
     const msgID = r.insertId;
     await ecritChiffre(conn, msgID, chiffre);
     await conn.commit();
@@ -364,7 +364,6 @@ const messageSend = (io, socket) => {
         isForwarded,
         isViewOnce,
         mentionsSerialized: serializeMentionsColumn(mentionsValue),
-        encVersion: chiffre ? 1 : 0,
       });
 
       let msgID;

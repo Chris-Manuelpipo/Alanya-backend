@@ -2,18 +2,30 @@
  * INSERT partagé entre le chemin HTTP (`POST /conversations/:id/messages`,
  * réponse rapide depuis la notification) et le chemin socket (`message:send`).
  *
- * 20 colonnes, dont `status = 1` en littéral → 19 `?`.
+ * 19 colonnes, dont `status = 1` en littéral → 18 `?`.
  * Un décalage placeholders / params faisait échouer le POST natif en 500 :
  * la réponse restait en file et ne partait que via le socket à l'ouverture
  * de la discussion.
  *
+ * ── Deux formes : en clair, et chiffrée ──
+ *
  * `enc_version` (migration 092) vaut 0 pour un message en clair et 1 quand le
- * corps est chiffré dans `message_e2ee`. Elle est DANS cet INSERT et non
- * posée par un UPDATE qui suivrait : un message existe soit chiffré soit en
- * clair, jamais en clair pendant un instant puis chiffré. Entre les deux
- * écritures, une relecture concurrente — l'accusé d'un autre appareil, un
- * delta de sync — verrait un message annoncé en clair dont `content` est
- * NULL, donc une bulle vide.
+ * corps est chiffré dans `message_e2ee`. Pour un message chiffré, elle est
+ * DANS l'INSERT et non posée par un UPDATE qui suivrait : un message existe
+ * soit chiffré soit en clair, jamais en clair pendant un instant puis chiffré.
+ * Entre les deux écritures, une relecture concurrente — l'accusé d'un autre
+ * appareil, un delta de sync — verrait un message annoncé en clair dont
+ * `content` est NULL, donc une bulle vide.
+ *
+ * La forme en clair, elle, ne nomme PAS la colonne : le `DEFAULT 0` de la
+ * migration s'en charge. C'est ce qui rend le chemin qui porte tout le trafic
+ * indépendant de l'ordre de déploiement — poussé avant la migration 092, ce
+ * code continuerait d'écrire les messages en clair au lieu de les refuser
+ * tous. Seul un message chiffré, qu'aucun client ne peut envoyer tant que les
+ * clés n'existent pas, a besoin de la colonne.
+ *
+ * Les deux formes prennent les mêmes paramètres : `enc_version` est un
+ * littéral, comme `status`.
  *
  * `sendAt` est un paramètre et non `NOW()` : l'appelant connaît ainsi la
  * valeur exacte de la ligne sans avoir à la relire, ce qui supprime un
@@ -31,11 +43,26 @@ INSERT INTO message
   (senderID, conversationID, clientID, content, type, status, sendAt,
    clickSentAt,
    mediaUrl, mediaName, mediaDuration, mediaSize, mediaPageCount,
-   replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce, mentions,
-   enc_version)
-VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce, mentions)
+VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE msgID = LAST_INSERT_ID(msgID)
 `;
+
+const MESSAGE_INSERT_CHIFFRE_SQL = `
+INSERT INTO message
+  (senderID, conversationID, clientID, content, type, status, sendAt,
+   clickSentAt,
+   mediaUrl, mediaName, mediaDuration, mediaSize, mediaPageCount,
+   replyToID, replyToContent, isStatusReply, isForwarded, isViewOnce, mentions,
+   enc_version)
+VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+ON DUPLICATE KEY UPDATE msgID = LAST_INSERT_ID(msgID)
+`;
+
+/** La forme d'INSERT qui convient : chiffrée seulement s'il y a un corps. */
+function messageInsertSql(chiffre) {
+  return chiffre ? MESSAGE_INSERT_CHIFFRE_SQL : MESSAGE_INSERT_SQL;
+}
 
 function messageInsertParams({
   senderID,
@@ -56,7 +83,6 @@ function messageInsertParams({
   isForwarded,
   isViewOnce,
   mentionsSerialized,
-  encVersion,
 }) {
   return [
     senderID,
@@ -78,10 +104,6 @@ function messageInsertParams({
     isForwarded ? 1 : 0,
     isViewOnce ? 1 : 0,
     mentionsSerialized,
-    // Les appelants qui ne chiffrent pas — messages système, bienvenue,
-    // diffusions, trajets, traces d'appel — n'ont rien à passer : 0 par
-    // défaut, c'est-à-dire « en clair », ce qu'ils sont.
-    encVersion === 1 ? 1 : 0,
   ];
 }
 
@@ -99,4 +121,10 @@ async function insertMessageThumb(conn, msgID, mediaThumb) {
   );
 }
 
-module.exports = { MESSAGE_INSERT_SQL, messageInsertParams, insertMessageThumb };
+module.exports = {
+  MESSAGE_INSERT_SQL,
+  MESSAGE_INSERT_CHIFFRE_SQL,
+  messageInsertSql,
+  messageInsertParams,
+  insertMessageThumb,
+};
