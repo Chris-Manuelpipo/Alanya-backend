@@ -88,7 +88,7 @@ router.post(
  *               file:
  *                 type: string
  *                 format: binary
- *                 description: Fichier média (max 50MB)
+ *                 description: Fichier média (max 100MB)
  *     responses:
  *       200:
  *         description: Média uploadé
