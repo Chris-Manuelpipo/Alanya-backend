@@ -13,10 +13,11 @@ const {
 
 /** Plafonds d'envoi, partagés avec la route de ticket (envoi direct). */
 const AVATAR_MAX_BYTES = 5 * 1024 * 1024;   // 5 MB
-const MEDIA_MAX_BYTES  = 50 * 1024 * 1024;  // 50 MB — palier standard
-// Plafond absolu de multer : celui du palier payant. Le plafond du compte
-// (50 ou 200 Mo) est appliqué avant (middleware/mediaTier.js) et après.
+
 const MEDIA_MAX_BYTES_PAID = 200 * 1024 * 1024; // 200 MB
+
+const MEDIA_MAX_BYTES  = 100 * 1024 * 1024; // 100 MB — mesuré après compression côté app
+
 const GREETING_MAX_BYTES = 2 * 1024 * 1024; // 2 MB — dix secondes de voix
 const RINGTONE_MAX_BYTES = 5 * 1024 * 1024; // 5 MB — une sonnerie, pas un album
 
