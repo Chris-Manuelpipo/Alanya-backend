@@ -10,6 +10,7 @@ const {
   getBlockStatus,
   getBlockedUsers,
 } = require('../controllers/userController');
+const { putVideoCapabilities } = require('../controllers/videoCodecsController');
 
 /**
  * @swagger
@@ -85,6 +86,32 @@ router.get('/phone/:phone', auth, getUserByPhone);
  *         description: Profil utilisateur
  */
 router.get('/:id',          auth, getUserById);
+
+/**
+ * @swagger
+ * /api/users/me/video-capabilities:
+ *   put:
+ *     summary: Déclare ce que l'appareil de la requête sait lire (HEVC 720p)
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [hevcDecode]
+ *             properties:
+ *               hevcDecode:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: "{ ok: true, recorded: boolean }"
+ *       400:
+ *         description: hevcDecode absent ou non booléen (VALIDATION_FAILED)
+ */
+router.put('/me/video-capabilities', auth, putVideoCapabilities);
 
 /**
  * @swagger

@@ -26,6 +26,7 @@ const {
   updateConversationMute,
   ackGroupJoin,
 } = require('../controllers/conversationController');
+const { getConversationVideoCodecs } = require('../controllers/videoCodecsController');
 
 /**
  * @swagger
@@ -163,6 +164,30 @@ router.post('/group', auth, createGroup);
  *         description: Conversation supprimée
  */
 router.get('/:id', auth, getConversationById);
+
+/**
+ * @swagger
+ * /api/conversations/{id}/video-codecs:
+ *   get:
+ *     summary: Codecs vidéo lisibles par tous les appareils actifs des membres
+ *     description: >
+ *       `hevc: true` quand aucun membre n'a d'appareil actif qui ne lit pas le
+ *       HEVC (ou ne l'a pas déclaré). L'app envoie alors ses vidéos en HEVC,
+ *       plus légères ; sinon en H.264.
+ *     tags: [Conversations]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: "{ hevc: boolean }"
+ */
+router.get('/:id/video-codecs', auth, requireParticipant, getConversationVideoCodecs);
 // requireParticipant : la route écrivait dans `conversation` sans vérifier
 // l'appartenance (voir le commentaire du contrôleur).
 router.put('/:id', auth, requireParticipant, updateConversation);
