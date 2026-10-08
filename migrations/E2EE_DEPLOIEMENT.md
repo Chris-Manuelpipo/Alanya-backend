@@ -1,0 +1,84 @@
+# Chiffrement de bout en bout — déploiement des migrations 091 à 094
+
+`main` se déploie à chaque push. Ces migrations s'appliquent **à la main, avant
+de pousser** le code qui les suit sur `main`. Elles sont réexécutables.
+
+## 0. Avant toute chose : ce que la base contient déjà
+
+Les migrations 091 à 093 viennent de la branche `feat/chiffrement-e2e`, où elles
+portaient les numéros 090 à 092. Si quelqu'un les a jouées sous ces numéros, les
+tables existent déjà, et `CREATE TABLE IF NOT EXISTS` les laissera telles
+quelles.
+
+```sql
+SHOW TABLES LIKE 'e2ee_%';                       -- e2ee_device_keys, e2ee_one_time_prekeys, e2ee_settings
+SHOW TABLES LIKE 'message_e2ee';
+SHOW TABLES LIKE 'message_envelope';
+SHOW COLUMNS FROM message LIKE 'enc_version';
+SHOW COLUMNS FROM report LIKE 'target_excerpt';
+SELECT COUNT(*) FROM message_crypto;            -- lignes de l'ancienne branche, illisibles
+SELECT VERSION();                               -- MySQL 8.0.29+ : ajout de colonne instantané partout
+```
+
+Noter les résultats avant de continuer.
+
+## 1. Ordre d'application
+
+```bash
+mysql -u USER -p DATABASE < migrations/091_e2ee_cles.sql
+mysql -u USER -p DATABASE < migrations/092_e2ee_enveloppes.sql
+mysql -u USER -p DATABASE < migrations/093_report_extrait.sql
+mysql -u USER -p DATABASE < migrations/094_e2ee_settings.sql
+```
+
+### Si 092 refuse avec `ER_ALTER_OPERATION_NOT_SUPPORTED`
+
+L'ajout de `message.enc_version` est demandé en `ALGORITHM=INSTANT`, exprès :
+`message` est la table la plus chaude du schéma, et une recopie complète la
+verrouillerait. Le refus ne touche rien. Dans ce cas :
+
+1. ne PAS retirer `ALGORITHM=INSTANT` pour forcer le passage ;
+2. planifier une fenêtre de maintenance, et y jouer l'ajout en
+   `ALGORITHM=INPLACE, LOCK=NONE` (ou avec `pt-online-schema-change`) ;
+3. puis rejouer 092 : la garde `information_schema` saute l'`ALTER` déjà fait
+   et crée les tables restantes.
+
+## 2. Ce qui dépend de quoi
+
+| Code | Exige | Sans la migration |
+|---|---|---|
+| Envoi d'un message **en clair** (socket, HTTP) | rien | — (indépendant, voir `src/utils/messageInsert.js`) |
+| Envoi d'un message **chiffré** | 092 | impossible de toute façon : l'interrupteur (094) est fermé |
+| Historique et delta | rien | `attacheChiffre` ne lit les tables que pour `enc_version = 1` |
+| Routes `/api/e2ee/*` | 091, 094 | 094 absente ⇒ `E2EE_INACTIF` (fermé) |
+| **Création d'un signalement** | **092 et 093** | **échec** (`enc_version`, `target_excerpt`) |
+| **Liste des signalements (admin)** | **093** | **échec** (`r.target_excerpt`) |
+| Purge `e2ee_envelope` (manuelle, admin) | 091, 092 | échec isolé, journalisé ; les autres purges continuent |
+
+Les deux lignes en gras sont la raison de la règle : **091 à 094 d'abord, push
+ensuite.**
+
+## 3. Après le push
+
+```sql
+SELECT * FROM e2ee_settings;   -- enrol_enabled = 0, activate_enabled = 0 : rien n'est ouvert
+```
+
+- Envoyer un message en clair depuis l'application actuelle : il part et arrive
+  comme avant.
+- Ouvrir la liste des signalements dans l'admin : elle s'affiche.
+- `GET /api/e2ee/keys/state` avec un compte quelconque : `404 E2EE_INACTIF`.
+
+## 4. Ouvrir, palier par palier
+
+Depuis `PUT /api/admin/e2ee-settings` (super-admin), jamais en SQL : la route
+journalise qui a ouvert quoi.
+
+1. `{"cohortIds": [<comptes internes>], "enrolEnabled": true}` : les appareils
+   internes publient leurs clés. Rien ne change pour les autres.
+2. `{"activateEnabled": true}` : seulement quand l'application qui sait
+   chiffrer est installée sur tous les appareils internes.
+3. `{"cohortPercent": 1}`, puis 10, 50, 100 : une semaine au moins par palier.
+
+Refermer `activateEnabled` arrête les nouvelles activations. Une conversation
+déjà chiffrée le reste.

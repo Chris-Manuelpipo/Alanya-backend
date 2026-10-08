@@ -62,12 +62,21 @@
 --
 -- Garde par information_schema : MySQL 8 n'a pas `ADD COLUMN IF NOT EXISTS`,
 -- et cette migration doit pouvoir être relancée après une interruption.
+--
+-- `ALGORITHM=INSTANT` est EXPLICITE. `message` est la table la plus chaude du
+-- schéma : laissé à son choix, MySQL pourrait se rabattre sans prévenir sur
+-- une recopie complète, qui la verrouillerait le temps de recopier tout
+-- l'historique. Explicite, il refuse aussitôt (ER_ALTER_OPERATION_NOT_SUPPORTED)
+-- si l'ajout instantané n'est pas possible — table partitionnée sur une
+-- version ancienne, format de ligne COMPRESSED — et rien n'est touché. Voir
+-- `E2EE_DEPLOIEMENT.md` pour la conduite à tenir dans ce cas.
 SET @has := (SELECT COUNT(*) FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'message'
     AND COLUMN_NAME = 'enc_version');
 SET @sql := IF(@has = 0, 'ALTER TABLE message
     ADD COLUMN enc_version TINYINT NOT NULL DEFAULT 0
-      COMMENT ''0=clair 1=corps chiffre dans message_e2ee''', 'DO 0');
+      COMMENT ''0=clair 1=corps chiffre dans message_e2ee'',
+    ALGORITHM=INSTANT', 'DO 0');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ── 2. Le corps chiffré ──────────────────────────────────────────────────
