@@ -8,7 +8,7 @@
  */
 
 const {
-  PHASE, BILLING_MODEL, MIN_GRACE_DAYS, OFFLINE_TRUST_DAYS,
+  PHASE, BILLING_MODEL, MIN_GRACE_DAYS, OFFLINE_TRUST_DAYS, TIER_LIMITS,
 } = require('../../constants/billing');
 
 const DAY_MS = 86_400_000;
@@ -72,6 +72,25 @@ function trialFloor({ settings, createdAt, now = new Date() }) {
   if (billingModel(settings) !== BILLING_MODEL.TRIAL) return null;
   const end = trialEndsAt({ createdAt, settings });
   return end && end > now ? end : null;
+}
+
+/**
+ * Le compte a-t-il payé ? Phase payante, et un abonnement en cours (payé,
+ * offert, par code) ou un compte exempté. Pendant l'essai, la grâce, ou payant
+ * éteint : non, même avec une période à venir.
+ */
+function isPaidTier({
+  phase, exempt = false, coveredUntil = null, now = new Date(),
+}) {
+  if (phase !== PHASE.PAID) return false;
+  if (exempt) return true;
+  const covered = toDate(coveredUntil);
+  return Boolean(covered && covered > now);
+}
+
+/** Les plafonds d'envoi d'un palier : taille d'un fichier, médias par album. */
+function tierLimits(paid) {
+  return paid ? TIER_LIMITS.paid : TIER_LIMITS.standard;
 }
 
 /** Combien de jours avant la fin d'essai on prévient, et combien après on s'en abstient. */
@@ -243,9 +262,16 @@ function decideEntitlements({
     }
     : null);
 
+  const paidTier = isPaidTier({
+    phase, exempt, coveredUntil: current ? chainEnd : null, now,
+  });
+
   return {
     phase,
     model,
+    // Ce que ce compte peut envoyer : le téléphone lit ces plafonds au lieu de
+    // les coder en dur, et le serveur les applique (uploadLimits.js).
+    limits: { ...tierLimits(paidTier), tier: paidTier ? 'paid' : 'standard' },
     graceUntil: iso(graceUntil),
     trial: trialEnd ? { endsAt: iso(trialEnd), active: inTrial } : null,
     period: describe(current, chainEnd),
@@ -731,6 +757,8 @@ module.exports = {
   trialEndsAt,
   trialFloor,
   trialNoticeFor,
+  isPaidTier,
+  tierLimits,
   TRIAL_ENDING_DAYS,
   TRIAL_ENDED_GRACE_DAYS,
   outgoingDecision,

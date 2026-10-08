@@ -18,6 +18,7 @@ const {
 const { addMonths, nextPeriodStart } = require('../payments/paymentRules');
 const { scheduleChainJobs } = require('./billingSchedule');
 const { invalidateOutgoing } = require('./outgoingGate');
+const { invalidateUploadLimits } = require('./uploadLimits');
 
 let _io = null;
 
@@ -44,6 +45,7 @@ function notifyEntitlementsChanged(alanyaID) {
   // Le verrou de l'émission retient sa réponse quelques secondes : un code tout
   // juste activé ne doit pas attendre qu'elle expire.
   invalidateOutgoing(alanyaID);
+  invalidateUploadLimits(alanyaID);
   // Requis à l'appel : verification.js requiert les droits, qui requièrent
   // les réglages — pas de cycle à la charge.
   const { recomputeVerification } = require('./verification');
