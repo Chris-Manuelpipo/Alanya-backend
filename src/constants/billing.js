@@ -118,7 +118,7 @@ const MB = 1024 * 1024;
  * mais se règle ailleurs (page Purges : durée standard et durée Alanya Plus).
  */
 const TIER_LIMITS = Object.freeze({
-  standard: Object.freeze({ maxUploadBytes: 50 * MB, maxAlbumItems: 30 }),
+  standard: Object.freeze({ maxUploadBytes: 100 * MB, maxAlbumItems: 30 }),
   paid: Object.freeze({ maxUploadBytes: 200 * MB, maxAlbumItems: 100 }),
 });
 

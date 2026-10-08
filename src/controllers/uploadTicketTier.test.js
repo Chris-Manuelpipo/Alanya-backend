@@ -1,10 +1,10 @@
-// Le ticket d'envoi direct applique le plafond du palier du compte : 50 Mo, et
+// Le ticket d'envoi direct applique le plafond du palier du compte : 100 Mo, et
 // 200 Mo pour qui a payé. Stockage et plafonds sont des doubles : on éprouve la
 // décision du contrôleur, pas Backblaze.
 const assert = require('assert');
 
 const MB = 1024 * 1024;
-let tierBytes = 50 * MB;
+let tierBytes = 100 * MB;
 
 const stub = (rel, exports) => {
   const p = require.resolve(rel);
@@ -39,14 +39,16 @@ const media = (size) => ({ kind: 'media', fileName: 'v.mp4', mimetype: 'video/mp
   assert.strictEqual(r.body.mode, 'direct');
 
   r = await call(media(80 * MB));
+  assert.strictEqual(r.code, 200, '80 Mo passent au palier standard');
+  r = await call(media(120 * MB));
   assert.strictEqual(r.code, 413);
   assert.strictEqual(r.body.code, 'FILE_TOO_LARGE');
-  assert.strictEqual(r.body.maxBytes, 50 * MB, 'le téléphone sait le plafond');
+  assert.strictEqual(r.body.maxBytes, 100 * MB, 'le téléphone sait le plafond');
 
   // Palier payant.
   tierBytes = 200 * MB;
-  r = await call(media(80 * MB));
-  assert.strictEqual(r.code, 200, 'un abonné envoie 80 Mo');
+  r = await call(media(150 * MB));
+  assert.strictEqual(r.code, 200, 'un abonné envoie 150 Mo');
   r = await call(media(200 * MB));
   assert.strictEqual(r.code, 200, 'jusqu\'à 200 Mo inclus');
   r = await call(media(200 * MB + 1));

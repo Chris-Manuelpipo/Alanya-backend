@@ -11,7 +11,7 @@ const clock = () => new Date(nowMs);
 const day = (n) => new Date(T0.getTime() + n * DAY);
 
 // ── Les plafonds de chaque palier ──────────────────────────────────────────
-assert.strictEqual(TIER_LIMITS.standard.maxUploadBytes, 50 * MB);
+assert.strictEqual(TIER_LIMITS.standard.maxUploadBytes, 100 * MB);
 assert.strictEqual(TIER_LIMITS.standard.maxAlbumItems, 30);
 assert.strictEqual(TIER_LIMITS.paid.maxUploadBytes, 200 * MB);
 assert.strictEqual(TIER_LIMITS.paid.maxAlbumItems, 100);
@@ -42,7 +42,7 @@ assert.strictEqual(tierLimits(false), TIER_LIMITS.standard);
   assert.deepStrictEqual(abonne.limits, { maxUploadBytes: 200 * MB, maxAlbumItems: 100, tier: 'paid' });
 
   const essai = run({ createdAt: day(-20) });
-  assert.deepStrictEqual(essai.limits, { maxUploadBytes: 50 * MB, maxAlbumItems: 30, tier: 'standard' },
+  assert.deepStrictEqual(essai.limits, { maxUploadBytes: 100 * MB, maxAlbumItems: 30, tier: 'standard' },
     'en essai : palier standard');
 
   const aVenir = run({
@@ -85,7 +85,7 @@ assert.strictEqual(tierLimits(false), TIER_LIMITS.standard);
   // Hors phase payante : jamais de lecture.
   for (const settings of [{ ...TRIAL_ON, paid_enabled: 0 }, { ...TRIAL_ON, grace_until: day(10) }]) {
     const { svc, calls } = build({ settings, account: acct({ covered_until: day(300) }) });
-    assert.strictEqual((await svc.limitsFor(7)).maxUploadBytes, 50 * MB);
+    assert.strictEqual((await svc.limitsFor(7)).maxUploadBytes, 100 * MB);
     assert.strictEqual(calls.account, 0);
   }
 
@@ -97,7 +97,7 @@ assert.strictEqual(tierLimits(false), TIER_LIMITS.standard);
     assert.strictEqual((await svc.limitsFor(7)).maxUploadBytes, 200 * MB);
     assert.strictEqual(calls.account, 1, 'retenu');
     nowMs += 2_000; // l'abonnement a pris fin
-    assert.strictEqual((await svc.limitsFor(7)).maxUploadBytes, 50 * MB, 'plus un octet de trop');
+    assert.strictEqual((await svc.limitsFor(7)).maxUploadBytes, 100 * MB, 'plus un octet de trop');
     assert.strictEqual(calls.account, 2);
     nowMs = T0.getTime();
   }
@@ -115,7 +115,7 @@ assert.strictEqual(tierLimits(false), TIER_LIMITS.standard);
   // Un code activé : l'invalidation rouvre tout de suite.
   {
     const { svc, state } = build({ account: acct() });
-    assert.strictEqual((await svc.limitsFor(7)).maxUploadBytes, 50 * MB);
+    assert.strictEqual((await svc.limitsFor(7)).maxUploadBytes, 100 * MB);
     state.account = acct({ covered_until: day(365) });
     // Sans invalidation, le palier standard reste retenu (au plus une minute).
     svc.invalidateUploadLimits(7);
@@ -131,7 +131,7 @@ assert.strictEqual(tierLimits(false), TIER_LIMITS.standard);
       loadAccount: async () => { const e = new Error('boom'); e.code = 'ECONNREFUSED'; throw e; },
       clock,
     });
-    assert.strictEqual((await down.limitsFor(7)).maxUploadBytes, 50 * MB, 'panne : standard, jamais 200 Mo par défaut');
+    assert.strictEqual((await down.limitsFor(7)).maxUploadBytes, 100 * MB, 'panne : standard, jamais 200 Mo par défaut');
     assert.strictEqual(down.cacheSize(), 0);
   }
 
