@@ -48,6 +48,7 @@ jobs:
           npm run test:ai
           npm run test:trips
           npm run test:media
+          npm run test:e2ee
 
   deploy:
     needs: tests

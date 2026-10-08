@@ -21,6 +21,7 @@ const {
   planRoutage,
   emetEnveloppes,
 } = require('./envelopeRouting');
+const { peutPublier } = require('../../../services/e2eeSettingsService');
 const { getSenderIdentity } = require('../../../utils/senderIdentityCache');
 const { buildSentPayload } = require('../../../utils/sentMessagePayload');
 const { MEDIA_THUMB_SELECT } = require('../../../utils/messageThumbSql');
@@ -263,6 +264,17 @@ const messageSend = (io, socket) => {
       } catch (e) {
         if (!(e instanceof EnveloppeInvalide)) throw e;
         emitSendFailed(socket, { clientId, code: e.code, message: e.message });
+        return;
+      }
+      // Interrupteur fermé, ou compte hors cohorte : un corps chiffré n'a rien
+      // à faire ici. Refusé AVANT l'INSERT, pour la même raison qu'un corps
+      // mal formé.
+      if (chiffre && !(await peutPublier(senderID))) {
+        emitSendFailed(socket, {
+          clientId,
+          code: 'E2EE_INACTIF',
+          message: 'Chiffrement de bout en bout non disponible pour ce compte',
+        });
         return;
       }
 

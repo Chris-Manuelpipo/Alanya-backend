@@ -74,6 +74,11 @@ const ACTIONS = {
   // n'importe quel téléphone, et doit laisser une trace nominative.
   'PUT /security-settings': { action: 'security.settings', targetType: 'settings' },
 
+  // Interrupteur du chiffrement de bout en bout. Chaque palier du déploiement
+  // passe par ici, et une activation ne se défait pas : un fil passé en
+  // chiffré le reste. Qui a ouvert quoi, et quand, doit pouvoir se retrouver.
+  'PUT /e2ee-settings': { action: 'e2ee.settings', targetType: 'settings' },
+
   // Clés de sauvegarde. Les deux gestes les plus lourds de conséquence du
   // système : ils décident de ce qui restera lisible.
   'POST /backup/keys': { action: 'backup.keys.rotate', targetType: 'backup_key' },

@@ -7,6 +7,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const requireE2ee = require('../middleware/requireE2ee');
 const {
   postKeys,
   postSignedPreKey,
@@ -54,7 +55,7 @@ const {
  *       400: { description: Bundle invalide (E2EE_CLE_*, E2EE_OTPK_*) }
  *       409: { description: E2EE_APPAREIL_INCONNU — reconnexion requise }
  */
-router.post('/keys', auth, postKeys);
+router.post('/keys', auth, requireE2ee, postKeys);
 
 /**
  * @swagger
@@ -66,7 +67,7 @@ router.post('/keys', auth, postKeys);
  *     responses:
  *       200: { description: "Tourné, ou déjà en place (`tourne: false`)" }
  */
-router.post('/keys/signed-prekey', auth, postSignedPreKey);
+router.post('/keys/signed-prekey', auth, requireE2ee, postSignedPreKey);
 
 /**
  * @swagger
@@ -78,7 +79,7 @@ router.post('/keys/signed-prekey', auth, postSignedPreKey);
  *     responses:
  *       200: { description: Stock mis à jour }
  */
-router.post('/keys/prekeys', auth, postOneTimePreKeys);
+router.post('/keys/prekeys', auth, requireE2ee, postOneTimePreKeys);
 
 /**
  * @swagger
@@ -90,7 +91,7 @@ router.post('/keys/prekeys', auth, postOneTimePreKeys);
  *     responses:
  *       200: { description: "{ publie, registrationId, signedPreKeyId, otpkLibres }" }
  */
-router.get('/keys/state', auth, getKeysState);
+router.get('/keys/state', auth, requireE2ee, getKeysState);
 
 /**
  * @swagger
@@ -125,7 +126,7 @@ router.get('/keys/state', auth, getKeysState);
  *       400: { description: E2EE_APPAREILS_INVALIDE / E2EE_APPAREILS_TROP }
  *       409: { description: E2EE_APPAREIL_INCONNU — reconnexion requise }
  */
-router.post('/bundles', auth, postBundles);
+router.post('/bundles', auth, requireE2ee, postBundles);
 
 /**
  * @swagger
@@ -150,6 +151,6 @@ router.post('/bundles', auth, postBundles);
  *       404: { description: NOT_A_MEMBER }
  *       409: { description: E2EE_APPAREIL_INCONNU — reconnexion requise }
  */
-router.get('/devices', auth, getConversationDevices);
+router.get('/devices', auth, requireE2ee, getConversationDevices);
 
 module.exports = router;

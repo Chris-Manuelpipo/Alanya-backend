@@ -150,6 +150,7 @@ sont valides mais rendus par le repli lié au statut HTTP.
 ### Chiffrement de bout en bout
 | Code | Statut | Sens |
 |---|---|---|
+| `E2EE_INACTIF` | 404 | Chiffrement fermé pour ce compte (interrupteur `e2ee_settings`, ou compte hors cohorte) : l'application ne publie rien et reste en clair, sans erreur à l'écran ni nouvel essai. Aussi refus d'un envoi chiffré, par `message:send_failed` et en 404 sur `POST /conversations/:id/messages` |
 | `E2EE_APPAREIL_INCONNU` | 409 | Session trop ancienne pour porter une identité de chiffrement : il faut se reconnecter |
 | `E2EE_CLE_MANQUANTE` | 400 | Une clé publique attendue est absente du bundle (`champ` joint) |
 | `E2EE_CLE_TAILLE` | 400 | Clé publique ou signature de taille inattendue (`champ` joint) |
@@ -228,6 +229,7 @@ correctif — un code non traduit ne fait rien afficher de brut.
 - `INVALID_BILLING_SETTING` · `INVALID_BLOCK_TYPE` · `INVALID_CONTACT`
 - `INVALID_CONVERSATION` · `INVALID_CONVERSATION_IDS` · `INVALID_COUNTRY`
 - `INVALID_CREDENTIALS` · `INVALID_CRITERIA` · `INVALID_DEVICE`
+- `INVALID_E2EE_SETTING`
 - `INVALID_EMAIL` · `INVALID_FEATURE` · `INVALID_FORMAT`
 - `INVALID_GENDER` · `INVALID_GIFT` · `INVALID_GRACE`
 - `INVALID_GROUP` · `INVALID_IDS` · `INVALID_JOB`

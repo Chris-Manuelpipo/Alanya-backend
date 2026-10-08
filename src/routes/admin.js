@@ -31,6 +31,10 @@ const {
   getSecuritySettings,
   updateSecuritySettings,
 } = require('../controllers/admin/securitySettings');
+const {
+  getE2eeSettings,
+  updateE2eeSettings,
+} = require('../controllers/admin/e2eeSettings');
 const { getReports, getReportActions, postReportAction } = require('../controllers/admin/reports');
 const {
   adminLogin,
@@ -525,6 +529,70 @@ router.put('/settings',                    adminAuth, requirePermission('setting
 // niveau plus bas.
 router.get('/security-settings',           adminAuth, requirePermission('settings.read'), getSecuritySettings);
 router.put('/security-settings',           adminAuth, requirePermission('settings.write'), updateSecuritySettings);
+
+/**
+ * @swagger
+ * /api/admin/e2ee-settings:
+ *   get:
+ *     summary: État de l'interrupteur du chiffrement de bout en bout
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Crans ouverts et cohorte
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 enrolEnabled:
+ *                   type: boolean
+ *                 activateEnabled:
+ *                   type: boolean
+ *                 cohortPercent:
+ *                   type: integer
+ *                 cohortIds:
+ *                   type: array
+ *                   items:
+ *                     type: integer
+ *                 updatedAt:
+ *                   type: string
+ *   put:
+ *     summary: Ouvre ou ferme un cran, règle la cohorte (super-admin)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               enrolEnabled:
+ *                 type: boolean
+ *               activateEnabled:
+ *                 type: boolean
+ *               cohortPercent:
+ *                 type: integer
+ *                 minimum: 0
+ *                 maximum: 100
+ *               cohortIds:
+ *                 type: array
+ *                 items:
+ *                   type: integer
+ *     responses:
+ *       200:
+ *         description: Interrupteur mis à jour — propagation aux autres instances en 30 s
+ *       400:
+ *         description: Réglage invalide (INVALID_E2EE_SETTING)
+ */
+// Mêmes permissions que le verrouillage d'appareil : `settings.write` est
+// réservée au super-admin, et ouvrir un palier du chiffrement est un geste qui
+// ne se défait pas pour les conversations déjà activées.
+router.get('/e2ee-settings',               adminAuth, requirePermission('settings.read'), getE2eeSettings);
+router.put('/e2ee-settings',               adminAuth, requirePermission('settings.write'), updateE2eeSettings);
 
 /**
  * @swagger

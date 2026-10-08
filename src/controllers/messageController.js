@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { fail } = require('../utils/apiError');
+const { peutPublier } = require('../services/e2eeSettingsService');
 const { deleteMediaFile } = require('../utils/mediaFile');
 const { notifyNewMessage } = require('../services/notificationService');
 const { evaluateDirectMessageSend } = require('../utils/blockUtils');
@@ -462,6 +463,11 @@ const sendMessage = async (req, res, next) => {
       // qu'elle ne le sache pas : c'est ce qui a arrêté les fuites de
       // messages de driver.
       return fail(res, 400, e.code, e.message);
+    }
+    // Même garde que `message:send` : interrupteur fermé ou compte hors
+    // cohorte, un corps chiffré est refusé avant toute écriture.
+    if (chiffre && !(await peutPublier(senderID))) {
+      return fail(res, 404, 'E2EE_INACTIF', 'Chiffrement de bout en bout non disponible pour ce compte');
     }
 
     // Un message chiffré n'a ni `content` ni forcément de `mediaUrl` : son
