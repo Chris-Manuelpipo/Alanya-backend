@@ -70,7 +70,7 @@ function buildSentPayload({
 
     content: content ?? null,
     type: _int(type, 0),
-    // `enc_version` (migration 091) : la graphie de la colonne, puisque
+    // `enc_version` (migration 092) : la graphie de la colonne, puisque
     // `MSG_SELECT` fait `m.*` et que le client lit la même clé qu'il reçoive
     // ce payload construit en mémoire ou une ligne relue. Deux graphies
     // auraient donné un message annoncé chiffré sur un chemin et en clair sur

@@ -1,6 +1,6 @@
--- Migration 091 : corps chiffré et enveloppes par appareil
+-- Migration 092 : corps chiffré et enveloppes par appareil
 --
--- Appliquer après 090. Application MANUELLE, réexécutable (CREATE TABLE IF
+-- Appliquer après 091. Application MANUELLE, réexécutable (CREATE TABLE IF
 -- NOT EXISTS, ajout de colonne gardé par information_schema). AVANT le
 -- déploiement du code : `message:send` écrit dans ces tables dès qu'un client
 -- lui envoie un corps chiffré.

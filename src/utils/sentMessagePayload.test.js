@@ -14,7 +14,7 @@ const { buildSentPayload } = require('./sentMessagePayload');
 // le client sait lire la nouvelle forme.
 const MSG_SELECT_KEYS = [
   'msgID', 'senderID', 'conversationID', 'clientID', 'content', 'type', 'status',
-  // `enc_version` (migration 091). La graphie est celle de la colonne, pas du
+  // `enc_version` (migration 092). La graphie est celle de la colonne, pas du
   // camelCase : `MSG_SELECT` fait `m.*`, donc le client doit lire la même clé
   // qu'il reçoive ce payload construit en mémoire ou une ligne relue.
   'enc_version',

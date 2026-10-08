@@ -1,6 +1,6 @@
--- Migration 092 : le signalement porte son propre extrait
+-- Migration 093 : le signalement porte son propre extrait
 --
--- Appliquer après 091. Application MANUELLE, réexécutable (garde par
+-- Appliquer après 092. Application MANUELLE, réexécutable (garde par
 -- information_schema). AVANT le déploiement du code : `reportService` écrit
 -- ces colonnes dès qu'un client les envoie, et la console de modération les
 -- lit.

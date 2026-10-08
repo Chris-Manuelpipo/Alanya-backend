@@ -8,7 +8,7 @@
  *
  * ── Pourquoi valider les tailles alors que la base les impose déjà ──
  *
- * Les colonnes sont en VARBINARY(32) et VARBINARY(64) (migration 090), donc
+ * Les colonnes sont en VARBINARY(32) et VARBINARY(64) (migration 091), donc
  * une clé trop longue serait refusée par MySQL. Mais le message d'erreur
  * serait « Data too long for column », renvoyé en 500, et le client n'aurait
  * aucun moyen de savoir laquelle de ses douze clés est en cause. Valider ici

@@ -1,5 +1,5 @@
 /**
- * Écriture et lecture de l'annuaire des clés publiques E2EE (migration 090).
+ * Écriture et lecture de l'annuaire des clés publiques E2EE (migration 091).
  *
  * Le serveur n'est ici qu'un annuaire. Il ne chiffre rien, ne déchiffre rien,
  * et ne détient aucune clé privée. Tout ce qu'il peut faire de mal, c'est

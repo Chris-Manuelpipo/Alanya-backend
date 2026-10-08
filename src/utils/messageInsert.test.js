@@ -64,7 +64,7 @@ assert.ok(
 assert.ok(!cols.includes('mediaThumb'), 'mediaThumb ne doit plus faire partie de l\'INSERT message');
 assert.ok(MESSAGE_INSERT_SQL.includes('ON DUPLICATE KEY UPDATE'));
 
-// ── enc_version (migration 091) ───────────────────────────────────────────
+// ── enc_version (migration 092) ───────────────────────────────────────────
 //
 // Elle est DANS l'INSERT et non posée par un UPDATE qui suivrait : entre les
 // deux écritures, une relecture concurrente verrait un message annoncé en

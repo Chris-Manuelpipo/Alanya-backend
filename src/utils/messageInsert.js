@@ -7,7 +7,7 @@
  * la réponse restait en file et ne partait que via le socket à l'ouverture
  * de la discussion.
  *
- * `enc_version` (migration 091) vaut 0 pour un message en clair et 1 quand le
+ * `enc_version` (migration 092) vaut 0 pour un message en clair et 1 quand le
  * corps est chiffré dans `message_e2ee`. Elle est DANS cet INSERT et non
  * posée par un UPDATE qui suivrait : un message existe soit chiffré soit en
  * clair, jamais en clair pendant un instant puis chiffré. Entre les deux

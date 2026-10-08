@@ -1,7 +1,8 @@
--- Migration 090 : clés publiques du chiffrement de bout en bout, par appareil
+-- Migration 091 : clés publiques du chiffrement de bout en bout, par appareil
 --
--- Appliquer après 089. Application MANUELLE, réexécutable sans erreur
--- (CREATE TABLE IF NOT EXISTS). AVANT le déploiement du code qui s'en sert :
+-- Appliquer après 090 (090_abonnement_v2). Application MANUELLE, réexécutable
+-- sans erreur (CREATE TABLE IF NOT EXISTS). AVANT le déploiement du code qui
+-- s'en sert :
 -- les gardes de `routes/e2eeKeys.js` joignent ces tables à chaque publication
 -- de bundle, et l'absence de table rendrait 500 au lieu de 404.
 --
