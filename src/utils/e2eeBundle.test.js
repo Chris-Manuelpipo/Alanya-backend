@@ -101,10 +101,12 @@ refuse(
   'clé à usage unique au mauvais octet de type',
 );
 
-// ── Capacité : obligatoire, de 1 à 3 ─────────────────────────────────────
+// ── Capacité : obligatoire, de 0 à 3 ─────────────────────────────────────
 
 refuse(() => normaliseBundle({ ...bundleValide(), capacite: undefined }), 'E2EE_CAPACITE_INVALIDE', 'capacité absente');
-refuse(() => normaliseBundle({ ...bundleValide(), capacite: 0 }), 'E2EE_CAPACITE_INVALIDE', 'capacité 0');
+refuse(() => normaliseBundle({ ...bundleValide(), capacite: -1 }), 'E2EE_CAPACITE_INVALIDE', 'capacité négative');
+// 0 : une version de transition publie ses clés sans rien savoir déchiffrer.
+assert.strictEqual(normaliseBundle({ ...bundleValide(), capacite: 0 }).capacite, 0);
 refuse(() => normaliseBundle({ ...bundleValide(), capacite: CAPACITE_MAX + 1 }), 'E2EE_CAPACITE_INVALIDE', 'capacité trop haute');
 refuse(() => normaliseBundle({ ...bundleValide(), capacite: 1.5 }), 'E2EE_CAPACITE_INVALIDE', 'capacité non entière');
 assert.strictEqual(normaliseBundle({ ...bundleValide(), capacite: CAPACITE_MAX }).capacite, CAPACITE_MAX);

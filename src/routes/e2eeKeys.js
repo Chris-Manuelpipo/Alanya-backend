@@ -35,7 +35,7 @@ const {
  *             properties:
  *               registrationId: { type: integer, description: 0 à 16383 }
  *               identityKey:    { type: string, description: "clé d'identité Signal : 0x05 + 32 octets, en base64" }
- *               capacite:       { type: integer, description: "1 = texte, 2 = médias, 3 = groupes" }
+ *               capacite:       { type: integer, description: "0 = rien encore, 1 = texte, 2 = médias, 3 = groupes" }
  *               signedPreKey:
  *                 type: object
  *                 required: [keyId, publicKey, signature]

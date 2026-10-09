@@ -75,12 +75,13 @@ CREATE TABLE IF NOT EXISTS e2ee_device_keys (
   -- Clé d'identité Signal (Curve25519, 0x05 + 32 octets). Elle sert au
   -- X3DH ET à vérifier la signature du signed prekey (XEdDSA).
   identity_key           VARBINARY(33) NOT NULL,
-  -- Ce que cette installation sait lire : 1 = texte, 2 = médias, 3 = groupes.
+  -- Ce que cette installation sait lire : 0 = rien encore (clés publiées,
+  -- aucun déchiffrement), 1 = texte, 2 = médias, 3 = groupes.
   -- Un correspondant n'envoie une forme de message qu'aux appareils qui la
   -- comprennent tous ; c'est ce qui remplace un suivi des versions de
   -- l'application, que `appareils` ne fait pas. Une mise à jour de
   -- l'application republie son bundle avec sa nouvelle capacité.
-  capacite               TINYINT       NOT NULL DEFAULT 1,
+  capacite               TINYINT       NOT NULL DEFAULT 0,
   signed_prekey_id       INT UNSIGNED  NOT NULL,
   signed_prekey          VARBINARY(33) NOT NULL,
   signed_prekey_sig      VARBINARY(64) NOT NULL,

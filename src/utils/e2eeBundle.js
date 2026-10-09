@@ -47,8 +47,11 @@ const KEY_ID_MAX = 0xffffff;
 // rester comparable à la littérature du protocole.
 const REGISTRATION_ID_MAX = 16383;
 
-// Ce qu'une installation sait lire : 1 = texte, 2 = médias, 3 = groupes.
-const CAPACITE_MIN = 1;
+// Ce qu'une installation sait lire : 0 = rien encore (elle publie ses clés
+// mais ne déchiffre pas), 1 = texte, 2 = médias, 3 = groupes. Le 0 existe pour
+// les versions de transition : annoncer « texte » avant de savoir le lire
+// ferait recevoir des messages illisibles.
+const CAPACITE_MIN = 0;
 const CAPACITE_MAX = 3;
 
 // Plafond d'un envoi de clés à usage unique. Cent par appareil est déjà
