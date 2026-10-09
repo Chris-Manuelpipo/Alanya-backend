@@ -98,7 +98,14 @@ Depuis `PUT /api/admin/e2ee-settings` (super-admin), jamais en SQL : la route
 journalise qui a ouvert quoi.
 
 1. `{"cohortIds": [<comptes internes>], "enrolEnabled": true}` : les appareils
-   internes publient leurs clés. Rien ne change pour les autres.
+   internes publient leurs clés. Rien ne change pour les autres. Une
+   application de l'étape 1 publie `capacite = 0` : elle ne déchiffre encore
+   rien, et aucune conversation ne doit s'activer avec elle.
+
+   Vérifier : `SELECT appareil_id, alanyaID, capacite, LENGTH(identity_key)
+   FROM e2ee_device_keys;` (33 octets attendus), et le stock de chaque appareil
+   (`SELECT appareil_id, COUNT(*) FROM e2ee_one_time_prekeys WHERE claimed_at
+   IS NULL GROUP BY appareil_id;`, 100 attendus après la première ouverture).
 2. `{"activateEnabled": true}` : seulement quand l'application qui sait
    chiffrer est installée sur tous les appareils internes.
 3. `{"cohortPercent": 1}`, puis 10, 50, 100 : une semaine au moins par palier.
