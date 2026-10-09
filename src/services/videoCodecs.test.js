@@ -35,7 +35,7 @@ const fakeDb = (impl) => {
     assert.strictEqual(await svc.conversationAllowsHevc(42), false, 'un seul bloquant suffit');
   }
   {
-    // Migration 091 pas encore appliquée : la colonne manque.
+    // Migration 095 pas encore appliquée : la colonne manque.
     const svc = createVideoCodecs({
       db: fakeDb(async () => { const e = new Error('Unknown column'); e.code = 'ER_BAD_FIELD_ERROR'; throw e; }),
     });

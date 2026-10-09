@@ -4,7 +4,7 @@
  * Une vidéo compressée en HEVC pèse un tiers de moins qu'en H.264, à qualité
  * égale ; mais un téléphone ancien ou très bon marché peut ne pas la lire.
  * Chaque téléphone déclare donc ce qu'il lit (`appareils.hevc_decode`, migration
- * 091), et l'app demande, avant d'envoyer une vidéo, si la discussion l'accepte.
+ * 095), et l'app demande, avant d'envoyer une vidéo, si la discussion l'accepte.
  *
  * Règle : la discussion accepte le HEVC si AUCUN membre n'a d'appareil actif qui
  * ne le lit pas, ou n'en a pas dit autant.
@@ -22,8 +22,13 @@
 
 const pool = require('../config/db');
 
-/** Un appareil sans activité depuis ce délai ne compte plus. */
-const ACTIVE_DAYS = 60;
+/**
+ * Un appareil sans activité depuis ce délai ne compte plus : passé un mois, il
+ * est considéré comme abandonné (réinstallation, ancien téléphone resté
+ * connecté) et ne prive plus ses discussions du HEVC. S'il revenait sans lire le
+ * HEVC — rare —, seules quelques vidéos ne s'ouvriraient pas sur lui.
+ */
+const ACTIVE_DAYS = 30;
 
 const BLOCKERS_SQL = `
   SELECT COUNT(*) AS bloquants
