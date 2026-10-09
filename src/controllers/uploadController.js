@@ -172,7 +172,7 @@ const uploadTicket = async (req, res) => {
     return fail(res, 400, 'VALIDATION_FAILED', 'Taille de fichier invalide');
   }
   // Une photo de profil a son plafond ; un média, celui du palier du compte
-  // (50 Mo, 200 Mo pour qui a payé — voir uploadLimits.js).
+  // (100 Mo, 200 Mo pour qui a payé — voir uploadLimits.js).
   const maxBytes = avatar ? AVATAR_MAX_BYTES : (await limitsFor(req.user.alanyaID)).maxUploadBytes;
   if (octets > maxBytes) {
     return fail(res, 413, 'FILE_TOO_LARGE', 'Fichier trop volumineux', { maxBytes });

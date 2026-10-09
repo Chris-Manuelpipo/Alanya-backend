@@ -7,9 +7,9 @@
  * inutile : hors phase payante, tout le monde est au palier standard (réglages
  * en cache 30 s). Sinon une lecture du compte, retenue au plus une minute et
  * jusqu'à la fin de l'abonnement qui couvre — un abonnement qui finit ne laisse
- * pas passer un fichier de plus de 50 Mo une minute de trop.
+ * pas passer un fichier de plus de 100 Mo une minute de trop.
  *
- * Une panne de la base donne le palier standard : refuser un fichier de 80 Mo à
+ * Une panne de la base donne le palier standard : refuser un fichier de 150 Mo à
  * un abonné le temps d'une panne est un moindre mal que d'en laisser passer un
  * de 200 Mo à qui n'a pas payé.
  */

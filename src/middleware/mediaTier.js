@@ -5,7 +5,7 @@ const { limitsFor } = require('../services/billing/uploadLimits');
 const MULTIPART_OVERHEAD = 1024 * 1024;
 
 /**
- * Plafond d'envoi d'un média, selon le palier du compte (50 Mo, 200 Mo pour qui
+ * Plafond d'envoi d'un média, selon le palier du compte (100 Mo, 200 Mo pour qui
  * a payé). À poser AVANT multer : un envoi manifestement trop gros est refusé
  * sur sa seule taille annoncée, sans que le fichier soit écrit en transit.
  *
