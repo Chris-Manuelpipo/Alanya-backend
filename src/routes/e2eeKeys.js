@@ -9,6 +9,7 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const requireE2ee = require('../middleware/requireE2ee');
 const {
+  deleteKeys,
   postKeys,
   postSignedPreKey,
   postOneTimePreKeys,
@@ -60,6 +61,21 @@ router.post('/keys', auth, requireE2ee, postKeys);
 
 /**
  * @swagger
+ * /api/e2ee/keys:
+ *   delete:
+ *     summary: Retire l'identité de chiffrement de cet appareil (déconnexion)
+ *     tags: [E2EE]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200: { description: "{ retire: boolean } — toujours 200, même sans bundle publié" }
+ *       409: { description: E2EE_APPAREIL_INCONNU — reconnexion requise }
+ */
+// Sans `requireE2ee` : retirer est toujours permis, y compris après qu'un
+// palier a été refermé.
+router.delete('/keys', auth, deleteKeys);
+
+/**
+ * @swagger
  * /api/e2ee/keys/signed-prekey:
  *   post:
  *     summary: Tourne le signed prekey de cet appareil (l'ancien reste servi)
@@ -90,7 +106,8 @@ router.post('/keys/prekeys', auth, requireE2ee, postOneTimePreKeys);
  *     tags: [E2EE]
  *     security: [{ bearerAuth: [] }]
  *     responses:
- *       200: { description: "{ publie, registrationId, signedPreKeyId, otpkLibres }" }
+ *       200: { description: "{ appareilId, publie, registrationId, identityKey, capacite, signedPreKeyId, otpkLibres, seuil, regarnissageNecessaire }" }
+ *       404: { description: E2EE_INACTIF — chiffrement fermé pour ce compte }
  */
 router.get('/keys/state', auth, requireE2ee, getKeysState);
 

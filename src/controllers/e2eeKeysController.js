@@ -14,6 +14,7 @@ const {
   tourneSignedPreKey,
   regarnitOneTimePreKeys,
   etatDesCles,
+  retireClesAppareils,
 } = require('../services/e2eeKeyService');
 const {
   serviceBundles,
@@ -91,15 +92,37 @@ const postOneTimePreKeys = async (req, res) => {
   }
 };
 
-/** GET /api/e2ee/keys/state — bundle publié ? combien de clés en stock ? */
+/**
+ * GET /api/e2ee/keys/state — bundle publié ? combien de clés en stock ?
+ *
+ * Rend aussi `appareilId` : l'application ne le connaît pas autrement (il
+ * n'est que dans le jeton), et c'est à lui qu'elle attache son coffre local.
+ * Un coffre écrit pour un autre appareil — ligne révoquée puis recréée, autre
+ * compte sur le même téléphone — doit être jeté, pas republié.
+ */
 const getKeysState = async (req, res) => {
   const appareilId = exigeAppareil(req, res);
   if (appareilId == null) return;
   try {
-    res.json(await etatDesCles(appareilId));
+    res.json({ appareilId, ...(await etatDesCles(appareilId)) });
   } catch (e) {
     repondErreur(res, e, 'état');
   }
+};
+
+/**
+ * DELETE /api/e2ee/keys — retire l'identité de cet appareil.
+ *
+ * Appelé à la déconnexion, qui vide le coffre local : laisser le bundle
+ * publié ferait chiffrer les correspondants pour une identité dont plus
+ * personne ne détient la privée (docs/e2ee, chapitre 22). Pas de garde
+ * d'interrupteur : retirer est toujours permis, même chiffrement fermé.
+ */
+const deleteKeys = async (req, res) => {
+  const appareilId = exigeAppareil(req, res);
+  if (appareilId == null) return;
+  const retires = await retireClesAppareils([appareilId]);
+  res.json({ retire: retires > 0 });
 };
 
 /**
@@ -166,6 +189,7 @@ const getConversationDevices = async (req, res) => {
 };
 
 module.exports = {
+  deleteKeys,
   postKeys,
   postSignedPreKey,
   postOneTimePreKeys,
