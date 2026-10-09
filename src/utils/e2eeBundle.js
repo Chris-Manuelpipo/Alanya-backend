@@ -8,33 +8,48 @@
  *
  * ── Pourquoi valider les tailles alors que la base les impose déjà ──
  *
- * Les colonnes sont en VARBINARY(32) et VARBINARY(64) (migration 091), donc
+ * Les colonnes sont en VARBINARY(33) et VARBINARY(64) (migration 091), donc
  * une clé trop longue serait refusée par MySQL. Mais le message d'erreur
  * serait « Data too long for column », renvoyé en 500, et le client n'aurait
  * aucun moyen de savoir laquelle de ses douze clés est en cause. Valider ici
  * rend un 400 nommé, avec le champ fautif.
  *
- * Surtout, MySQL ne refuse PAS une clé trop COURTE : une clé X25519 de 20
- * octets entrerait sans un mot. Elle serait publiée, servie, et tous les
- * amorçages X3DH qui s'appuieraient dessus échoueraient — côté destinataire,
+ * Surtout, MySQL ne refuse PAS une clé trop COURTE : une clé de 20 octets
+ * entrerait sans un mot. Elle serait publiée, servie, et tous les amorçages
+ * X3DH qui s'appuieraient dessus échoueraient — côté destinataire,
  * silencieusement, des jours plus tard. C'est précisément le genre de panne
  * qu'une vérification de longueur à l'entrée supprime.
+ *
+ * ── Le format est celui de Signal ──
+ *
+ * Les clés viennent de `libsignal_protocol_dart`. Une clé publique sérialisée
+ * y fait 33 octets : l'octet de type 0x05 (« DJB », Curve25519) puis les 32
+ * octets de la clé. On vérifie aussi cet octet : une clé de 33 octets qui ne
+ * commence pas par 0x05 a été produite par autre chose que la bibliothèque, et
+ * la bibliothèque du correspondant la refuserait au moment d'ouvrir la session
+ * — loin d'ici, avec une erreur qui parle de clé invalide sans dire laquelle
+ * (docs/e2ee, chapitre 8 : « vérifiez explicitement ce qui est implicite »).
  */
 
-// Tailles du protocole. X25519 et Ed25519 ont la même taille de clé publique
-// (32 octets) ; une signature Ed25519 en fait 64.
-const CLE_PUBLIQUE_OCTETS = 32;
+// Tailles du protocole Signal : clé publique Curve25519 précédée de son octet
+// de type, signature XEdDSA.
+const CLE_PUBLIQUE_OCTETS = 33;
+const TYPE_DJB = 0x05;
 const SIGNATURE_OCTETS = 64;
 
-// `keyId` sur 16 bits : c'est ce que le client tire au hasard, et ce que
-// l'en-tête d'amorçage transporte. Au-delà, la valeur ne tiendrait plus dans
-// l'en-tête sans l'élargir — et 65 536 identifiants suffisent très largement
-// pour un stock qui plafonne à 100.
-const KEY_ID_MAX = 0xffff;
+// `keyId` sur 24 bits : la borne de Signal (`Medium.MAX_VALUE`). Le client les
+// tire d'un COMPTEUR, jamais au hasard — deux lots tirés au hasard peuvent se
+// chevaucher, et le doublon écraserait une clé encore publiée (docs/e2ee,
+// chapitre 13).
+const KEY_ID_MAX = 0xffffff;
 
 // `registrationId` : même borne que Signal (14 bits), par convention et pour
 // rester comparable à la littérature du protocole.
 const REGISTRATION_ID_MAX = 16383;
+
+// Ce qu'une installation sait lire : 1 = texte, 2 = médias, 3 = groupes.
+const CAPACITE_MIN = 1;
+const CAPACITE_MAX = 3;
 
 // Plafond d'un envoi de clés à usage unique. Cent par appareil est déjà
 // confortable (le client regarnit dès qu'il tombe sous 20) ; sans plafond, un
@@ -51,14 +66,14 @@ class BundleInvalide extends Error {
 }
 
 /**
- * Décode une clé publique base64 et vérifie sa taille exacte.
+ * Décode une valeur base64 et vérifie sa taille exacte.
  *
  * `Buffer.from(x, 'base64')` ne signale JAMAIS une entrée invalide : il
  * ignore les caractères hors alphabet et rend ce qu'il a pu lire. Comparer la
  * longueur du résultat est donc la seule façon de détecter une base64
  * abîmée — et c'est aussi ce qui attrape la clé tronquée.
  */
-function decodeCle(valeur, champ, octetsAttendus = CLE_PUBLIQUE_OCTETS) {
+function decodeOctets(valeur, champ, octetsAttendus) {
   if (typeof valeur !== 'string' || valeur === '') {
     throw new BundleInvalide('E2EE_CLE_MANQUANTE', `${champ} requis`, champ);
   }
@@ -71,6 +86,24 @@ function decodeCle(valeur, champ, octetsAttendus = CLE_PUBLIQUE_OCTETS) {
     );
   }
   return buf;
+}
+
+/** Clé publique Signal : 33 octets, et l'octet de type Curve25519 en tête. */
+function decodeCle(valeur, champ) {
+  const buf = decodeOctets(valeur, champ, CLE_PUBLIQUE_OCTETS);
+  if (buf[0] !== TYPE_DJB) {
+    throw new BundleInvalide(
+      'E2EE_CLE_TYPE',
+      `${champ} doit commencer par l'octet de type 0x05 (Curve25519)`,
+      champ,
+    );
+  }
+  return buf;
+}
+
+/** Signature XEdDSA : 64 octets, sans octet de type. */
+function decodeSignature(valeur, champ) {
+  return decodeOctets(valeur, champ, SIGNATURE_OCTETS);
 }
 
 /** Entier dans [0, max], refusé sinon. */
@@ -103,7 +136,7 @@ function normaliseSignedPreKey(entree, prefixe = 'signedPreKey') {
   return {
     keyId: entierBorne(entree.keyId, `${prefixe}.keyId`, KEY_ID_MAX),
     publicKey: decodeCle(entree.publicKey, `${prefixe}.publicKey`),
-    signature: decodeCle(entree.signature, `${prefixe}.signature`, SIGNATURE_OCTETS),
+    signature: decodeSignature(entree.signature, `${prefixe}.signature`),
   };
 }
 
@@ -171,11 +204,29 @@ function normaliseBundle(corps = {}) {
     registrationId: entierBorne(
       corps.registrationId, 'registrationId', REGISTRATION_ID_MAX,
     ),
-    identityKeyDh: decodeCle(corps.identityKeyDh, 'identityKeyDh'),
-    identityKeySign: decodeCle(corps.identityKeySign, 'identityKeySign'),
+    identityKey: decodeCle(corps.identityKey, 'identityKey'),
+    capacite: normaliseCapacite(corps.capacite),
     signedPreKey: normaliseSignedPreKey(corps.signedPreKey),
     oneTimePreKeys: normaliseOneTimePreKeys(corps.oneTimePreKeys),
   };
+}
+
+/**
+ * Capacité de l'installation, obligatoire.
+ *
+ * Pas de valeur par défaut : une application qui publie sans dire ce qu'elle
+ * sait lire recevrait des formes de message qu'elle afficherait en charabia.
+ */
+function normaliseCapacite(valeur) {
+  const n = Number(valeur);
+  if (!Number.isInteger(n) || n < CAPACITE_MIN || n > CAPACITE_MAX) {
+    throw new BundleInvalide(
+      'E2EE_CAPACITE_INVALIDE',
+      `capacite doit être un entier de ${CAPACITE_MIN} à ${CAPACITE_MAX}`,
+      'capacite',
+    );
+  }
+  return n;
 }
 
 /** Rend un bundle lu en base sous la forme attendue par le client. */
@@ -184,8 +235,8 @@ function bundleSortie(ligne, oneTimePreKey = null) {
     appareilId: Number(ligne.appareil_id),
     alanyaID: Number(ligne.alanyaID),
     registrationId: Number(ligne.registration_id),
-    identityKeyDh: ligne.identity_key_dh.toString('base64'),
-    identityKeySign: ligne.identity_key_sign.toString('base64'),
+    identityKey: ligne.identity_key.toString('base64'),
+    capacite: Number(ligne.capacite),
     signedPreKey: {
       keyId: Number(ligne.signed_prekey_id),
       publicKey: ligne.signed_prekey.toString('base64'),
@@ -217,12 +268,17 @@ function bundleSortie(ligne, oneTimePreKey = null) {
 module.exports = {
   BundleInvalide,
   CLE_PUBLIQUE_OCTETS,
+  TYPE_DJB,
   SIGNATURE_OCTETS,
   KEY_ID_MAX,
   REGISTRATION_ID_MAX,
+  CAPACITE_MIN,
+  CAPACITE_MAX,
   OTPK_PAR_ENVOI_MAX,
   decodeCle,
+  decodeSignature,
   entierBorne,
+  normaliseCapacite,
   normaliseSignedPreKey,
   normaliseOneTimePreKeys,
   normaliseBundle,

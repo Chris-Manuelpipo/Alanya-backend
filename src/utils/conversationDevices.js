@@ -38,8 +38,10 @@ const pool = require('./../config/db');
  * @param {Set|Array} p.avecCles      identifiants d'appareils ayant un bundle
  * @param {number}   p.moiId          compte appelant
  * @param {number}   p.monAppareilId  appareil appelant (exclu des cibles)
+ * @param {Map}      [p.details]      appareilId → `{ identityKey, capacite }`,
+ *   recopiés sur chaque cible quand ils sont fournis
  */
-function evalueCibles({ appareils, avecCles, moiId, monAppareilId }) {
+function evalueCibles({ appareils, avecCles, moiId, monAppareilId, details }) {
   const cles = avecCles instanceof Set ? avecCles : new Set((avecCles || []).map(Number));
   const moi = Number(moiId);
   const monAppareil = Number(monAppareilId);
@@ -59,7 +61,10 @@ function evalueCibles({ appareils, avecCles, moiId, monAppareilId }) {
     const aDesCles = cles.has(appareilId);
 
     if (aDesCles) {
-      cibles.push({ appareilId, alanyaID, estMoi });
+      const d = details && details.get(appareilId);
+      cibles.push(d
+        ? { appareilId, alanyaID, estMoi, identityKey: d.identityKey, capacite: d.capacite }
+        : { appareilId, alanyaID, estMoi });
     } else if (estMoi) {
       mesAppareilsSansCles.push(appareilId);
     } else {
@@ -98,8 +103,16 @@ async function appareilsDeConversation(conversationID, moiId, monAppareilId) {
   // pour chacun la présence d'un bundle. La jointure gauche sur
   // `e2ee_device_keys` évite une seconde lecture pour distinguer
   // « appareil connu sans clés » de « appareil absent ».
+  //
+  // La clé d'identité et la capacité viennent avec, et c'est voulu : elles
+  // sont publiques, et elles permettent au client de ne demander un bundle —
+  // donc de ne consommer une clé à usage unique — que pour les appareils
+  // sans session, ou dont l'identité a changé depuis (réinstallation). Sans
+  // elles, il faudrait demander le bundle pour savoir, c'est-à-dire
+  // consommer pour lire (docs/e2ee, chapitre 13).
   const [appareils] = await pool.execute(
-    `SELECT a.id, a.alanyaID, (k.appareil_id IS NOT NULL) AS a_des_cles
+    `SELECT a.id, a.alanyaID, (k.appareil_id IS NOT NULL) AS a_des_cles,
+            k.identity_key, k.capacite
        FROM conv_participants p
        JOIN appareils a ON a.alanyaID = p.alanyaID AND a.revoked_at IS NULL
        LEFT JOIN e2ee_device_keys k ON k.appareil_id = a.id
@@ -110,10 +123,18 @@ async function appareilsDeConversation(conversationID, moiId, monAppareilId) {
   const avecCles = new Set(
     appareils.filter((a) => Number(a.a_des_cles) === 1).map((a) => Number(a.id)),
   );
+  const details = new Map(
+    appareils
+      .filter((a) => Number(a.a_des_cles) === 1 && a.identity_key)
+      .map((a) => [Number(a.id), {
+        identityKey: a.identity_key.toString('base64'),
+        capacite: Number(a.capacite),
+      }]),
+  );
 
   return {
     conversationID: Number(conversationID),
-    ...evalueCibles({ appareils, avecCles, moiId, monAppareilId }),
+    ...evalueCibles({ appareils, avecCles, moiId, monAppareilId, details }),
   };
 }
 

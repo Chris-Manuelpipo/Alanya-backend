@@ -14,6 +14,7 @@ const {
   BundleInvalide,
   KEY_ID_MAX,
   REGISTRATION_ID_MAX,
+  CAPACITE_MAX,
   OTPK_PAR_ENVOI_MAX,
   normaliseBundle,
   normaliseOneTimePreKeys,
@@ -22,17 +23,19 @@ const {
 } = require('./e2eeBundle');
 
 const b64 = (n, remplissage = 7) => Buffer.alloc(n, remplissage).toString('base64');
-const cle = () => b64(32);
+/** Clé publique Signal : l'octet de type 0x05, puis 32 octets. */
+const brute = (remplissage = 7) => Buffer.concat([Buffer.from([0x05]), Buffer.alloc(32, remplissage)]);
+const cle = (remplissage = 7) => brute(remplissage).toString('base64');
 const sig = () => b64(64);
 
 const bundleValide = () => ({
   registrationId: 4242,
-  identityKeyDh: cle(),
-  identityKeySign: b64(32, 9),
-  signedPreKey: { keyId: 17, publicKey: b64(32, 11), signature: sig() },
+  identityKey: cle(),
+  capacite: 1,
+  signedPreKey: { keyId: 17, publicKey: cle(11), signature: sig() },
   oneTimePreKeys: [
-    { keyId: 1, publicKey: b64(32, 1) },
-    { keyId: 2, publicKey: b64(32, 2) },
+    { keyId: 1, publicKey: cle(1) },
+    { keyId: 2, publicKey: cle(2) },
   ],
 });
 
@@ -53,8 +56,9 @@ function refuse(fn, code, propos) {
 
 const b = normaliseBundle(bundleValide());
 assert.strictEqual(b.registrationId, 4242);
-assert.strictEqual(b.identityKeyDh.length, 32, 'identityKeyDh doit faire 32 octets');
-assert.strictEqual(b.identityKeySign.length, 32, 'identityKeySign doit faire 32 octets');
+assert.strictEqual(b.identityKey.length, 33, 'identityKey doit faire 33 octets');
+assert.strictEqual(b.identityKey[0], 0x05, 'et commencer par l\'octet de type Curve25519');
+assert.strictEqual(b.capacite, 1);
 assert.strictEqual(b.signedPreKey.signature.length, 64, 'la signature doit faire 64 octets');
 assert.strictEqual(b.oneTimePreKeys.length, 2);
 assert.ok(Buffer.isBuffer(b.oneTimePreKeys[0].publicKey), 'les OTPK doivent être des Buffer');
@@ -62,25 +66,53 @@ assert.ok(Buffer.isBuffer(b.oneTimePreKeys[0].publicKey), 'les OTPK doivent êtr
 // ── La clé trop courte : la raison d'être de ce fichier ───────────────────
 
 refuse(
-  () => normaliseBundle({ ...bundleValide(), identityKeyDh: b64(20) }),
+  () => normaliseBundle({ ...bundleValide(), identityKey: b64(20) }),
   'E2EE_CLE_TAILLE',
-  'clé X25519 de 20 octets',
+  'clé de 20 octets',
 );
 refuse(
-  () => normaliseBundle({ ...bundleValide(), identityKeyDh: b64(64) }),
+  () => normaliseBundle({ ...bundleValide(), identityKey: b64(32) }),
   'E2EE_CLE_TAILLE',
-  'clé X25519 de 64 octets',
+  'clé Curve25519 nue, sans son octet de type',
+);
+refuse(
+  () => normaliseBundle({ ...bundleValide(), identityKey: b64(64) }),
+  'E2EE_CLE_TAILLE',
+  'clé de 64 octets',
 );
 refuse(
   () => normaliseSignedPreKey({ keyId: 1, publicKey: cle(), signature: b64(32) }),
   'E2EE_CLE_TAILLE',
-  'signature Ed25519 de 32 octets',
+  'signature de 32 octets',
 );
+
+// ── Le bon nombre d'octets, mais pas une clé Signal ───────────────────────
+//
+// 33 octets qui ne commencent pas par 0x05 : la bibliothèque du correspondant
+// la refuserait à l'ouverture de session, loin d'ici.
+refuse(
+  () => normaliseBundle({ ...bundleValide(), identityKey: b64(33) }),
+  'E2EE_CLE_TYPE',
+  'clé de 33 octets sans octet de type',
+);
+refuse(
+  () => normaliseOneTimePreKeys([{ keyId: 1, publicKey: b64(33, 5).replace(/^B/, 'C') }]),
+  'E2EE_CLE_TYPE',
+  'clé à usage unique au mauvais octet de type',
+);
+
+// ── Capacité : obligatoire, de 1 à 3 ─────────────────────────────────────
+
+refuse(() => normaliseBundle({ ...bundleValide(), capacite: undefined }), 'E2EE_CAPACITE_INVALIDE', 'capacité absente');
+refuse(() => normaliseBundle({ ...bundleValide(), capacite: 0 }), 'E2EE_CAPACITE_INVALIDE', 'capacité 0');
+refuse(() => normaliseBundle({ ...bundleValide(), capacite: CAPACITE_MAX + 1 }), 'E2EE_CAPACITE_INVALIDE', 'capacité trop haute');
+refuse(() => normaliseBundle({ ...bundleValide(), capacite: 1.5 }), 'E2EE_CAPACITE_INVALIDE', 'capacité non entière');
+assert.strictEqual(normaliseBundle({ ...bundleValide(), capacite: CAPACITE_MAX }).capacite, CAPACITE_MAX);
 
 // Base64 abîmée : `Buffer.from` ne signale rien, il rend ce qu'il a pu lire.
 // C'est encore la longueur qui l'attrape.
 refuse(
-  () => normaliseBundle({ ...bundleValide(), identityKeySign: 'pas du base64 !!' }),
+  () => normaliseBundle({ ...bundleValide(), identityKey: 'pas du base64 !!' }),
   'E2EE_CLE_TAILLE',
   'base64 invalide',
 );
@@ -88,9 +120,9 @@ refuse(
 // ── Champs manquants ──────────────────────────────────────────────────────
 
 refuse(
-  () => normaliseBundle({ ...bundleValide(), identityKeyDh: undefined }),
+  () => normaliseBundle({ ...bundleValide(), identityKey: undefined }),
   'E2EE_CLE_MANQUANTE',
-  'identityKeyDh absent',
+  'identityKey absent',
 );
 refuse(
   () => normaliseBundle({ ...bundleValide(), signedPreKey: undefined }),
@@ -98,9 +130,9 @@ refuse(
   'signedPreKey absent',
 );
 refuse(
-  () => normaliseBundle({ ...bundleValide(), identityKeyDh: '' }),
+  () => normaliseBundle({ ...bundleValide(), identityKey: '' }),
   'E2EE_CLE_MANQUANTE',
-  'identityKeyDh vide',
+  'identityKey vide',
 );
 
 // ── Bornes des identifiants ───────────────────────────────────────────────
@@ -139,7 +171,7 @@ assert.deepStrictEqual(normaliseOneTimePreKeys([]), []);
 refuse(
   () => normaliseOneTimePreKeys([
     { keyId: 5, publicKey: cle() },
-    { keyId: 5, publicKey: b64(32, 3) },
+    { keyId: 5, publicKey: cle(3) },
   ]),
   'E2EE_OTPK_DOUBLON',
   'keyId en double',
@@ -173,10 +205,10 @@ const ligne = {
   appareil_id: 12,
   alanyaID: 34,
   registration_id: 4242,
-  identity_key_dh: Buffer.alloc(32, 7),
-  identity_key_sign: Buffer.alloc(32, 9),
+  identity_key: brute(7),
+  capacite: 2,
   signed_prekey_id: 17,
-  signed_prekey: Buffer.alloc(32, 11),
+  signed_prekey: brute(11),
   signed_prekey_sig: Buffer.alloc(64, 13),
   prev_signed_prekey_id: null,
   prev_signed_prekey: null,
@@ -185,7 +217,8 @@ const ligne = {
 
 const sortieSansOtpk = bundleSortie(ligne, null);
 assert.strictEqual(sortieSansOtpk.appareilId, 12);
-assert.strictEqual(sortieSansOtpk.identityKeyDh, b64(32, 7));
+assert.strictEqual(sortieSansOtpk.identityKey, cle(7));
+assert.strictEqual(sortieSansOtpk.capacite, 2);
 assert.strictEqual(sortieSansOtpk.signedPreKey.keyId, 17);
 // `null` explicite, jamais absent : le client doit pouvoir distinguer « pas
 // de clé à usage unique disponible » d'un champ qu'il aurait oublié de lire.
@@ -203,24 +236,24 @@ const sortieAvecPrev = bundleSortie(
   {
     ...ligne,
     prev_signed_prekey_id: 16,
-    prev_signed_prekey: Buffer.alloc(32, 21),
+    prev_signed_prekey: brute(21),
     prev_signed_prekey_sig: Buffer.alloc(64, 23),
   },
-  { key_id: 3, public_key: Buffer.alloc(32, 5) },
+  { key_id: 3, public_key: brute(5) },
 );
 assert.strictEqual(sortieAvecPrev.prevSignedPreKey.keyId, 16);
 assert.strictEqual(sortieAvecPrev.oneTimePreKey.keyId, 3);
-assert.strictEqual(sortieAvecPrev.oneTimePreKey.publicKey, b64(32, 5));
+assert.strictEqual(sortieAvecPrev.oneTimePreKey.publicKey, cle(5));
 
 // Aller-retour : ce que le serveur rend se redécode aux mêmes octets que ce
 // qu'il a reçu. Sans cette vérification, une erreur d'encodage ne se verrait
 // qu'au premier message illisible.
 const allerRetour = normaliseBundle({
   ...bundleValide(),
-  identityKeyDh: sortieSansOtpk.identityKeyDh,
+  identityKey: sortieSansOtpk.identityKey,
 });
 assert.ok(
-  allerRetour.identityKeyDh.equals(ligne.identity_key_dh),
+  allerRetour.identityKey.equals(ligne.identity_key),
   'base64 → Buffer → base64 doit rendre les mêmes octets',
 );
 

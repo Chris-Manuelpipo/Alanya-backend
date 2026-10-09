@@ -30,18 +30,18 @@ const {
  *         application/json:
  *           schema:
  *             type: object
- *             required: [registrationId, identityKeyDh, identityKeySign, signedPreKey]
+ *             required: [registrationId, identityKey, capacite, signedPreKey]
  *             properties:
- *               registrationId:  { type: integer, description: 0 à 16383 }
- *               identityKeyDh:   { type: string, description: X25519 publique, 32 octets en base64 }
- *               identityKeySign: { type: string, description: Ed25519 publique, 32 octets en base64 }
+ *               registrationId: { type: integer, description: 0 à 16383 }
+ *               identityKey:    { type: string, description: "clé d'identité Signal : 0x05 + 32 octets, en base64" }
+ *               capacite:       { type: integer, description: "1 = texte, 2 = médias, 3 = groupes" }
  *               signedPreKey:
  *                 type: object
  *                 required: [keyId, publicKey, signature]
  *                 properties:
- *                   keyId:     { type: integer }
- *                   publicKey: { type: string }
- *                   signature: { type: string, description: 64 octets en base64 }
+ *                   keyId:     { type: integer, description: 0 à 16777215 }
+ *                   publicKey: { type: string, description: "0x05 + 32 octets, en base64" }
+ *                   signature: { type: string, description: "XEdDSA, 64 octets en base64" }
  *               oneTimePreKeys:
  *                 type: array
  *                 maxItems: 100
@@ -52,7 +52,8 @@ const {
  *                     publicKey: { type: string }
  *     responses:
  *       200: { description: Bundle publié }
- *       400: { description: Bundle invalide (E2EE_CLE_*, E2EE_OTPK_*) }
+ *       400: { description: Bundle invalide (E2EE_CLE_*, E2EE_CAPACITE_INVALIDE, E2EE_OTPK_*) }
+ *       404: { description: E2EE_INACTIF — chiffrement fermé pour ce compte }
  *       409: { description: E2EE_APPAREIL_INCONNU — reconnexion requise }
  */
 router.post('/keys', auth, requireE2ee, postKeys);

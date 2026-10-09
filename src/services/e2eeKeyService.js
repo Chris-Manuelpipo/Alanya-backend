@@ -13,6 +13,15 @@ const { normaliseBundle, normaliseSignedPreKey, normaliseOneTimePreKeys } =
   require('../utils/e2eeBundle');
 
 /**
+ * Sous ce stock de clés à usage unique, le serveur réclame un regarnissage.
+ *
+ * C'est le SERVEUR qui réclame, et le client qui obéit (docs/e2ee, chapitres
+ * 5 et 10) : un stock vide ne gêne pas son propriétaire, ce sont les autres
+ * qui n'arrivent plus à amorcer une session — panne muette s'il en est.
+ */
+const SEUIL_REGARNISSAGE = 20;
+
+/**
  * Insère un lot de clés à usage unique.
  *
  * `ON DUPLICATE KEY UPDATE` sur `public_key` plutôt qu'`IGNORE` : un client
@@ -67,7 +76,7 @@ async function publieBundle(appareilId, alanyaID, corps) {
     await conn.beginTransaction();
 
     const [existant] = await conn.execute(
-      `SELECT registration_id, identity_key_dh FROM e2ee_device_keys
+      `SELECT registration_id, identity_key FROM e2ee_device_keys
         WHERE appareil_id = ? FOR UPDATE`,
       [appareilId],
     );
@@ -77,19 +86,19 @@ async function publieBundle(appareilId, alanyaID, corps) {
     // de laisser passer la réinstallation qui aurait eu cette malchance.
     const nouvelleInstallation = existant.length > 0 && (
       Number(existant[0].registration_id) !== b.registrationId
-      || !existant[0].identity_key_dh.equals(b.identityKeyDh)
+      || !existant[0].identity_key.equals(b.identityKey)
     );
 
     await conn.execute(
       `INSERT INTO e2ee_device_keys
          (appareil_id, alanyaID, registration_id,
-          identity_key_dh, identity_key_sign,
+          identity_key, capacite,
           signed_prekey_id, signed_prekey, signed_prekey_sig)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          registration_id        = VALUES(registration_id),
-         identity_key_dh        = VALUES(identity_key_dh),
-         identity_key_sign      = VALUES(identity_key_sign),
+         identity_key           = VALUES(identity_key),
+         capacite               = VALUES(capacite),
          signed_prekey_id       = VALUES(signed_prekey_id),
          signed_prekey          = VALUES(signed_prekey),
          signed_prekey_sig      = VALUES(signed_prekey_sig),
@@ -99,7 +108,7 @@ async function publieBundle(appareilId, alanyaID, corps) {
          prev_retired_at        = NULL`,
       [
         appareilId, alanyaID, b.registrationId,
-        b.identityKeyDh, b.identityKeySign,
+        b.identityKey, b.capacite,
         b.signedPreKey.keyId, b.signedPreKey.publicKey, b.signedPreKey.signature,
       ],
     );
@@ -124,7 +133,7 @@ async function publieBundle(appareilId, alanyaID, corps) {
       appareilId,
       registrationId: b.registrationId,
       nouvelleInstallation,
-      otpkLibres: Number(stock.libres),
+      ...etatDuStock(Number(stock.libres)),
     };
   } catch (e) {
     await conn.rollback().catch(() => {});
@@ -176,7 +185,7 @@ async function regarnitOneTimePreKeys(appareilId, corps) {
       [appareilId],
     );
     await conn.commit();
-    return { deposees: cles.length, otpkLibres: Number(stock.libres) };
+    return { deposees: cles.length, ...etatDuStock(Number(stock.libres)) };
   } catch (e) {
     await conn.rollback().catch(() => {});
     throw e;
@@ -185,33 +194,81 @@ async function regarnitOneTimePreKeys(appareilId, corps) {
   }
 }
 
+/** Le stock, et ce que le client doit en faire. */
+function etatDuStock(libres) {
+  return {
+    otpkLibres: libres,
+    seuil: SEUIL_REGARNISSAGE,
+    regarnissageNecessaire: libres < SEUIL_REGARNISSAGE,
+  };
+}
+
 /**
  * État du stock de cet appareil.
  *
  * `publie` dit si un bundle existe : c'est ce qui permet au client de savoir
- * qu'il doit publier (première ouverture après mise à jour) sans tenter une
- * publication à chaque démarrage.
+ * qu'il doit publier (première ouverture après mise à jour, ou appareil que le
+ * serveur a oublié — docs/e2ee, chapitre 22) sans tenter une publication à
+ * chaque démarrage. `identityKey` lui permet de vérifier que le bundle publié
+ * est bien le SIEN : après une réinstallation qui aurait gardé la même ligne
+ * d'appareil, le serveur détiendrait encore l'identité précédente.
  */
 async function etatDesCles(appareilId) {
   const [[ligne]] = await pool.execute(
-    `SELECT k.registration_id, k.signed_prekey_id, k.updated_at,
+    `SELECT k.registration_id, k.identity_key, k.capacite, k.signed_prekey_id,
+            k.updated_at,
             (SELECT COUNT(*) FROM e2ee_one_time_prekeys o
               WHERE o.appareil_id = k.appareil_id AND o.claimed_at IS NULL) AS libres
        FROM e2ee_device_keys k
       WHERE k.appareil_id = ?`,
     [appareilId],
   );
-  if (!ligne) return { publie: false, otpkLibres: 0 };
+  if (!ligne) return { publie: false, ...etatDuStock(0) };
   return {
     publie: true,
     registrationId: Number(ligne.registration_id),
+    identityKey: ligne.identity_key.toString('base64'),
+    capacite: Number(ligne.capacite),
     signedPreKeyId: Number(ligne.signed_prekey_id),
     publieLe: ligne.updated_at,
-    otpkLibres: Number(ligne.libres),
+    ...etatDuStock(Number(ligne.libres)),
   };
 }
 
+/**
+ * Retire l'identité de chiffrement d'appareils révoqués.
+ *
+ * Appelé par les trois chemins qui révoquent (« Appareils connectés », la
+ * réinitialisation du mot de passe, la suppression programmée du compte). Les
+ * lectures écartent déjà les appareils révoqués ; retirer leurs clés ferme la
+ * porte pour de bon et libère le stock (docs/e2ee, chapitres 1 et 22).
+ *
+ * Ne lève JAMAIS : une révocation est un geste de sécurité — le téléphone
+ * volé — et elle ne doit pas échouer parce que les tables du chiffrement
+ * n'existent pas encore (migration 091 non jouée) ou qu'une suppression a
+ * buté. L'échec est journalisé ; l'appareil reste révoqué, donc ignoré.
+ */
+async function retireClesAppareils(appareilIds) {
+  const ids = [...new Set((appareilIds || []).map(Number))]
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (ids.length === 0) return 0;
+  const marques = ids.map(() => '?').join(',');
+  try {
+    await pool.execute(`DELETE FROM e2ee_one_time_prekeys WHERE appareil_id IN (${marques})`, ids);
+    const [r] = await pool.execute(`DELETE FROM e2ee_device_keys WHERE appareil_id IN (${marques})`, ids);
+    return (r && r.affectedRows) || 0;
+  } catch (e) {
+    if (e.code !== 'ER_NO_SUCH_TABLE') {
+      console.warn('[E2EE] retrait des clés impossible :', e.message);
+    }
+    return 0;
+  }
+}
+
 module.exports = {
+  SEUIL_REGARNISSAGE,
+  etatDuStock,
+  retireClesAppareils,
   insereOneTimePreKeys,
   publieBundle,
   tourneSignedPreKey,

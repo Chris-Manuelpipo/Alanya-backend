@@ -20,6 +20,9 @@
 const assert = require('assert');
 const {
   BUNDLES_PAR_LOT_MAX,
+  CONSOMMATION_PAR_HEURE,
+  filtreAutorises,
+  quotasRestants,
   reserveUneCle,
   normaliseAppareilIds,
 } = require('./e2eePrekeyStock');
@@ -41,10 +44,10 @@ function connFactice(reponses) {
   // ── La requête de réservation verrouille en sautant les lignes prises ───
 
   const conn = connFactice([
-    [{ id: 10, key_id: 3, public_key: Buffer.alloc(32, 5) }],
+    [{ id: 10, key_id: 3, public_key: Buffer.alloc(33, 5) }],
     { affectedRows: 1 },
   ]);
-  const cle = await reserveUneCle(conn, 42);
+  const cle = await reserveUneCle(conn, 42, 77);
 
   assert.ok(cle, 'une clé libre doit être rendue');
   assert.strictEqual(cle.key_id, 3);
@@ -64,9 +67,10 @@ function connFactice(reponses) {
     'les plus anciennes d\'abord, pour que le stock tourne',
   );
 
-  // La consommation est écrite, et sur la ligne qu'on vient de lire.
-  assert.match(conn.vues[1].sql, /UPDATE e2ee_one_time_prekeys SET claimed_at/);
-  assert.deepStrictEqual(conn.vues[1].params, [10]);
+  // La consommation est écrite, sur la ligne qu'on vient de lire, avec le
+  // compte qui l'a consommée : c'est sur lui que porte le plafond par paire.
+  assert.match(conn.vues[1].sql, /UPDATE e2ee_one_time_prekeys SET claimed_at = NOW\(\), claimed_by = \?/);
+  assert.deepStrictEqual(conn.vues[1].params, [77, 10]);
 
   // ── Stock vide : `null`, et aucune écriture ─────────────────────────────
 
@@ -78,6 +82,45 @@ function connFactice(reponses) {
   assert.strictEqual(
     vide.vues.length, 1,
     'stock vide : rien ne doit être écrit',
+  );
+
+  // ── Qui a le droit de lire : conversation partagée, et aucun blocage ────
+
+  const lignes = [
+    { id: 1, alanyaID: 10 }, // moi
+    { id: 2, alanyaID: 20 }, // conversation partagée
+    { id: 3, alanyaID: 30 }, // conversation partagée, mais blocage
+    { id: 4, alanyaID: 40 }, // aucune conversation
+  ];
+  assert.deepStrictEqual(
+    filtreAutorises(lignes, 10, new Set([20, 30]), new Set([30])).map((a) => a.appareilId),
+    [1, 2],
+    'mes appareils et ceux d\'un correspondant passent ; bloqué ou inconnu, non',
+  );
+  // Témoin : sans le blocage, le même appareil passe — le refus vient bien
+  // du blocage et pas d'autre chose.
+  assert.deepStrictEqual(
+    filtreAutorises(lignes, 10, new Set([20, 30]), new Set()).map((a) => a.appareilId),
+    [1, 2, 3],
+  );
+  // Mes propres appareils passent même si un blocage me vise par erreur.
+  assert.deepStrictEqual(
+    filtreAutorises([{ id: 1, alanyaID: 10 }], 10, new Set(), new Set([10])).map((a) => a.appareilId),
+    [1],
+  );
+
+  // ── Plafond par paire ───────────────────────────────────────────────────
+
+  const restants = quotasRestants(
+    [{ alanyaID: 20, n: CONSOMMATION_PAR_HEURE }, { alanyaID: 30, n: 5 }],
+    [20, 30, 40],
+  );
+  assert.strictEqual(restants.get(20), 0, 'plafond atteint : plus de clé à usage unique');
+  assert.strictEqual(restants.get(30), CONSOMMATION_PAR_HEURE - 5);
+  assert.strictEqual(restants.get(40), CONSOMMATION_PAR_HEURE, 'rien consommé : plafond entier');
+  assert.strictEqual(
+    quotasRestants([{ alanyaID: 20, n: 999 }], [20]).get(20), 0,
+    'jamais négatif',
   );
 
   // ── Normalisation de la liste demandée ─────────────────────────────────

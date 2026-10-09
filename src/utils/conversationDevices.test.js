@@ -164,4 +164,22 @@ assert.deepStrictEqual(
   'des identifiants en chaînes ne doivent pas faire de l\'appelant sa propre cible',
 );
 
+// Clé d'identité et capacité recopiées sur les cibles quand elles sont
+// fournies : c'est ce qui permet au client de détecter une réinstallation
+// sans demander de bundle, donc sans consommer de clé à usage unique.
+r = evalueCibles({
+  appareils: [
+    { id: 10, alanyaID: MOI },
+    { id: 20, alanyaID: AUTRE },
+  ],
+  avecCles: [10, 20],
+  moiId: MOI,
+  monAppareilId: MON_APPAREIL,
+  details: new Map([[20, { identityKey: 'BQcH', capacite: 2 }]]),
+});
+assert.deepStrictEqual(
+  r.cibles,
+  [{ appareilId: 20, alanyaID: AUTRE, estMoi: false, identityKey: 'BQcH', capacite: 2 }],
+);
+
 console.log('conversationDevices.test.js OK');

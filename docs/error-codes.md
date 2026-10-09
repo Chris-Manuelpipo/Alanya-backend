@@ -154,6 +154,8 @@ sont valides mais rendus par le repli lié au statut HTTP.
 | `E2EE_APPAREIL_INCONNU` | 409 | Session trop ancienne pour porter une identité de chiffrement : il faut se reconnecter |
 | `E2EE_CLE_MANQUANTE` | 400 | Une clé publique attendue est absente du bundle (`champ` joint) |
 | `E2EE_CLE_TAILLE` | 400 | Clé publique ou signature de taille inattendue (`champ` joint) |
+| `E2EE_CLE_TYPE` | 400 | Clé publique de 33 octets qui ne commence pas par l'octet de type Curve25519 (0x05) : elle ne vient pas de la bibliothèque Signal (`champ` joint) |
+| `E2EE_CAPACITE_INVALIDE` | 400 | `capacite` absente ou hors de 1 à 3 : l'application doit dire ce qu'elle sait lire |
 | `E2EE_ID_INVALIDE` | 400 | `keyId` ou `registrationId` hors bornes (`champ` joint) |
 | `E2EE_OTPK_INVALIDE` | 400 | Liste de clés à usage unique mal formée |
 | `E2EE_OTPK_DOUBLON` | 400 | Deux clés à usage unique portent le même `keyId` |

@@ -3,6 +3,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 const { emitToUser } = require('../utils/userSocketRegistry');
+const { retireClesAppareils } = require('../services/e2eeKeyService');
 const { loadUserPrivacyPrefs } = require('../services/privacyPrefsService');
 const { loadUserAppSettings } = require('../services/appSettingsService');
 const { loadUserDndSchedule } = require('../services/dndScheduleService');
@@ -245,6 +246,8 @@ const deleteAccount = async (req, res) => {
         'UPDATE appareils SET revoked_at = NOW() WHERE alanyaID = ? AND revoked_at IS NULL AND id <> ?',
         [alanyaID, req.user.appareilId ?? 0],
       );
+      // Leur identité de chiffrement part avec eux (ne lève jamais).
+      await retireClesAppareils(devices.map((d) => d.id));
       for (const d of devices) {
         emitToUser(io, alanyaID, 'auth:device_revoked', {
           appareilId: d.id,

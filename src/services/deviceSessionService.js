@@ -15,6 +15,7 @@
 const pool = require('../config/db');
 const { emitToUser, disconnectAppareilSockets } = require('../utils/userSocketRegistry');
 const { invalidateSenderDevices } = require('../utils/senderDevicesCache');
+const { retireClesAppareils } = require('./e2eeKeyService');
 
 const VALID_PLATFORMS = new Set([
   'android', 'ios', 'web', 'macos', 'windows', 'linux', 'unknown',
@@ -175,6 +176,8 @@ const revokeAllExcept = async (alanyaID, appareilId) => {
       WHERE alanyaID = ? AND revoked_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`,
     [alanyaID, ...ids],
   );
+  // Leur identité de chiffrement part avec eux (ne lève jamais).
+  await retireClesAppareils(ids);
   return rows.map((r) => ({ id: r.id, deviceId: r.device_id }));
 };
 

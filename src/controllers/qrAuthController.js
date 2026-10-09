@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { generateAccessToken, generateRefreshToken } = require('../middleware/authCustom');
 const deviceSessionService = require('../services/deviceSessionService');
+const { retireClesAppareils } = require('../services/e2eeKeyService');
 const { normalizePlatform } = deviceSessionService;
 const { emitToUser } = require('../utils/userSocketRegistry');
 const { getClientIp } = require('../utils/clientIp');
@@ -352,6 +353,9 @@ const revokeDeviceSession = async (req, res) => {
       'UPDATE appareils SET revoked_at = NOW() WHERE id = ? AND revoked_at IS NULL',
       [id]
     );
+    // Son identité de chiffrement part avec lui. Ne lève jamais : la
+    // révocation est déjà faite, et c'est elle qui compte.
+    await retireClesAppareils([id]);
 
     // Confort d'UX pour l'événement, garantie dure pour la fermeture : le 401
     // du middleware ferme REST, `disconnectRevoked` ferme le temps réel. Le

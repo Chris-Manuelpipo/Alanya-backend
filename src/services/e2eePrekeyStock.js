@@ -12,8 +12,18 @@
  * obtenue sans aucun privilège.
  *
  * La règle retenue : on ne lit le bundle d'un appareil que s'il est à soi, ou
- * s'il appartient à quelqu'un avec qui on partage déjà une conversation. Elle
- * ne protège pas un secret, elle protège une ressource.
+ * s'il appartient à quelqu'un avec qui on partage déjà une conversation, et
+ * qu'aucun des deux n'a bloqué l'autre. Elle ne protège pas un secret, elle
+ * protège une ressource.
+ *
+ * ── Le plafond par paire ──
+ *
+ * Partager une conversation ne suffit pas : une conversation se crée avec un
+ * simple numéro public (docs/e2ee, chapitre 20). Au-delà de
+ * `CONSOMMATION_PAR_HEURE` clés consommées en une heure par un même compte
+ * sur les appareils d'un même autre compte, le bundle est servi SANS clé à
+ * usage unique. Pas de refus : l'amorçage se fait sur trois demi-échanges,
+ * la messagerie continue, et seul le stock de la victime est épargné.
  *
  * ── Pourquoi `SKIP LOCKED` ──
  *
@@ -33,6 +43,52 @@ const { bundleSortie } = require('../utils/e2eeBundle');
 // Sans plafond, une seule requête pourrait réclamer des dizaines de milliers
 // de bundles et autant de verrous de ligne.
 const BUNDLES_PAR_LOT_MAX = 200;
+
+// Clés à usage unique qu'un compte peut consommer, en une heure, sur les
+// appareils d'un même autre compte. Un correspondant honnête en consomme une
+// par appareil et par installation : vingt couvrent largement une
+// réinstallation en série, pas une boucle.
+const CONSOMMATION_PAR_HEURE = 20;
+
+/**
+ * Règle d'autorisation, sans base : garde les appareils du demandeur et ceux
+ * des comptes avec qui il partage une conversation, sauf blocage.
+ *
+ * Le blocage écarte aussi la lecture : une personne bloquée n'a aucune raison
+ * d'ouvrir une session, et la lui permettre lui servirait à savoir combien
+ * d'appareils chiffrent chez celle qui l'a bloquée.
+ *
+ * @param {Array<{id, alanyaID}>} lignes  appareils non révoqués demandés
+ * @param {Set<number>} partages  comptes avec qui une conversation est partagée
+ * @param {Set<number>} bloques   comptes bloqués dans un sens ou l'autre
+ */
+function filtreAutorises(lignes, demandeurId, partages, bloques) {
+  const moi = Number(demandeurId);
+  return lignes
+    .filter((l) => {
+      const compte = Number(l.alanyaID);
+      if (compte === moi) return true;
+      return partages.has(compte) && !bloques.has(compte);
+    })
+    .map((l) => ({ appareilId: Number(l.id), alanyaID: Number(l.alanyaID) }));
+}
+
+/**
+ * Ce qu'il reste à consommer pour chaque compte, d'après ce qui l'a déjà été
+ * dans l'heure. Fonction pure.
+ *
+ * @param {Array<{alanyaID, n}>} dejaConsommees
+ * @param {number[]} comptes
+ * @returns {Map<number, number>}
+ */
+function quotasRestants(dejaConsommees, comptes, plafond = CONSOMMATION_PAR_HEURE) {
+  const parCompte = new Map(
+    (dejaConsommees || []).map((r) => [Number(r.alanyaID), Number(r.n) || 0]),
+  );
+  return new Map(
+    comptes.map((c) => [Number(c), Math.max(0, plafond - (parCompte.get(Number(c)) || 0))]),
+  );
+}
 
 /**
  * Filtre les appareils que `demandeurId` a le droit de lire.
@@ -62,6 +118,7 @@ async function appareilsAutorises(demandeurId, appareilIds) {
   const autres = comptes.filter((c) => c !== Number(demandeurId));
 
   let partages = new Set();
+  let bloques = new Set();
   if (autres.length > 0) {
     const [rel] = await pool.query(
       `SELECT DISTINCT p2.alanyaID
@@ -71,12 +128,21 @@ async function appareilsAutorises(demandeurId, appareilIds) {
       [demandeurId, autres],
     );
     partages = new Set(rel.map((r) => Number(r.alanyaID)));
+
+    // `blocked(alanyaID, idCallerBlock)` : alanyaID a bloqué idCallerBlock
+    // (voir utils/blockUtils.js). Les deux sens comptent.
+    const [blocs] = await pool.query(
+      `SELECT alanyaID, idCallerBlock FROM blocked
+        WHERE (alanyaID = ? AND idCallerBlock IN (?))
+           OR (idCallerBlock = ? AND alanyaID IN (?))`,
+      [demandeurId, autres, demandeurId, autres],
+    );
+    bloques = new Set(blocs.map((b) => (
+      Number(b.alanyaID) === Number(demandeurId) ? Number(b.idCallerBlock) : Number(b.alanyaID)
+    )));
   }
 
-  return lignes
-    .filter((l) => Number(l.alanyaID) === Number(demandeurId)
-      || partages.has(Number(l.alanyaID)))
-    .map((l) => ({ appareilId: Number(l.id), alanyaID: Number(l.alanyaID) }));
+  return filtreAutorises(lignes, demandeurId, partages, bloques);
 }
 
 /**
@@ -90,7 +156,7 @@ async function appareilsAutorises(demandeurId, appareilIds) {
  * `ORDER BY id` : les plus anciennes d'abord, pour que le stock tourne au
  * lieu de laisser vieillir un fond de file jamais servi.
  */
-async function reserveUneCle(conn, appareilId) {
+async function reserveUneCle(conn, appareilId, demandeurId = null) {
   const [libres] = await conn.execute(
     `SELECT id, key_id, public_key
        FROM e2ee_one_time_prekeys
@@ -103,8 +169,8 @@ async function reserveUneCle(conn, appareilId) {
   if (libres.length === 0) return null;
 
   await conn.execute(
-    'UPDATE e2ee_one_time_prekeys SET claimed_at = NOW() WHERE id = ?',
-    [libres[0].id],
+    'UPDATE e2ee_one_time_prekeys SET claimed_at = NOW(), claimed_by = ? WHERE id = ?',
+    [demandeurId, libres[0].id],
   );
   return libres[0];
 }
@@ -141,11 +207,28 @@ async function serviceBundles(demandeurId, appareilIds) {
     );
     const parAppareil = new Map(cles.map((c) => [Number(c.appareil_id), c]));
 
+    const comptes = [...new Set(autorises.map((a) => a.alanyaID))];
+    const [consommees] = await conn.query(
+      `SELECT a.alanyaID, COUNT(*) AS n
+         FROM e2ee_one_time_prekeys o
+         JOIN appareils a ON a.id = o.appareil_id
+        WHERE o.claimed_by = ?
+          AND a.alanyaID IN (?)
+          AND o.claimed_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+        GROUP BY a.alanyaID`,
+      [demandeurId, comptes],
+    );
+    const restants = quotasRestants(consommees, comptes);
+
     const bundles = [];
-    for (const { appareilId } of autorises) {
+    for (const { appareilId, alanyaID } of autorises) {
       const ligne = parAppareil.get(appareilId);
       if (!ligne) continue;
-      const otpk = await reserveUneCle(conn, appareilId);
+      let otpk = null;
+      if (restants.get(alanyaID) > 0) {
+        otpk = await reserveUneCle(conn, appareilId, demandeurId);
+        if (otpk) restants.set(alanyaID, restants.get(alanyaID) - 1);
+      }
       bundles.push(bundleSortie(ligne, otpk));
     }
 
@@ -191,6 +274,9 @@ function normaliseAppareilIds(entree) {
 
 module.exports = {
   BUNDLES_PAR_LOT_MAX,
+  CONSOMMATION_PAR_HEURE,
+  filtreAutorises,
+  quotasRestants,
   appareilsAutorises,
   reserveUneCle,
   serviceBundles,

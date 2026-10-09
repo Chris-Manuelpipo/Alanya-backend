@@ -7,9 +7,10 @@
 -- de bundle, et l'absence de table rendrait 500 au lieu de 404.
 --
 -- Rien de secret ici. Ce sont les clés PUBLIQUES, et elles seules. Les clés
--- privées restent dans le trousseau de l'appareil (`flutter_secure_storage`),
--- ne transitent jamais par le réseau et ne figurent pas dans la sauvegarde
--- Drive. Le serveur ne fait que distribuer de l'annuaire.
+-- privées restent sur l'appareil (base locale, chiffrée par une clé gardée
+-- dans le Keystore / Keychain), ne transitent jamais par le réseau et ne
+-- figurent pas dans la sauvegarde Drive. Le serveur ne fait que distribuer de
+-- l'annuaire.
 --
 -- ── Pourquoi la clé primaire est l'APPAREIL, pas le compte ──
 --
@@ -40,13 +41,23 @@
 -- le client la retire au bout de 60 jours, bien au-delà de toute dérive
 -- d'horloge ou de tout téléphone resté éteint.
 --
+-- ── Le format : celui du protocole Signal ──
+--
+-- Les clés sont produites par `libsignal_protocol_dart` côté application, et
+-- leur forme sérialisée est celle de Signal : une clé publique Curve25519 de
+-- 32 octets PRÉCÉDÉE d'un octet de type (0x05, « DJB »), soit 33 octets ; une
+-- signature XEdDSA de 64 octets. Une SEULE clé d'identité par appareil : Signal
+-- signe avec la clé Diffie-Hellman elle-même (XEdDSA), il n'y a pas de clé de
+-- signature séparée. Une version antérieure de ce schéma en prévoyait deux ;
+-- voir `E2EE_DEPLOIEMENT.md` si elle a déjà été jouée.
+--
 -- ── Pourquoi VARBINARY aux tailles exactes ──
 --
--- 32 octets pour une clé publique X25519 comme Ed25519, 64 pour une signature
--- Ed25519. La taille documente le protocole et la base refuse d'elle-même un
--- client qui enverrait autre chose. VARBINARY et non BINARY : BINARY complète
--- à droite avec des zéros, ce qui transformerait silencieusement une clé
--- tronquée en clé valide-en-apparence.
+-- La taille documente le protocole et la base refuse d'elle-même un client
+-- qui enverrait plus long. VARBINARY et non BINARY : BINARY complète à droite
+-- avec des zéros, ce qui transformerait silencieusement une clé tronquée en
+-- clé valide-en-apparence. La clé trop COURTE, que MySQL laisserait passer,
+-- est refusée par `src/utils/e2eeBundle.js`.
 
 CREATE TABLE IF NOT EXISTS e2ee_device_keys (
   -- `appareils.id`, celui que porte le JWT sous le nom `appareilId`. Pas
@@ -61,18 +72,20 @@ CREATE TABLE IF NOT EXISTS e2ee_device_keys (
   -- Sans lui, un correspondant ne saurait pas que la session qu'il garde en
   -- mémoire s'adresse à une installation qui n'existe plus.
   registration_id        INT UNSIGNED  NOT NULL,
-  -- X25519 : le demi-échange Diffie-Hellman du X3DH.
-  identity_key_dh        VARBINARY(32) NOT NULL,
-  -- Ed25519 : vérifie la signature du signed prekey. Deux clés distinctes
-  -- plutôt qu'une seule convertie (XEdDSA) — la conversion est une source
-  -- classique d'erreurs d'implémentation, et deux clés ne coûtent que 32
-  -- octets.
-  identity_key_sign      VARBINARY(32) NOT NULL,
+  -- Clé d'identité Signal (Curve25519, 0x05 + 32 octets). Elle sert au
+  -- X3DH ET à vérifier la signature du signed prekey (XEdDSA).
+  identity_key           VARBINARY(33) NOT NULL,
+  -- Ce que cette installation sait lire : 1 = texte, 2 = médias, 3 = groupes.
+  -- Un correspondant n'envoie une forme de message qu'aux appareils qui la
+  -- comprennent tous ; c'est ce qui remplace un suivi des versions de
+  -- l'application, que `appareils` ne fait pas. Une mise à jour de
+  -- l'application republie son bundle avec sa nouvelle capacité.
+  capacite               TINYINT       NOT NULL DEFAULT 1,
   signed_prekey_id       INT UNSIGNED  NOT NULL,
-  signed_prekey          VARBINARY(32) NOT NULL,
+  signed_prekey          VARBINARY(33) NOT NULL,
   signed_prekey_sig      VARBINARY(64) NOT NULL,
   prev_signed_prekey_id  INT UNSIGNED  NULL,
-  prev_signed_prekey     VARBINARY(32) NULL,
+  prev_signed_prekey     VARBINARY(33) NULL,
   prev_signed_prekey_sig VARBINARY(64) NULL,
   -- Date de la rotation qui a relégué l'ancien prekey. C'est d'elle que le
   -- client déduit les 60 jours au bout desquels il cesse de le publier.
@@ -113,20 +126,33 @@ CREATE TABLE IF NOT EXISTS e2ee_device_keys (
 -- Le stock peut tomber à zéro sans rien casser : l'amorçage se fait alors sur
 -- trois demi-échanges au lieu de quatre. C'est une dégradation, pas une
 -- panne — mais le client doit regarnir, et c'est à quoi sert
--- `GET /e2ee/keys/count`.
+-- `GET /api/e2ee/keys/state`.
+--
+-- ── Pourquoi `claimed_by` ──
+--
+-- Servir un bundle consomme une clé du destinataire. Sans plafond, un compte
+-- qui partage une conversation avec quelqu'un peut vider son stock en boucle
+-- (docs/e2ee, chapitres 16 et 20). Savoir QUI a consommé permet de plafonner
+-- par paire, sur toutes les instances à la fois puisque c'est en base ; et au
+-- delà du plafond, le bundle est servi SANS clé à usage unique plutôt que
+-- refusé — la messagerie continue, seul le stock de la victime est épargné.
 
 CREATE TABLE IF NOT EXISTS e2ee_one_time_prekeys (
   id          BIGINT        NOT NULL AUTO_INCREMENT,
   appareil_id BIGINT        NOT NULL,
   key_id      INT UNSIGNED  NOT NULL,
-  public_key  VARBINARY(32) NOT NULL,
+  public_key  VARBINARY(33) NOT NULL,
   claimed_at  DATETIME      NULL,
+  -- alanyaID du compte à qui la clé a été servie.
+  claimed_by  INT           NULL,
   created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_e2ee_otpk (appareil_id, key_id),
-  -- Sert les deux seules lectures : prendre la prochaine clé libre
+  -- Sert les deux lectures du stock : prendre la prochaine clé libre
   -- (`claimed_at IS NULL ... LIMIT 1 FOR UPDATE`) et compter le stock.
   KEY idx_e2ee_otpk_libre (appareil_id, claimed_at),
+  -- Sert le plafond par paire : ce que ce compte a consommé dans l'heure.
+  KEY idx_e2ee_otpk_consommateur (claimed_by, claimed_at),
   CONSTRAINT fk_e2ee_otpk_appareil FOREIGN KEY (appareil_id)
     REFERENCES appareils(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

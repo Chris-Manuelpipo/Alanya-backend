@@ -22,6 +22,29 @@ SELECT VERSION();                               -- MySQL 8.0.29+ : ajout de colo
 
 Noter les résultats avant de continuer.
 
+### Si `e2ee_device_keys` existe déjà avec l'ancien schéma
+
+La première version de 091 prévoyait deux clés d'identité (`identity_key_dh`,
+`identity_key_sign`, 32 octets). La version actuelle suit le format Signal :
+une seule `identity_key` de 33 octets, plus `capacite` et `claimed_by`.
+
+```sql
+SHOW COLUMNS FROM e2ee_device_keys LIKE 'identity_key_dh';   -- une ligne = ancien schéma
+SELECT COUNT(*) FROM e2ee_device_keys;                       -- doit valoir 0
+SELECT COUNT(*) FROM e2ee_one_time_prekeys;                  -- doit valoir 0
+```
+
+Aucun client n'a jamais publié dans l'ancien format : les deux tables doivent
+être vides. Si c'est bien le cas, les supprimer avant de jouer 091 :
+
+```sql
+DROP TABLE e2ee_one_time_prekeys;
+DROP TABLE e2ee_device_keys;
+```
+
+Si elles ne sont pas vides, s'arrêter et en parler : quelqu'un a publié des
+clés que le code actuel ne sait pas lire.
+
 ## 1. Ordre d'application
 
 ```bash
