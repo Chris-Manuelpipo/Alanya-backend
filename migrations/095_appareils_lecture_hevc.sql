@@ -1,6 +1,9 @@
--- Migration 091 : `appareils.hevc_decode`, ce que chaque appareil sait lire
+-- Migration 095 : `appareils.hevc_decode`, ce que chaque appareil sait lire
 --
--- Appliquer après 090. Application manuelle, comme toutes les migrations d'ici.
+-- ⚠ DÉJÀ APPLIQUÉE EN PRODUCTION le 09/10/2026, sous l'ancien numéro 091
+-- (renumérotée : 091 à 094 sont les migrations du chiffrement de bout en bout).
+-- Ne pas la rejouer en production ; sur une autre base, l'appliquer après 094.
+-- Application manuelle, comme toutes les migrations d'ici.
 --
 -- MySQL 8 ne supporte pas `ADD COLUMN IF NOT EXISTS` (cf. migration 026) : si
 -- relancée après un premier passage réussi, ignorer l'erreur 1060 (Duplicate
