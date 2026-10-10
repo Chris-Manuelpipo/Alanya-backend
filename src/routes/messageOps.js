@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
 const requireOutgoing = require('../middleware/requireOutgoing');
+const { getMessageReceipts } = require('../controllers/messageReceiptsController');
 const { updateMessage, deleteMessage, batchDeleteMessages, batchForwardMessages, pinMessage, markMessageViewed, setReaction, removeReaction, getMessagesSince, getMessageStatusByClientId, getPendingOutgoingMessages, markMessagesDelivered } = require('../controllers/messageController');
 
 /**
@@ -60,6 +61,37 @@ router.post('/sync', auth, getMessagesSince);
 router.post('/delivered', auth, markMessagesDelivered);
 router.get('/status', auth, getMessageStatusByClientId);
 router.get('/pending', auth, getPendingOutgoingMessages);
+
+/**
+ * @swagger
+ * /api/messages/{id}/receipts:
+ *   get:
+ *     summary: Qui a lu, reçu ou pas encore reçu un de mes messages de groupe
+ *     description: >
+ *       Réservé à l'expéditeur. Membres arrivés après l'envoi exclus. Une heure
+ *       nulle signifie « avant la migration 096 », où les heures n'étaient pas
+ *       journalisées.
+ *     tags: [Messages]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: >
+ *           { msgID, sentAt, total, readCount, deliveredCount, read[], delivered[],
+ *           pending[] } — chaque entrée { alanyaID, nom, pseudo, avatar, at }.
+ *           deliveredCount inclut les lecteurs ; la liste delivered, non.
+ *       400:
+ *         description: NOT_GROUP_MESSAGE — message d'une discussion à deux
+ *       404:
+ *         description: MESSAGE_NOT_FOUND — inconnu, supprimé, ou pas de moi
+ */
+router.get('/:id/receipts', auth, getMessageReceipts);
 router.post('/batch-delete', auth, batchDeleteMessages);
 router.post('/batch-forward', auth, requireOutgoing, batchForwardMessages);
 router.put('/:id/reactions', auth, requireOutgoing, setReaction);

@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { notifyMessageStatus } = require('./notifyMessageStatus');
 const { loadUserPrivacyPrefs } = require('../services/privacyPrefsService');
+const { avancerRepereGroupe, KIND_DELIVERED, KIND_READ } = require('./groupReceipts');
 
 /**
  * Marque les messages entrants comme lus, remet unreadCount à 0 pour le lecteur,
@@ -16,8 +17,24 @@ const markConversationReadBy = async ({
     [conversationID, readerID],
   );
 
+  // Groupe : repères du lecteur (lire vaut avoir reçu), pour son compteur de
+  // non-lus et pour « Infos du message » (migration 096). Sans effet en 1-1.
+  const recu = await avancerRepereGroupe({
+    conversationID,
+    alanyaID: readerID,
+    kind: KIND_DELIVERED,
+  });
+  const repere = await avancerRepereGroupe({
+    conversationID,
+    alanyaID: readerID,
+    kind: KIND_READ,
+    isGroup: recu.isGroup,
+  });
+
+  // En groupe, la lecture compte même si le lecteur a désactivé ses accusés de
+  // lecture, comme sur WhatsApp ; le réglage ne vaut qu'en discussion à deux.
   const prefs = await loadUserPrivacyPrefs(readerID);
-  const sendReceipts = !!prefs.readReceiptsEnabled;
+  const sendReceipts = repere.isGroup || !!prefs.readReceiptsEnabled;
 
   if (sendReceipts) {
     await pool.execute(

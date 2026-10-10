@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { isBlockedBy, getCachedDirectConversationPeer } = require('./blockUtils');
 const { notifyMessageStatus } = require('./notifyMessageStatus');
+const { avancerRepereGroupe, KIND_DELIVERED } = require('./groupReceipts');
 
 /**
  * Marque les messages entrants d'une conversation comme REMIS (status 2) et
@@ -28,6 +29,10 @@ const markConversationDeliveredBy = async ({
   if (peerId != null && (await isBlockedBy(userID, peerId))) {
     return { changed: false, skipped: 'blocked' };
   }
+
+  // Groupe : repère de réception de ce membre (« Infos du message »,
+  // migration 096). Sans effet en 1-1.
+  await avancerRepereGroupe({ conversationID: convID, alanyaID: userID, kind: KIND_DELIVERED });
 
   const [res] = await pool.execute(
     `UPDATE message SET status = 2, deliveredAt = NOW()

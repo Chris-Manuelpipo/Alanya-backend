@@ -51,6 +51,13 @@ const evaluateMessagePush = async (
   }
 
   const mute = preloaded.mute ?? (await loadConversationMute(conversationId, alanyaID));
+
+  // Discussion archivée : silencieuse, comme sur WhatsApp — sauf si l'on y est
+  // mentionné. L'archivage n'était consulté nulle part avant l'envoi : un
+  // groupe archivé continuait de sonner (groupe 3GI 2029, bug A13).
+  if (mute.isArchived && !isMentioned) {
+    return silence('conversation_archived');
+  }
   const muted = isConversationMuted(mute);
   const mentionsOnly = !!mute.mentionsOnly;
 

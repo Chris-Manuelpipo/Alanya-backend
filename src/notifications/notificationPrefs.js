@@ -87,19 +87,19 @@ const upsertUserNotificationPrefs = async (alanyaID, patch = {}) => {
 const loadConversationMute = async (conversationId, alanyaID) => {
   try {
     const [rows] = await pool.execute(
-      'SELECT mutedUntil, muteForever, mentionsOnly FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
+      'SELECT mutedUntil, muteForever, mentionsOnly, isArchived FROM conv_participants WHERE conversID = ? AND alanyaID = ?',
       [conversationId, alanyaID],
     );
-    return rows[0] || { mutedUntil: null, muteForever: 0, mentionsOnly: 0 };
+    return rows[0] || { mutedUntil: null, muteForever: 0, mentionsOnly: 0, isArchived: 0 };
   } catch (e) {
     if (e.code === 'ER_BAD_FIELD_ERROR') {
-      return { mutedUntil: null, muteForever: 0, mentionsOnly: 0 };
+      return { mutedUntil: null, muteForever: 0, mentionsOnly: 0, isArchived: 0 };
     }
     throw e;
   }
 };
 
-const DEFAULT_MUTE = Object.freeze({ mutedUntil: null, muteForever: 0, mentionsOnly: 0 });
+const DEFAULT_MUTE = Object.freeze({ mutedUntil: null, muteForever: 0, mentionsOnly: 0, isArchived: 0 });
 
 /**
  * Sourdines de plusieurs participants d'une conversation en une requête.
@@ -112,7 +112,7 @@ const loadConversationMuteMany = async (conversationId, alanyaIDs = []) => {
   if (ids.length === 0) return map;
   try {
     const [rows] = await pool.query(
-      'SELECT alanyaID, mutedUntil, muteForever, mentionsOnly FROM conv_participants WHERE conversID = ? AND alanyaID IN (?)',
+      'SELECT alanyaID, mutedUntil, muteForever, mentionsOnly, isArchived FROM conv_participants WHERE conversID = ? AND alanyaID IN (?)',
       [conversationId, ids],
     );
     for (const row of rows) {
@@ -120,6 +120,7 @@ const loadConversationMuteMany = async (conversationId, alanyaIDs = []) => {
         mutedUntil: row.mutedUntil,
         muteForever: row.muteForever,
         mentionsOnly: row.mentionsOnly,
+        isArchived: row.isArchived,
       });
     }
   } catch (e) {

@@ -98,7 +98,21 @@ const generalLimiter = rateLimit({
   message: { error: 'Trop de requêtes, veuillez ralentir' },
 });
 
+// Lecture des médias (`/uploads`) : quota propre, hors `generalLimiter`.
+// Une salle de classe sort par une seule IP et chaque membre d'un groupe
+// télécharge chaque média reçu : 300 requêtes par minute partagées avec l'API
+// ne tenaient pas. Ce quota reste une borne contre l'aspiration en masse ; la
+// lecture elle-même ne coûte qu'une redirection.
+const mediaReadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.MEDIA_READ_MAX_PER_MIN) || 3000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Trop de téléchargements, patientez un instant', code: 'RATE_LIMITED' },
+});
+
 module.exports = { authLimiter, registerLimiter, messageLimiter, uploadLimiter, qrResolveLimiter, generalLimiter,
+  mediaReadLimiter,
   phoneCheckLimiter,
   codeRedeemLimiter,
   publicOfferLimiter,
