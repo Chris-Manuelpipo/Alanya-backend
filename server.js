@@ -22,7 +22,7 @@ const pool = require('./src/config/db');
 const clientsRedis = [];
 
 const errorHandler = require('./src/middleware/errorHandler');
-const { generalLimiter } = require('./src/middleware/rateLimiter');
+const { generalLimiter, mediaReadLimiter } = require('./src/middleware/rateLimiter');
 
 const swaggerUi   = require('swagger-ui-express');
 const swaggerSpec = require('./src/config/swagger');
@@ -156,9 +156,6 @@ app.use(express.json({
     if (req.originalUrl.startsWith('/api/payments/webhook/')) req.rawBody = Buffer.from(buf);
   },
 }));
-app.use(generalLimiter);
-app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-
 // Médias. Les octets sont chez Backblaze ; `/uploads` ne sert plus aucun
 // fichier depuis le disque du serveur (retrait du stockage disque, 28/09/2026) :
 // il tranche l'expiration, puis redirige.
@@ -176,10 +173,21 @@ app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // ne tranche qu'au-delà de la plus longue ; c'est au téléphone d'un compte
 // non abonné de s'arrêter plus tôt (`mediaRetentionDays` dans ses droits).
 // Relu depuis la base au plus une fois par minute, sans bloquer la requête.
+//
+// Monté AVANT `generalLimiter`, avec son propre quota : une salle de classe
+// sort par une seule adresse IP (Wi-Fi de l'école, NAT de l'opérateur), et
+// chaque membre d'un groupe télécharge chaque média reçu. Partagés avec l'API
+// dans 300 requêtes par minute, quelques médias suffisent à faire répondre 429
+// à toute la salle, API comprise (constaté en analysant les signalements du
+// groupe 3GI 2029, bug A3).
+app.use('/uploads', mediaReadLimiter);
 app.use('/uploads', mediaExpiryGuard({ retentionDays: plafondMedias }));
 // Redirection `302` vers un lien signé (bucket privé) ou vers le bucket
 // public d'une photo, d'une annonce ou d'un média officiel.
 app.use('/uploads', mediaRead());
+app.use(generalLimiter);
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
 // Fichiers de transit laissés par un envoi interrompu.
 cleanStaleUploadTmp().catch(() => {});
 
