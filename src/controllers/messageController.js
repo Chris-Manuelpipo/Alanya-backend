@@ -10,6 +10,7 @@ const { markConversationDeliveredBy } = require('../utils/deliveryReceiptUtils')
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
 const { resolveReplyToID } = require('../utils/resolveReplyToID');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
+const { appliquerStatutLecteur } = require('../utils/groupReceipts');
 const { messageInsertSql, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
 const {
   attacheChiffre,
@@ -67,6 +68,7 @@ const getMessages = async (req, res) => {
              p.timeZone   AS messageTz,
              p.decalageHoraire AS messageTzOffset,
              (m.viewedAt IS NOT NULL) AS viewedByMe,
+             cp.lastReadMsgID AS _lastReadMsgID,
              ${MEDIA_THUMB_SELECT}
       FROM message m
       JOIN conv_participants cp
@@ -101,6 +103,15 @@ const getMessages = async (req, res) => {
     params.push(parseInt(limit) || 50);
 
     const [rows] = await pool.query(query, params);
+
+    // Groupe : statut des messages reçus vu par CE lecteur, pas le statut global
+    // (« lu » dès le premier lecteur) — sinon son compteur de non-lus tombe à
+    // zéro (groupe 3GI 2029, bug A6 ; migration 096).
+    const [[convRow]] = await pool.execute(
+      'SELECT isGroup FROM conversation WHERE conversID = ?',
+      [id],
+    );
+    appliquerStatutLecteur(rows, alanyaID, { isGroup: Number(convRow?.isGroup) === 1 });
 
     // Média vue unique déjà consulté par cet utilisateur → on n'expose plus l'URL.
     // Expose aussi clientId (camelCase) pour le match optimiste côté app.
@@ -1256,9 +1267,12 @@ const getMessagesSince = async (req, res) => {
              p.timeZone   AS messageTz,
              p.decalageHoraire AS messageTzOffset,
              (m.viewedAt IS NOT NULL) AS viewedByMe,
+             c.isGroup AS _isGroup,
+             cp.lastReadMsgID AS _lastReadMsgID,
              ${MEDIA_THUMB_SELECT}
       FROM message m
       JOIN conv_participants cp ON cp.conversID = m.conversationID AND cp.alanyaID = ?
+      JOIN conversation c ON c.conversID = m.conversationID
       JOIN users u ON m.senderID = u.alanyaID
       LEFT JOIN pays p ON u.idPays = p.idPays
       LEFT JOIN message_thumb mt ON mt.msgID = m.msgID
@@ -1281,6 +1295,9 @@ const getMessagesSince = async (req, res) => {
 
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
+
+    // Groupe : statut vu par CE lecteur (voir getMessages, bug A6).
+    appliquerStatutLecteur(page, alanyaID);
 
     for (const r of page) {
       if (r.isViewOnce && r.viewedByMe > 0 && r.senderID !== alanyaID) {
