@@ -312,6 +312,115 @@ const test = async (nom, fn) => {
     assert.throws(() => storage.newOfficialKey({ kind: 'etc' }));
   });
 
+  // ── Bucket privé chez Cloudflare R2 ───────────────────────────────────────
+  const R2 = {
+    endpoint: 'https://compte.r2.cloudflarestorage.com',
+    bucket: 'prive-r2',
+    keyId: 'k-r2',
+    appKey: 's-r2',
+  };
+  const HOTE_R2 = 'prive-r2.compte.r2.cloudflarestorage.com';
+  const HOTE_B2 = 'alanyaprivate.s3.eu-central-003.backblazeb2.com';
+  const MEDIA = 'media/2026-10-10/images/a.jpg';
+  const absent = () => {
+    throw Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } });
+  };
+
+  await test('R2 : les médias de discussion y vont, les fichiers publics restent chez Backblaze', async () => {
+    storage.configureForTests({ ...CONFIG_B2, publics: PUBLICS, r2: R2, privateMigrated: true });
+    assert.strictEqual(storage.cibleDe(MEDIA).bucket, 'prive-r2');
+    const envoi = new URL((await storage.presignUpload(MEDIA, { contentType: 'image/jpeg', contentLength: 10 })).url);
+    assert.strictEqual(envoi.host, HOTE_R2);
+    assert.ok(envoi.searchParams.get('X-Amz-Credential').startsWith('k-r2/'), 'la clé de R2');
+    assert.ok(envoi.searchParams.get('X-Amz-Credential').includes('/auto/s3/'), 'région auto');
+    const signes = envoi.searchParams.get('X-Amz-SignedHeaders').split(';');
+    for (const h of ['content-type', 'content-length', 'cache-control']) assert.ok(signes.includes(h), h);
+    assert.strictEqual(new URL(await storage.presignRead(MEDIA, 'GET')).host, HOTE_R2);
+
+    assert.strictEqual(storage.publicUrl('images/img_1_2.jpg'), `${PROF}/images/img_1_2.jpg`);
+    const photo = await storage.presignUpload('images/img_1_2.jpg', { contentType: 'image/jpeg', contentLength: 10 });
+    assert.strictEqual(new URL(photo.url).host, 'alanyaprofile.s3.eu-central-003.backblazeb2.com');
+  });
+
+  await test('R2 : suffit à lui seul, et incomplet il ne prend rien', async () => {
+    storage.configureForTests({ ...CONFIG_B2, keyId: '', appKey: '', r2: R2 });
+    assert.strictEqual(storage.isB2Enabled(), true, 'R2 seul');
+    assert.strictEqual(new URL(await storage.presignRead(MEDIA, 'GET')).host, HOTE_R2);
+
+    storage.configureForTests({ ...CONFIG_B2, r2: { ...R2, appKey: '' } });
+    assert.strictEqual(storage.cibleDe(MEDIA).bucket, 'alanyaprivate', 'R2 incomplet : Backblaze');
+    assert.deepStrictEqual(storage.etatMigrationPrivee(), { r2: false, ancien: true, terminee: false });
+  });
+
+  await test('R2 : le point d\'accès recopié avec le nom du bucket est compris', async () => {
+    storage.configureForTests({ ...CONFIG_B2, r2: { ...R2, endpoint: `${R2.endpoint}/prive-r2` }, privateMigrated: true });
+    const u = new URL(await storage.presignRead(MEDIA, 'GET'));
+    assert.strictEqual(u.host, HOTE_R2);
+    assert.strictEqual(u.pathname, `/${MEDIA}`);
+  });
+
+  await test('départ de Backblaze : lu chez R2 s\'il y est, sinon dans l\'ancien bucket', async () => {
+    let reponse = () => ({});
+    const { client, appels } = fauxClient({ HeadObjectCommand: () => reponse() });
+    storage.configureForTests({ ...CONFIG_B2, r2: R2, client });
+    assert.strictEqual(new URL(await storage.presignRead(MEDIA, 'GET')).host, HOTE_R2);
+    assert.strictEqual(appels[0].input.Bucket, 'prive-r2', 'la question est posée à R2');
+
+    reponse = absent;
+    assert.strictEqual(new URL(await storage.presignRead(MEDIA, 'HEAD')).host, HOTE_B2, 'pas encore copié');
+
+    reponse = () => { throw new Error('réseau'); };
+    assert.strictEqual(new URL(await storage.presignRead(MEDIA, 'GET')).host, HOTE_R2, 'dans le doute, R2');
+
+    // Copie déclarée terminée : l'ancien bucket n'est plus consulté, R2 non plus.
+    appels.length = 0;
+    storage.configureForTests({ ...CONFIG_B2, r2: R2, privateMigrated: true, client });
+    assert.strictEqual(new URL(await storage.presignRead(MEDIA, 'GET')).host, HOTE_R2);
+    assert.strictEqual(appels.length, 0);
+  });
+
+  await test('R2 : suppression simple ; pendant le départ, l\'ancien bucket aussi', async () => {
+    const { client, appels } = fauxClient({
+      ListObjectVersionsCommand: (input) => ({ Versions: [{ Key: input.Prefix, VersionId: 'v1' }] }),
+    });
+    storage.configureForTests({ ...CONFIG_B2, publics: PUBLICS, r2: R2, client });
+    assert.strictEqual(await storage.removeAllVersions(MEDIA), 2);
+    assert.deepStrictEqual(
+      appels.map((a) => [a.commande, a.input.Bucket, a.input.VersionId]),
+      [
+        ['DeleteObjectCommand', 'prive-r2', undefined],
+        ['ListObjectVersionsCommand', 'alanyaprivate', undefined],
+        ['DeleteObjectCommand', 'alanyaprivate', 'v1'],
+      ],
+    );
+
+    // Un fichier public n'a jamais été rangé chez R2 : son bucket, et rien d'autre.
+    appels.length = 0;
+    await storage.removeAllVersions('images/img_1_2.jpg');
+    assert.deepStrictEqual([...new Set(appels.map((a) => a.input.Bucket))], ['alanyaprofile']);
+
+    appels.length = 0;
+    storage.configureForTests({ ...CONFIG_B2, publics: PUBLICS, r2: R2, privateMigrated: true, client });
+    assert.strictEqual(await storage.removeAllVersions(MEDIA), 1);
+    assert.deepStrictEqual(appels.map((a) => [a.commande, a.input.Bucket]), [['DeleteObjectCommand', 'prive-r2']]);
+  });
+
+  await test('départ de Backblaze : une liste réunit les deux buckets, sans doublon', async () => {
+    const contenu = {
+      'prive-r2': [{ Key: 'media/2026-10-10/images/nouveau.jpg', Size: 5 }, { Key: 'media/2026-10-10/images/copie.jpg', Size: 7 }],
+      alanyaprivate: [{ Key: 'media/2026-10-10/images/copie.jpg', Size: 7 }, { Key: 'media/2026-10-10/images/vieux.jpg', Size: 9 }],
+    };
+    const { client } = fauxClient({ ListObjectsV2Command: (input) => ({ Contents: contenu[input.Bucket] }) });
+    storage.configureForTests({ ...CONFIG_B2, r2: R2, client });
+    const cles = (l) => l.map((o) => o.key.split('/').pop()).sort();
+    assert.deepStrictEqual(cles(await storage.listPrefix('media/2026-10-10/images/')), ['copie.jpg', 'nouveau.jpg', 'vieux.jpg']);
+    assert.deepStrictEqual(cles(await storage.listPrefix('media/', { depuis: 'ancien' })), ['copie.jpg', 'vieux.jpg']);
+    assert.deepStrictEqual(cles(await storage.listPrefix('media/', { depuis: 'prive' })), ['copie.jpg', 'nouveau.jpg']);
+
+    storage.configureForTests({ ...CONFIG_B2, r2: R2, privateMigrated: true, client });
+    assert.deepStrictEqual(cles(await storage.listPrefix('media/2026-10-10/images/')), ['copie.jpg', 'nouveau.jpg']);
+  });
+
   storage.configureForTests({ ...CONFIG_B2, publics: SANS_PUBLICS });
   console.log(`mediaStorage : ${ok} tests passés`);
 })();

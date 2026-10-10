@@ -10,8 +10,8 @@
  * Le fichier déposé est un objet de test sous `media/<jour>/files/`, supprimé
  * à la fin — y compris si une étape échoue.
  *
- * Lit le `.env` du dépôt : B2_ENDPOINT, B2_REGION, B2_BUCKET, B2_KEY_ID et
- * B2_APP_KEY doivent être renseignés.
+ * Lit le `.env` du dépôt et vise le bucket privé qu'utilise le serveur :
+ * celui de Cloudflare R2 si `R2_*` est renseigné, sinon celui de Backblaze.
  */
 
 require('dotenv').config();
@@ -26,16 +26,15 @@ const OK = '✓';
 const KO = '✗';
 
 async function main() {
-  const manquantes = ['B2_ENDPOINT', 'B2_REGION', 'B2_BUCKET', 'B2_KEY_ID', 'B2_APP_KEY']
-    .filter((n) => !process.env[n]);
-  if (manquantes.length > 0) {
-    console.error(`${KO} Variables manquantes dans .env : ${manquantes.join(', ')}`);
-    console.error('  Voir .env.example, section « Stockage des médias (Backblaze B2) ».');
+  if (!storage.isB2Enabled()) {
+    console.error(`${KO} Bucket privé non configuré dans .env.`);
+    console.error('  Voir .env.example, section « Stockage des médias ».');
     process.exit(1);
   }
 
-  console.log(`Bucket   : ${storage.STORAGE.bucket}`);
-  console.log(`Endpoint : ${storage.STORAGE.endpoint}`);
+  const chezR2 = storage.etatMigrationPrivee().r2;
+  console.log(`Bucket   : ${storage.cibleDe('media/x').bucket}`);
+  console.log(`Service  : ${chezR2 ? 'Cloudflare R2' : 'Backblaze B2'}`);
   console.log('');
 
   const instant = Date.now();
@@ -98,9 +97,10 @@ async function main() {
   }
 
   if (echec) {
-    console.error('\nÉchec. Pistes : clé limitée à un autre bucket, « Allow List All Bucket Names » '
-      + 'non coché, région de l\'endpoint différente de celle du compte, ou clé principale '
-      + 'du compte utilisée (elle ne marche pas avec l\'API S3).');
+    console.error('\nÉchec. Pistes : clé limitée à un autre bucket ou sans droit d\'écriture, point '
+      + 'd\'accès d\'un autre compte ; chez Backblaze, « Allow List All Bucket Names » non coché, '
+      + 'région différente de celle du compte, ou clé principale utilisée (elle ne marche pas '
+      + 'avec l\'API S3).');
     process.exit(1);
   }
   console.log('\nTout est bon : le serveur peut parler à ce bucket.');

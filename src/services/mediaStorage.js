@@ -1,5 +1,6 @@
 /**
- * Stockage objet des médias — Backblaze B2, par son API compatible S3.
+ * Stockage objet des médias, par l'API compatible S3 : Cloudflare R2 pour les
+ * médias de discussion, Backblaze B2 pour les fichiers publics.
  *
  * Conception : docs/conception/medias-backblaze.html.
  *
@@ -12,19 +13,20 @@
  * Le serveur répond à cette adresse par une redirection vers un lien signé
  * (voir `middleware/mediaRead.js`) : le bucket reste privé.
  *
- * ── Backblaze est obligatoire ──
+ * ── Le stockage objet est obligatoire ──
  *
  * Aucun média n'est plus rangé ni lu sur le disque du serveur (retrait du
- * stockage disque, 28/09/2026 : les derniers médias du disque ont été copiés
- * chez Backblaze). Sans `B2_ENDPOINT`, `B2_REGION`, `B2_BUCKET`, `B2_KEY_ID` et
- * `B2_APP_KEY`, tout envoi et toute lecture de média répondent 503
- * `STORAGE_UNAVAILABLE` : jamais de repli silencieux vers le disque.
+ * stockage disque, 28/09/2026). Sans bucket privé entièrement configuré, tout
+ * envoi et toute lecture de média répondent 503 `STORAGE_UNAVAILABLE` : jamais
+ * de repli silencieux vers le disque.
  *
  * ── Trois buckets ──
  *
  * Conception : docs/conception/medias-buckets.html. Le préfixe de la clé
  * décide du bucket, sans rien demander au client :
- *  - `media/` : `B2_BUCKET` (alanyaprivate), privé, lu par lien signé ;
+ *  - `media/` : le bucket privé, lu par lien signé — `R2_BUCKET` chez
+ *    Cloudflare R2 dès que `R2_ENDPOINT`, `R2_BUCKET`, `R2_KEY_ID` et
+ *    `R2_APP_KEY` sont posés, sinon `B2_BUCKET` chez Backblaze ;
  *  - `images/` : `B2_PROFILE_BUCKET` (alanyaprofile), public ;
  *  - `voicemail/`, `ringtones/`, `official/` : `B2_PROFILEMEDIA_BUCKET`
  *    (profilemedia), public.
@@ -32,14 +34,23 @@
  * ce serveur. Tant qu'un bucket public n'est pas configuré (nom et clé), ses
  * préfixes restent dans le bucket privé, comme avant.
  *
+ * ── Départ du bucket privé de Backblaze ──
+ *
+ * Dès que R2 est configuré, les nouveaux médias y vont. Ceux d'avant sont
+ * encore chez Backblaze : tant que `MEDIA_PRIVATE_MIGRATED` n'est pas posé, une
+ * lecture cherche chez R2 puis chez Backblaze, une liste réunit les deux et une
+ * suppression vise les deux. La copie se fait par
+ * `scripts/maintenance/migrate-private-to-r2.js` ; une fois le réglage posé,
+ * l'ancien bucket n'est plus jamais consulté.
+ *
  * ── La purge n'est pas ici ──
  *
  * Elle est décidée par `mediaRetention.js`, message par message : 30 jours, ou
- * 365 pour un média qu'un abonné Alanya Plus peut encore demander. Backblaze
+ * 365 pour un média qu'un abonné Alanya Plus peut encore demander. Un bucket
  * n'applique qu'une durée par préfixe ; ses règles de cycle de vie ne sont
- * qu'un filet (`media/` masqué à 366 jours). Ce module ne supprime que sur
- * demande, et toujours toutes les versions : média échu, vue unique
- * consommée, photo ou annonce remplacée.
+ * qu'un filet (`media/` à 366 jours). Ce module ne supprime que sur demande,
+ * et toujours complètement : média échu, vue unique consommée, photo ou
+ * annonce remplacée.
  */
 
 const crypto = require('crypto');
@@ -93,6 +104,9 @@ const lireEntier = (nom, defaut, min, max) => {
   return Math.min(max, Math.max(min, n));
 };
 
+const lireOui = (nom) => ['1', 'true', 'oui', 'yes', 'on']
+  .includes(String(process.env[nom] || '').trim().toLowerCase());
+
 const STORAGE = {
   endpoint: process.env.B2_ENDPOINT || '',
   region: process.env.B2_REGION || '',
@@ -119,17 +133,70 @@ const STORAGE = {
   // (scripts/maintenance/migrate-public-buckets.js). Avant, une ancienne
   // adresse `/uploads/images/…` est lue dans le bucket privé, où le fichier se
   // trouve encore ; après, elle est redirigée vers le bucket public.
-  publicMigrated: ['1', 'true', 'oui', 'yes', 'on']
-    .includes(String(process.env.MEDIA_PUBLIC_MIGRATED || '').trim().toLowerCase()),
+  publicMigrated: lireOui('MEDIA_PUBLIC_MIGRATED'),
+  // Bucket privé chez Cloudflare R2. Complet, il reçoit les médias de
+  // discussion à la place de `B2_BUCKET`.
+  r2: {
+    endpoint: process.env.R2_ENDPOINT || '',
+    bucket: process.env.R2_BUCKET || '',
+    keyId: process.env.R2_KEY_ID || '',
+    appKey: process.env.R2_APP_KEY || '',
+  },
+  // Posé une fois les médias existants copiés de Backblaze vers R2
+  // (scripts/maintenance/migrate-private-to-r2.js). Avant, l'ancien bucket
+  // privé est encore consulté ; après, plus jamais.
+  privateMigrated: lireOui('MEDIA_PRIVATE_MIGRATED'),
 };
 
-const configurationComplete = () =>
+/**
+ * Point d'accès sans chemin. Le tableau de bord de Cloudflare affiche le sien
+ * suivi du nom du bucket : recopié tel quel, il ferait signer des liens faux.
+ */
+const origineDe = (url) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '';
+  }
+};
+
+const r2Configure = () => {
+  const c = STORAGE.r2;
+  return Boolean(origineDe(c.endpoint) && c.bucket && c.keyId && c.appKey);
+};
+
+/** Le bucket privé de Backblaze : celui d'origine, et celui qu'on quitte. */
+const b2PriveConfigure = () =>
   Boolean(STORAGE.endpoint && STORAGE.region && STORAGE.bucket && STORAGE.keyId && STORAGE.appKey);
 
-if (!configurationComplete() && process.env.NODE_ENV !== 'test') {
-  // Bruyant exprès : sans Backblaze, aucun média ne peut être déposé ni servi.
-  console.error('[MediaStorage] B2_ENDPOINT, B2_REGION, B2_BUCKET, B2_KEY_ID ou B2_APP_KEY '
-    + 'manque : aucun média ne pourra être déposé ni servi (503).');
+const configurationComplete = () => r2Configure() || b2PriveConfigure();
+
+/**
+ * `true` tant que des médias privés peuvent n'être encore que chez Backblaze :
+ * R2 a pris le relais, l'ancien bucket est toujours joignable, et la copie
+ * n'a pas été déclarée terminée.
+ */
+const ancienActif = () => r2Configure() && b2PriveConfigure() && !STORAGE.privateMigrated;
+
+if (process.env.NODE_ENV !== 'test') {
+  if (!configurationComplete()) {
+    // Bruyant exprès : sans bucket privé, aucun média ne peut être déposé ni servi.
+    console.error('[MediaStorage] bucket privé non configuré (R2_ENDPOINT, R2_BUCKET, R2_KEY_ID, '
+      + 'R2_APP_KEY — ou B2_ENDPOINT, B2_REGION, B2_BUCKET, B2_KEY_ID, B2_APP_KEY) : aucun média '
+      + 'ne pourra être déposé ni servi (503).');
+  }
+  // R2 à moitié configuré : les médias resteraient chez Backblaze sans que
+  // rien ne le dise.
+  const posesR2 = Object.values(STORAGE.r2).filter(Boolean).length;
+  if (posesR2 > 0 && !r2Configure()) {
+    console.error('[MediaStorage] R2 incomplet (point d\'accès, bucket, clé et secret requis) : '
+      + 'les médias de discussion restent chez Backblaze.');
+  }
+  if (ancienActif()) {
+    console.log('[MediaStorage] départ de Backblaze en cours : les médias de discussion vont chez R2, '
+      + 'l\'ancien bucket reste consulté. Après `npm run migrate:private-r2 -- --apply`, poser '
+      + 'MEDIA_PRIVATE_MIGRATED=true.');
+  }
 }
 
 // Un bucket public à moitié configuré : ses fichiers resteraient dans le
@@ -143,8 +210,10 @@ for (const [nom, conf] of Object.entries(STORAGE.publics)) {
 }
 
 /**
- * `true` si Backblaze est configuré. Sans lui, aucun média : les appelants
- * répondent 503 plutôt que de chercher un disque qui n'est plus utilisé.
+ * `true` si le bucket privé est configuré, chez R2 ou chez Backblaze (le nom
+ * date de l'époque où tout était chez Backblaze). Sans lui, aucun média : les
+ * appelants répondent 503 plutôt que de chercher un disque qui n'est plus
+ * utilisé.
  */
 const isB2Enabled = () => configurationComplete();
 
@@ -153,19 +222,36 @@ const isB2Enabled = () => configurationComplete();
 const clientsReels = new Map();
 let clientDeTest = null;
 
-/** Identifiants du bucket `nom` : `prive`, ou un bucket public. */
-const identifiantsDe = (nom) => (nom === 'prive'
-  ? { keyId: STORAGE.keyId, appKey: STORAGE.appKey }
-  : STORAGE.publics[nom]);
+/**
+ * Réglages du bucket `nom` :
+ *  - `prive` : les médias de discussion — chez R2 s'il est configuré, sinon
+ *    chez Backblaze ;
+ *  - `ancien` : le bucket privé de Backblaze, pendant qu'on le quitte ;
+ *  - `profile`, `profilemedia` : les buckets publics, chez Backblaze.
+ *
+ * `versions` : Backblaze garde les versions d'une clé, R2 non.
+ */
+function reglagesDe(nom) {
+  if (nom === 'prive' && r2Configure()) {
+    return { ...STORAGE.r2, endpoint: origineDe(STORAGE.r2.endpoint), region: 'auto', versions: false };
+  }
+  const b2 = { endpoint: STORAGE.endpoint, region: STORAGE.region, versions: true };
+  if (nom === 'prive' || nom === 'ancien') {
+    return { ...b2, bucket: STORAGE.bucket, keyId: STORAGE.keyId, appKey: STORAGE.appKey };
+  }
+  return { ...b2, ...STORAGE.publics[nom] };
+}
+
+const bucketDe = (nom) => reglagesDe(nom).bucket;
 
 /** Client configuré : sert à signer (calcul local, sans réseau) et à envoyer. */
 function clientConfigure(nom = 'prive') {
   if (!clientsReels.has(nom)) {
     const { S3Client } = require('@aws-sdk/client-s3');
-    const { keyId, appKey } = identifiantsDe(nom);
+    const { endpoint, region, keyId, appKey } = reglagesDe(nom);
     clientsReels.set(nom, new S3Client({
-      endpoint: STORAGE.endpoint,
-      region: STORAGE.region,
+      endpoint,
+      region,
       credentials: { accessKeyId: keyId, secretAccessKey: appKey },
       // Les versions récentes du SDK ajoutent d'office des sommes de contrôle
       // CRC32 que des services compatibles S3 refusent. On s'en tient à celles
@@ -182,10 +268,10 @@ const clientEnvoi = (nom = 'prive') => clientDeTest || clientConfigure(nom);
 
 // ── Buckets ─────────────────────────────────────────────────────────────────
 
-/** `true` si le bucket public `nom` a un nom et une clé. */
+/** `true` si le bucket public `nom` a un nom, une clé et un point d'accès. */
 const publicConfigure = (nom) => {
   const c = STORAGE.publics[nom];
-  return Boolean(c && c.bucket && c.keyId && c.appKey);
+  return Boolean(c && c.bucket && c.keyId && c.appKey && STORAGE.endpoint && STORAGE.region);
 };
 
 /**
@@ -200,7 +286,7 @@ function cibleDe(key) {
   if (nom && isB2Enabled() && publicConfigure(nom)) {
     return { nom, bucket: STORAGE.publics[nom].bucket, publique: true };
   }
-  return { nom: 'prive', bucket: STORAGE.bucket, publique: false };
+  return { nom: 'prive', bucket: bucketDe('prive'), publique: false };
 }
 
 /** Adresse de lecture directe d'un bucket public. */
@@ -387,13 +473,28 @@ async function presignRead(key, method = 'GET') {
   const { GetObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
   const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
   const Commande = method === 'HEAD' ? HeadObjectCommand : GetObjectCommand;
-  // Toujours le bucket privé : un fichier public se lit sans signature, et un
+  // Toujours un bucket privé : un fichier public se lit sans signature, et un
   // ancien fichier public pas encore copié y est encore.
+  const nom = await lieuDeLecture(key);
   return getSignedUrl(
-    clientConfigure('prive'),
-    new Commande({ Bucket: STORAGE.bucket, Key: key }),
+    clientConfigure(nom),
+    new Commande({ Bucket: bucketDe(nom), Key: key }),
     { expiresIn: STORAGE.downloadTtlS },
   );
+}
+
+/**
+ * Bucket privé où lire `key`. Pendant le départ de Backblaze, un média pas
+ * encore copié n'est que dans l'ancien bucket : une requête à R2 le dit. Dans
+ * le doute, R2 — c'est là que tout finit.
+ */
+async function lieuDeLecture(key) {
+  if (!ancienActif()) return 'prive';
+  try {
+    return (await headObject(key, { depuis: 'prive' })) ? 'prive' : 'ancien';
+  } catch {
+    return 'prive';
+  }
 }
 
 /**
@@ -401,7 +502,7 @@ async function presignRead(key, method = 'GET') {
  *
  * Le type, la taille et l'en-tête de cache font partie de la signature : un
  * envoi qui ne correspond pas à ce que le serveur a autorisé est refusé par
- * Backblaze lui-même. `headers` liste ce que le client doit envoyer à
+ * le stockage lui-même. `headers` liste ce que le client doit envoyer à
  * l'identique (la taille, il la pose de lui-même).
  */
 async function presignUpload(key, { contentType, contentLength }) {
@@ -459,7 +560,7 @@ async function putBody(key, corps, { contentType } = {}) {
 }
 
 /**
- * Copie côté Backblaze : aucun octet ne passe par le serveur. Dans un même
+ * Copie côté stockage : aucun octet ne passe par le serveur. Dans un même
  * bucket seulement — chaque clé d'application est limitée au sien.
  */
 async function copyObject(cleSource, cleCible) {
@@ -482,9 +583,8 @@ async function copyObject(cleSource, cleCible) {
 async function headObject(key, { depuis } = {}) {
   const { HeadObjectCommand } = require('@aws-sdk/client-s3');
   const nom = depuis || cibleDe(key).nom;
-  const bucket = nom === 'prive' ? STORAGE.bucket : STORAGE.publics[nom].bucket;
   try {
-    await clientEnvoi(nom).send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    await clientEnvoi(nom).send(new HeadObjectCommand({ Bucket: bucketDe(nom), Key: key }));
     return true;
   } catch (e) {
     if (e?.$metadata?.httpStatusCode === 404 || e?.name === 'NotFound') return false;
@@ -492,51 +592,72 @@ async function headObject(key, { depuis } = {}) {
   }
 }
 
-/** Contenu d'une clé du bucket privé : `{ Body, ContentType }` (migration). */
-async function readPrivateObject(key) {
+/**
+ * Contenu d'une clé du bucket privé, ou de l'ancien (`depuis: 'ancien'`) :
+ * `{ Body, ContentType }` (migrations).
+ */
+async function readPrivateObject(key, { depuis = 'prive' } = {}) {
   const { GetObjectCommand } = require('@aws-sdk/client-s3');
-  return clientEnvoi('prive').send(new GetObjectCommand({ Bucket: STORAGE.bucket, Key: key }));
+  return clientEnvoi(depuis).send(new GetObjectCommand({ Bucket: bucketDe(depuis), Key: key }));
 }
 
 /**
- * Supprime **toutes les versions** d'une clé.
+ * Supprime une clé pour de bon, **toutes versions comprises**. Renvoie le
+ * nombre de suppressions faites.
  *
- * Une suppression simple ne fait que masquer le fichier : il reste stocké, et
- * récupérable, jusqu'au passage quotidien des règles de cycle de vie. Pour un
- * média à vue unique consommé, ce n'est pas acceptable. Les versions sont
- * supprimées une à une : il n'y en a qu'une ou deux, et `DeleteObjects`
- * exigerait une somme de contrôle que tous les services compatibles S3 ne
- * calculent pas de la même façon.
+ * Chez Backblaze, une suppression simple ne fait que masquer le fichier : il
+ * reste stocké, et récupérable, jusqu'au passage quotidien des règles de cycle
+ * de vie. Pour un média à vue unique consommé, ce n'est pas acceptable. Les
+ * versions sont supprimées une à une : il n'y en a qu'une ou deux, et
+ * `DeleteObjects` exigerait une somme de contrôle que tous les services
+ * compatibles S3 ne calculent pas de la même façon. R2 ne garde aucune
+ * version : une suppression y est immédiate et définitive.
  */
 async function removeAllVersions(key, { seulement } = {}) {
-  const { ListObjectVersionsCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
-  // Un fichier public a pu naître dans le bucket privé, avant la répartition :
-  // il est cherché aux deux endroits. `seulement: 'prive'` ne vise que le
-  // privé — le nettoyage qui suit la copie ne doit pas toucher à la copie.
   const cible = cibleDe(key);
-  const prive = { nom: 'prive', bucket: STORAGE.bucket };
-  let lieux = cible.publique ? [cible, prive] : [cible];
-  if (seulement === 'prive') lieux = [prive];
+  let lieux;
+  if (seulement === 'prive') {
+    // Le nettoyage qui suit la copie vers un bucket public ne doit pas
+    // toucher à la copie.
+    lieux = ['prive'];
+  } else if (cible.publique) {
+    // Un fichier public a pu naître dans le bucket privé de Backblaze, avant
+    // la répartition : il est cherché aux deux endroits. Le bucket R2, plus
+    // récent, n'en a jamais reçu.
+    lieux = r2Configure() ? [cible.nom] : [cible.nom, 'prive'];
+  } else {
+    // Pendant le départ de Backblaze, un média privé peut exister des deux
+    // côtés : une vue unique consommée ne doit survivre dans aucun.
+    lieux = ancienActif() ? ['prive', 'ancien'] : ['prive'];
+  }
   let total = 0;
-  for (const lieu of lieux) {
+  for (const nom of lieux) {
     // eslint-disable-next-line no-await-in-loop
-    const res = await clientEnvoi(lieu.nom).send(new ListObjectVersionsCommand({
-      Bucket: lieu.bucket,
-      Prefix: key,
-    }));
-    const versions = [...(res.Versions || []), ...(res.DeleteMarkers || [])]
-      .filter((v) => v.Key === key);
-    for (const v of versions) {
-      // eslint-disable-next-line no-await-in-loop
-      await clientEnvoi(lieu.nom).send(new DeleteObjectCommand({
-        Bucket: lieu.bucket,
-        Key: key,
-        VersionId: v.VersionId,
-      }));
-    }
-    total += versions.length;
+    total += await supprimerDans(nom, key);
   }
   return total;
+}
+
+/** Supprime `key` du bucket `nom` ; renvoie le nombre de suppressions faites. */
+async function supprimerDans(nom, key) {
+  const { ListObjectVersionsCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+  const { bucket, versions } = reglagesDe(nom);
+  if (!versions) {
+    await clientEnvoi(nom).send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    return 1;
+  }
+  const res = await clientEnvoi(nom).send(new ListObjectVersionsCommand({ Bucket: bucket, Prefix: key }));
+  const trouvees = [...(res.Versions || []), ...(res.DeleteMarkers || [])]
+    .filter((v) => v.Key === key);
+  for (const v of trouvees) {
+    // eslint-disable-next-line no-await-in-loop
+    await clientEnvoi(nom).send(new DeleteObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      VersionId: v.VersionId,
+    }));
+  }
+  return trouvees.length;
 }
 
 /**
@@ -544,9 +665,21 @@ async function removeAllVersions(key, { seulement } = {}) {
  * confondues. Dans le bucket du préfixe, ou dans le bucket `depuis`.
  */
 async function listPrefix(prefixe, { depuis } = {}) {
-  const { ListObjectsV2Command } = require('@aws-sdk/client-s3');
   const nom = depuis || cibleDe(prefixe).nom;
-  const bucket = nom === 'prive' ? STORAGE.bucket : STORAGE.publics[nom].bucket;
+  const objets = await listerDans(nom, prefixe);
+  if (depuis || nom !== 'prive' || !ancienActif()) return objets;
+  // Pendant le départ de Backblaze, un média privé peut n'être encore que
+  // dans l'ancien bucket.
+  const connus = new Set(objets.map((o) => o.key));
+  for (const o of await listerDans('ancien', prefixe)) {
+    if (!connus.has(o.key)) objets.push(o);
+  }
+  return objets;
+}
+
+async function listerDans(nom, prefixe) {
+  const { ListObjectsV2Command } = require('@aws-sdk/client-s3');
+  const bucket = bucketDe(nom);
   const out = [];
   let jeton;
   do {
@@ -570,7 +703,7 @@ async function listPrefix(prefixe, { depuis } = {}) {
 
 /**
  * Copie propre d'un média transféré, dans la partition du jour, côté
- * Backblaze : aucun octet ne passe par le serveur.
+ * stockage : aucun octet ne passe par le serveur.
  *
  * Chaque message garantit ainsi la rétention à son propre média : sans copie,
  * le transfert mourrait avec le média d'origine. Renvoie la nouvelle clé, ou
@@ -595,9 +728,25 @@ async function copyForForward(mediaUrl, { alanyaID, instant = Date.now() } = {})
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-/** Réglages de test : configuration, et faux client pour les requêtes réseau. */
-function configureForTests({ client, publics, ...reglages } = {}) {
-  Object.assign(STORAGE, reglages);
+/**
+ * État du départ de Backblaze, pour le script de copie : `r2` (le bucket privé
+ * est chez R2), `ancien` (le bucket privé de Backblaze est joignable),
+ * `terminee` (`MEDIA_PRIVATE_MIGRATED` est posé).
+ */
+const etatMigrationPrivee = () => ({
+  r2: r2Configure(),
+  ancien: b2PriveConfigure(),
+  terminee: STORAGE.privateMigrated,
+});
+
+/**
+ * Réglages de test : configuration, et faux client pour les requêtes réseau.
+ * R2 et la fin de migration sont remis à zéro à chaque appel : le `.env` de
+ * développement, que certains tests chargent, ne doit pas décider à leur place.
+ */
+function configureForTests({ client, publics, r2, privateMigrated = false, ...reglages } = {}) {
+  Object.assign(STORAGE, reglages, { privateMigrated });
+  Object.assign(STORAGE.r2, { endpoint: '', bucket: '', keyId: '', appKey: '' }, r2);
   if (publics) {
     for (const [nom, conf] of Object.entries(publics)) Object.assign(STORAGE.publics[nom], conf);
   }
@@ -621,6 +770,7 @@ module.exports = {
   ringtoneKey,
   ringtoneUrl,
   cibleDe,
+  etatMigrationPrivee,
   publicUrl,
   contentTypeForKey,
   presignRead,
