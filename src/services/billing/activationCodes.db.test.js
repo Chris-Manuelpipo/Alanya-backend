@@ -280,19 +280,31 @@ const dansMois = (from, n) => {
     /* ── Émission d'une commande du site : rejouable sans doublon ────── */
     {
       const ref = `test-commande-${Date.now()}`;
+      await setSettings({ codes_per_payment: 3 });
       const un = await codes.issueActivationCode({ amountPaid: 1000, orderRef: ref, buyerContact: 'client@example.com' });
-      codeIds.push(un.id);
+      codeIds.push(...un.codes.map((c) => c.id));
       assert.strictEqual(un.created, true);
-      assert.ok(un.code);
-      const [[row]] = await pool.execute('SELECT * FROM activation_code WHERE id = ?', [un.id]);
-      assert.strictEqual(Number(row.amount_paid), 1000);
-      assert.strictEqual(Number(row.source), 0);
-      assert.strictEqual(row.buyer_contact, 'client@example.com');
+      assert.strictEqual(un.codes.length, 3, 'trois codes par paiement');
+      assert.ok(un.codes.every((c) => c.code), 'clair rendu à la création');
+      assert.strictEqual(new Set(un.codes.map((c) => c.code)).size, 3);
+      const [rows] = await pool.execute('SELECT * FROM activation_code WHERE order_ref LIKE ? ORDER BY id', [`${ref}#%`]);
+      assert.strictEqual(rows.length, 3);
+      assert.strictEqual(rows.reduce((t, r) => t + Number(r.amount_paid), 0), 1000, 'la somme vaut le montant encaissé');
+      assert.ok(rows.every((r) => Number(r.source) === 0 && r.buyer_contact === 'client@example.com'));
 
       const deux = await codes.issueActivationCode({ amountPaid: 1000, orderRef: ref });
-      assert.strictEqual(deux.created, false, 'webhook rejoué : aucun second code');
-      assert.strictEqual(deux.code, null, 'le clair n\'est jamais redonné');
-      assert.strictEqual(deux.id, un.id);
+      assert.strictEqual(deux.created, false, 'webhook rejoué : aucun second jeu');
+      assert.ok(deux.codes.every((c) => c.code === null), 'le clair n\'est jamais redonné');
+      assert.deepStrictEqual(deux.codes.map((c) => c.id), un.codes.map((c) => c.id));
+
+      // Le réglage change : le prochain paiement suit, les codes déjà émis non.
+      await setSettings({ codes_per_payment: 5 });
+      const refCinq = `test-commande-cinq-${Date.now()}`;
+      const cinq = await codes.issueActivationCode({ amountPaid: 1000, orderRef: refCinq });
+      codeIds.push(...cinq.codes.map((c) => c.id));
+      assert.strictEqual(cinq.codes.length, 5);
+      assert.strictEqual((await codes.issueActivationCode({ amountPaid: 1000, orderRef: ref })).codes.length, 3);
+      await setSettings({ codes_per_payment: 3 });
 
       const ref2 = `test-commande-course-${Date.now()}`;
       const course = await Promise.all([
@@ -300,14 +312,14 @@ const dansMois = (from, n) => {
         codes.issueActivationCode({ amountPaid: 1000, orderRef: ref2 }),
         codes.issueActivationCode({ amountPaid: 1000, orderRef: ref2 }),
       ]);
-      codeIds.push(...course.filter((c) => c.id).map((c) => c.id));
-      assert.strictEqual(course.filter((c) => c.created).length, 1, 'trois webhooks simultanés : un code');
-      const [[{ n }]] = await pool.execute('SELECT COUNT(*) AS n FROM activation_code WHERE order_ref = ?', [ref2]);
-      assert.strictEqual(Number(n), 1);
+      codeIds.push(...course.flatMap((c) => c.codes.map((x) => x.id)));
+      assert.strictEqual(course.filter((c) => c.created).length, 1, 'trois webhooks simultanés : un seul jeu');
+      const [[{ n }]] = await pool.execute('SELECT COUNT(*) AS n FROM activation_code WHERE order_ref LIKE ?', [`${ref2}#%`]);
+      assert.strictEqual(Number(n), 3);
 
       // Le prix du plan change : le code déjà vendu garde le sien.
       await pool.execute('UPDATE plan SET price_amount = 1500 WHERE code = ?', ['plus_annuel']);
-      const [[vieux]] = await pool.execute('SELECT amount_paid FROM activation_code WHERE id = ?', [un.id]);
+      const [[vieux]] = await pool.execute('SELECT amount_paid FROM activation_code WHERE id = ?', [un.codes[0].id]);
       assert.strictEqual(Number(vieux.amount_paid), 1000);
       await pool.execute('UPDATE plan SET price_amount = 1000 WHERE code = ?', ['plus_annuel']);
 

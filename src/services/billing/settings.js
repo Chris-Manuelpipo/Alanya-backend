@@ -30,6 +30,7 @@ const DEFAULTS = Object.freeze({
   trial_days: 0,
   retention_days: 30,
   pay_url: null,
+  codes_per_payment: 3,
   updated_by: null,
   updated_at: null,
 });

@@ -40,6 +40,10 @@ const CODE_STATUS = Object.freeze({ AVAILABLE: 0, REDEEMED: 1, REVOKED: 2 });
 const DEFAULT_VALIDITY_DAYS = 365;
 const MAX_VALIDITY_DAYS = 730;
 const MAX_BATCH = 200;
+/** `order_ref` fait 120 caractères ; le suffixe `#n` en prend 3 au plus. */
+const MAX_ORDER_REF = 110;
+/** Valeur de repli si le réglage manque (migration 096 non appliquée). */
+const DEFAULT_CODES_PER_PAYMENT = 3;
 
 function secret() {
   const blocker = codeSecretBlocker();
@@ -89,33 +93,45 @@ async function insertCode(conn, key, plan, {
 const expiryFrom = (now, validityDays) => new Date(now.getTime() + validityDays * DAY_MS);
 
 /**
- * Émet le code d'une commande payée sur le site. À appeler une seule fois la
- * commande confirmée par le fournisseur — mais sans danger si le webhook est
- * rejoué : `orderRef` est unique, la seconde émission ne crée rien.
+ * Émet les codes d'une commande payée sur le site : `codes_per_payment` codes
+ * (réglage du backoffice, 3 par défaut) — le payant garde le sien et donne les
+ * autres à ses proches. À appeler une seule fois la commande confirmée par le
+ * fournisseur — mais sans danger si le webhook est rejoué : chaque code porte
+ * `orderRef#n`, unique, et la seconde émission ne crée rien.
  *
- * Le prix et la durée du plan sont recopiés sur le code : changer le plan plus
- * tard ne touche aucun code déjà vendu.
+ * Le prix et la durée du plan sont recopiés sur chaque code : changer le plan
+ * ou le nombre de codes plus tard ne touche aucun code déjà vendu. Le prix
+ * payé est porté par le premier code ; les suivants valent 0, pour que la
+ * somme des codes d'une commande reste le montant encaissé.
  *
- * @returns {Promise<{ created: boolean, id: number, code: string|null, hint: string }>}
+ * @returns {Promise<{ created: boolean, codes: Array<{ id: number, code: string|null, hint: string }> }>}
  *   `code` est le texte en clair à la création seulement ; une réémission
  *   rejouée rend `created: false` et `code: null` — le site a déjà montré et
- *   envoyé le premier, il ne peut pas le redemander.
+ *   envoyé les premiers, il ne peut pas les redemander.
  */
 async function issueActivationCode({
   planId = null, amountPaid, currency = null, orderRef, buyerContact = null,
   validityDays = DEFAULT_VALIDITY_DAYS, now = new Date(),
 }) {
-  if (typeof orderRef !== 'string' || !orderRef.trim() || orderRef.length > 120) {
-    throw new BillingError('INVALID_CODE_ORDER', 400, 'orderRef est obligatoire (120 caractères au plus)');
+  if (typeof orderRef !== 'string' || !orderRef.trim() || orderRef.length > MAX_ORDER_REF) {
+    throw new BillingError('INVALID_CODE_ORDER', 400,
+      `orderRef est obligatoire (${MAX_ORDER_REF} caractères au plus)`);
   }
   if (!Number.isInteger(amountPaid) || amountPaid < 0) {
     throw new BillingError('INVALID_CODE_ORDER', 400, 'amountPaid doit être un entier positif ou nul');
   }
   const key = secret();
-  const [[existing]] = await pool.execute(
-    'SELECT id, code_hint FROM activation_code WHERE order_ref = ?', [orderRef],
-  );
-  if (existing) return { created: false, id: existing.id, code: null, hint: existing.code_hint };
+  const replayed = async () => {
+    const [rows] = await pool.execute(
+      'SELECT id, code_hint FROM activation_code WHERE order_ref LIKE ? ORDER BY id',
+      [`${orderRef.replace(/[\\%_]/g, '\\$&')}#%`],
+    );
+    return rows.length
+      ? { created: false, codes: rows.map((r) => ({ id: r.id, code: null, hint: r.code_hint })) }
+      : null;
+  };
+  const already = await replayed();
+  if (already) return already;
 
   let plan;
   if (planId != null) {
@@ -125,21 +141,29 @@ async function issueActivationCode({
   }
   if (!plan) throw new BillingError('PLAN_NOT_FOUND', 404, 'Aucun plan à vendre');
 
+  const count = Number((await getBillingSettings()).codes_per_payment) || DEFAULT_CODES_PER_PAYMENT;
+  const conn = await pool.getConnection();
   try {
-    const made = await insertCode(pool, key, plan, {
-      source: CODE_SOURCE.WEB, orderRef, buyerContact, amountPaid, currency,
-      expiresAt: expiryFrom(now, validityDays),
-    });
-    return { created: true, ...made };
+    await conn.beginTransaction();
+    const made = [];
+    for (let n = 1; n <= count; n++) {
+      made.push(await insertCode(conn, key, plan, {
+        source: CODE_SOURCE.WEB, orderRef: `${orderRef}#${n}`, buyerContact,
+        amountPaid: n === 1 ? amountPaid : 0, currency,
+        expiresAt: expiryFrom(now, validityDays),
+      }));
+    }
+    await conn.commit();
+    return { created: true, codes: made };
   } catch (err) {
+    await conn.rollback();
     // Deux appels simultanés pour la même commande : l'un a gagné.
     if (err.code === 'ER_DUP_ENTRY' && /uq_code_order/.test(err.message)) {
-      const [[row]] = await pool.execute(
-        'SELECT id, code_hint FROM activation_code WHERE order_ref = ?', [orderRef],
-      );
-      return { created: false, id: row?.id ?? null, code: null, hint: row?.code_hint ?? null };
+      return (await replayed()) ?? { created: false, codes: [] };
     }
     throw err;
+  } finally {
+    conn.release();
   }
 }
 

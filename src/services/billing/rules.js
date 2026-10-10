@@ -415,6 +415,7 @@ function parseSettingsPatch(body) {
     default_grace_days: [MIN_GRACE_DAYS, 365],
     trial_days: [0, 365],
     retention_days: [0, 365],
+    codes_per_payment: [1, 10],
   };
   for (const [key, [min, max]] of Object.entries(bounds)) {
     if (src[key] === undefined) continue;

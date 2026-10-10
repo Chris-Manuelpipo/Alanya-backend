@@ -228,6 +228,10 @@ assert.strictEqual(activationBlocker({ NODE_ENV: 'development' }), null, 'le sim
 assert.deepStrictEqual(parseSettingsPatch({ trial_days: 0, retention_days: '45' }).value,
   { trial_days: 0, retention_days: 45 });
 assert.strictEqual(parseSettingsPatch({ default_grace_days: 6 }).code, 'INVALID_GRACE', '7 jours au moins');
+assert.strictEqual(parseSettingsPatch({ codes_per_payment: 3 }).value.codes_per_payment, 3);
+assert.strictEqual(parseSettingsPatch({ codes_per_payment: '5' }).value.codes_per_payment, 5);
+assert.strictEqual(parseSettingsPatch({ codes_per_payment: 0 }).code, 'INVALID_BILLING_SETTING', 'au moins un code');
+assert.strictEqual(parseSettingsPatch({ codes_per_payment: 11 }).code, 'INVALID_BILLING_SETTING', 'dix codes au plus');
 assert.strictEqual(parseSettingsPatch({ default_grace_days: 7 }).ok, true);
 assert.strictEqual(parseSettingsPatch({ retention_days: -1 }).code, 'INVALID_BILLING_SETTING');
 assert.strictEqual(parseSettingsPatch({}).code, 'NO_FIELDS_TO_UPDATE');
