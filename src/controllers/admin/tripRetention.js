@@ -18,6 +18,7 @@ const {
   purgeTripPoints,
   fetchTraceRetentionStats,
 } = require('../../services/tripRetention');
+const { resolveOptions } = require('../../services/purgeRegistry');
 
 // __dirname = src/controllers/admin → racine projet = ../../../
 const _LOG_FILE = path.join(__dirname, '../../../data/trip-purge-log.json');
@@ -44,7 +45,12 @@ const _appendLog = async (entry) => {
 /** Admin : état de la rétention — ce qui est stocké, ce qui est purgeable. */
 const getTripRetention = async (req, res) => {
   try {
-    const [stats, runs] = await Promise.all([fetchTraceRetentionStats(), _readLog()]);
+    // Durées réglées sur la page Purges : les mêmes que le balayage nocturne.
+    const retention = await resolveOptions('trip');
+    const [stats, runs] = await Promise.all([
+      fetchTraceRetentionStats(undefined, retention),
+      _readLog(),
+    ]);
     res.json({ ...stats, runs });
   } catch (error) {
     console.error('[Admin] getTripRetention error:', error.message);
@@ -65,7 +71,8 @@ const getTripRetention = async (req, res) => {
 const runTripPurge = async (req, res) => {
   try {
     const scope = req.body?.scope === 'all' ? 'all' : 'retention';
-    const result = await purgeTripPoints(null, { ignoreRetention: scope === 'all' });
+    const retention = await resolveOptions('trip');
+    const result = await purgeTripPoints(null, { ignoreRetention: scope === 'all', retention });
 
     const entry = {
       at: new Date().toISOString(),
@@ -80,7 +87,7 @@ const runTripPurge = async (req, res) => {
       + `${result.points} points, ${result.trips} trajets marqués`,
     );
 
-    const stats = await fetchTraceRetentionStats();
+    const stats = await fetchTraceRetentionStats(undefined, retention);
     res.json({ ...stats, runs, lastRun: entry });
   } catch (error) {
     console.error('[Admin] runTripPurge error:', error.message);

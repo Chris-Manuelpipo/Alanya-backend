@@ -29,8 +29,12 @@ const policy = require('../constants/tripPolicy');
  * manuelle, qui efface tout de suite au lieu d'attendre l'échéance. Un trajet
  * en cours n'est JAMAIS concerné — sa trace, c'est le suivi live lui-même, et
  * l'effacer couperait un partage en train de protéger quelqu'un.
+ *
+ * `retention` porte les durées effectives : celles réglées depuis l'admin
+ * (registre des purges, `resolveOptions('trip')`), à défaut celles du `.env`.
+ * Sans ce paramètre, les durées réglées à l'écran n'étaient jamais appliquées.
  */
-const expiredTraceWhere = ({ ignoreRetention = false } = {}) => (
+const expiredTraceWhere = ({ ignoreRetention = false, retention = policy.RETENTION } = {}) => (
   ignoreRetention
     ? { sql: 't.closed_at IS NOT NULL', params: [] }
     : {
@@ -40,7 +44,7 @@ const expiredTraceWhere = ({ ignoreRetention = false } = {}) => (
            OR (t.alerted_at IS NOT NULL
                AND t.closed_at < DATE_SUB(NOW(), INTERVAL ? DAY))
         )`,
-      params: [policy.RETENTION.pointsHours, policy.RETENTION.pointsIncidentDays],
+      params: [retention.pointsHours, retention.pointsIncidentDays],
     }
 );
 
@@ -49,7 +53,7 @@ const expiredTraceWhere = ({ ignoreRetention = false } = {}) => (
  * points supprimés et le nombre de trajets nouvellement marqués purgés.
  *
  * @param {number|null} tripId   restreint à un trajet, ou `null` pour tous
- * @param {{ignoreRetention?: boolean}} options
+ * @param {{ignoreRetention?: boolean, retention?: object}} options
  */
 const purgeTripPoints = async (tripId = null, options = {}, db = pool) => {
   const cible = expiredTraceWhere(options);
@@ -80,13 +84,13 @@ const purgeTripPoints = async (tripId = null, options = {}, db = pool) => {
 };
 
 /** Purge nocturne complète : la trace, puis les trajets trop vieux. */
-const runNightlyTripPurge = async (db = pool) => {
-  const { points } = await purgeTripPoints(null, {}, db);
+const runNightlyTripPurge = async (db = pool, retention = policy.RETENTION) => {
+  const { points } = await purgeTripPoints(null, { retention }, db);
   const [res] = await db.execute(
     `DELETE FROM trip
       WHERE closed_at IS NOT NULL
         AND closed_at < DATE_SUB(NOW(), INTERVAL ? MONTH)`,
-    [policy.RETENTION.tripMonths],
+    [retention.tripMonths],
   );
   if (points || res.affectedRows) {
     console.log(`[Trips] purge : ${points} points, ${res.affectedRows} trajets`);
@@ -101,8 +105,8 @@ const runNightlyTripPurge = async (db = pool) => {
  * aucune identité : cet écran sert à savoir combien de traces dorment encore,
  * pas à regarder où les gens sont allés.
  */
-const fetchTraceRetentionStats = async (db = pool) => {
-  const echu = expiredTraceWhere();
+const fetchTraceRetentionStats = async (db = pool, retention = policy.RETENTION) => {
+  const echu = expiredTraceWhere({ retention });
   const clos = expiredTraceWhere({ ignoreRetention: true });
 
   const [
@@ -146,9 +150,9 @@ const fetchTraceRetentionStats = async (db = pool) => {
 
   return {
     policy: {
-      pointsHours: policy.RETENTION.pointsHours,
-      pointsIncidentDays: policy.RETENTION.pointsIncidentDays,
-      tripMonths: policy.RETENTION.tripMonths,
+      pointsHours: retention.pointsHours,
+      pointsIncidentDays: retention.pointsIncidentDays,
+      tripMonths: retention.tripMonths,
     },
     stored: {
       points: n(stockRow?.points),

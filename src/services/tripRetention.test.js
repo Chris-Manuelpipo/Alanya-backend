@@ -3,6 +3,7 @@ const assert = require('assert');
 const {
   expiredTraceWhere,
   purgeTripPoints,
+  runNightlyTripPurge,
   fetchTraceRetentionStats,
 } = require('./tripRetention');
 const policy = require('../constants/tripPolicy');
@@ -82,6 +83,32 @@ async function main() {
     assert.ok(db.calls[0].sql.includes('t.closed_at IS NOT NULL'));
   }
 
+  // Durées réglées depuis l'admin : elles remplacent celles du `.env`, pour la
+  // trace COMME pour les trajets entiers. C'est ce que la purge ignorait.
+  {
+    const reglees = { pointsHours: 48, pointsIncidentDays: 90, tripMonths: 6 };
+    const db = recordingDb([[{ affectedRows: 4 }], [{ affectedRows: 1 }], [{ affectedRows: 2 }]]);
+    const res = await runNightlyTripPurge(db, reglees);
+
+    assert.deepStrictEqual(res, { points: 4, trips: 2 });
+    const [del, upd, trajets] = db.calls;
+    assert.deepStrictEqual(del.params, [48, 90]);
+    assert.deepStrictEqual(upd.params, [48, 90]);
+    assert.ok(trajets.sql.startsWith('DELETE FROM trip'));
+    assert.deepStrictEqual(trajets.params, [6]);
+  }
+
+  // Sans durées passées : celles de la politique, comme avant.
+  {
+    const db = recordingDb([]);
+    await runNightlyTripPurge(db);
+    assert.deepStrictEqual(db.calls[0].params, [
+      policy.RETENTION.pointsHours,
+      policy.RETENTION.pointsIncidentDays,
+    ]);
+    assert.deepStrictEqual(db.calls[2].params, [policy.RETENTION.tripMonths]);
+  }
+
   // ── Les compteurs de l'admin ────────────────────────────────────────
   {
     const db = recordingDb([
@@ -104,6 +131,20 @@ async function main() {
     for (const interdit of ['lat', 'lng', 'ownerId', 'owner_id', 'alanyaID', 'tripId', 'destLabel']) {
       assert.ok(!keys.includes(interdit), `champ interdit exposé : ${interdit}`);
     }
+  }
+
+  // Les compteurs suivent les mêmes durées que la purge, et les affichent.
+  {
+    const reglees = { pointsHours: 48, pointsIncidentDays: 90, tripMonths: 6 };
+    const db = recordingDb([
+      [[{ points: 0, trips: 0, oldest: null }]],
+      [[{ points: 0, trips: 0 }]],
+      [[{ points: 0, trips: 0 }]],
+      [[{ trips: 0 }]],
+    ]);
+    const stats = await fetchTraceRetentionStats(db, reglees);
+    assert.deepStrictEqual(db.calls[1].params, [48, 90]);
+    assert.deepStrictEqual(stats.policy, reglees);
   }
 
   // Une base vide ne doit pas produire de NaN ni de date invalide.

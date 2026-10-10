@@ -210,13 +210,13 @@ const DESCRIPTORS = {
         default: () => tripPolicy.RETENTION.tripMonths,
       },
     ],
-    async stats() {
+    async stats(opts) {
       const { fetchTraceRetentionStats } = require('./tripRetention');
-      return fetchTraceRetentionStats();
+      return fetchTraceRetentionStats(undefined, opts);
     },
-    async run() {
+    async run(opts) {
       const { runNightlyTripPurge } = require('./tripRetention');
-      return runNightlyTripPurge();
+      return runNightlyTripPurge(undefined, opts);
     },
   },
 

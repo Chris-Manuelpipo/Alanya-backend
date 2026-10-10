@@ -432,6 +432,10 @@ async function start() {
         // l'affichait « jamais exécutée » en permanence. Le bail n'a pas besoin
         // d'être semé, `tryAcquire` le crée à la volée.
         ['backup_key_access_purge', 'backup_key_access'],
+        // Même oubli pour les enveloppes de chiffrement (registre depuis le
+        // 02/10) : activée à l'écran, elle ne tournait qu'à la main.
+        // `purgeSchedule.test.js` vérifie désormais que tout le registre est ici.
+        ['e2ee_envelope_purge',     'e2ee_envelope'],
         // Médias de discussion : 30 jours, ou 365 pour ceux qu'un abonné peut
         // encore demander. Supprimés chez Backblaze, message par message.
         ['media_nightly_purge',     'media'],

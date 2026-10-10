@@ -717,11 +717,14 @@ async function runNightlyDeliveryMaintenance() {
       [Number(r.delivered), r.id],
     );
   }
-  await pool.execute(
+  const [res] = await pool.execute(
     `DELETE FROM broadcast_delivery
      WHERE delivered_at IS NOT NULL
        AND delivered_at < DATE_SUB(NOW(), INTERVAL 90 DAY)`,
   );
+  // Renvoyé au registre des purges, qui le journalise : sans retour, chaque
+  // passage apparaissait réussi sans dire ce qu'il avait supprimé.
+  return { compteurs: rows.length, accuses: res.affectedRows || 0 };
 }
 
 function mapBroadcastRow(row) {
