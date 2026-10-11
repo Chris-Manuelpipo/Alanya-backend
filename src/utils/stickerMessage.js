@@ -16,7 +16,7 @@
  *
  * ── Trois fermetures différentes, à ne pas confondre ──
  *
- *   1. Fonctionnalité fermée (`sticker_settings.enabled`, cohorte, table
+ *   1. Fonctionnalité fermée (`sticker_settings.enabled`, table
  *      absente) → `STICKER_INVALID_PAYLOAD` : rien n'est révélé.
  *   2. Sticker ou pack introuvable/indisponible → `STICKER_NOT_FOUND`,
  *      `STICKER_PACK_UNAVAILABLE`.
@@ -141,7 +141,7 @@ function depsParDefaut() {
  * @param {object} p
  * @param {*}      p.content   `content` envoyé par le client
  * @param {number} p.senderID
- * @param {object} [deps]      `ouvert(senderID)`, `chargeSticker(sid, senderID)`,
+ * @param {object} [deps]      `ouvert()`, `chargeSticker(sid, senderID)`,
  *                             `droits(senderID)`, `urlDe(clé)` — injectables
  * @returns {Promise<{content: string, mediaUrl: string, mediaName: string,
  *                    sid: number, packCode: string}>}
@@ -153,7 +153,7 @@ async function prepareStickerMessage({ content, senderID }, deps = depsParDefaut
   // bulle en échec définitif côté app ; le 503, lui, laisse l'outbox rejouer.
   let ouvert;
   try {
-    ouvert = await deps.ouvert(senderID);
+    ouvert = await deps.ouvert();
   } catch (e) {
     throw refus('SERVICE_UNAVAILABLE');
   }

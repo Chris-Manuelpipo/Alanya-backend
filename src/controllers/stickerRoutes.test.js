@@ -17,7 +17,7 @@ const remplace = (rel, exports) => {
 
 // ── Doubles ────────────────────────────────────────────────────────────────
 const etat = {
-  reglages: { enabled: 1, cohort_percent: 100 },
+  reglages: { enabled: 1 },
   droits: null, // null = droits illisibles
   appels: [],
   pack: null,
@@ -88,7 +88,7 @@ const ligne = { id: 1, code: 'alanya', name_i18n: { fr: 'Alanya' }, description_
   };
   const reinit = (patch = {}) => {
     Object.assign(etat, {
-      reglages: { enabled: 1, cohort_percent: 100 }, droits: null, appels: [], pack: { ...PACK_BASE },
+      reglages: { enabled: 1 }, droits: null, appels: [], pack: { ...PACK_BASE },
       packParCode: null, catalogue: { packs: [ligne], version: 3 }, stickers: [], moi: { packs: [], favorites: [], version: 0 },
       installes: 0, favorisable: { id: 1 }, panne: false, ordre: null,
     }, patch);
@@ -99,8 +99,7 @@ const ligne = { id: 1, code: 'alanya', name_i18n: { fr: 'Alanya' }, description_
   try {
     // ── Fermé : 404 générique, la base n'est même pas interrogée ───────────
     for (const [reglages, libelle] of [
-      [{ enabled: 0, cohort_percent: 100 }, 'enabled = 0'],
-      [{ enabled: 1, cohort_percent: 0 }, 'hors cohorte'],
+      [{ enabled: 0 }, 'enabled = 0'],
       [undefined, 'ligne absente'],
     ]) {
       reinit({ reglages });
@@ -114,10 +113,6 @@ const ligne = { id: 1, code: 'alanya', name_i18n: { fr: 'Alanya' }, description_
       assert.strictEqual(etat.appels.length, 0, `${libelle} : aucune lecture ni écriture`);
       assert.strictEqual(emis.length, 0);
     }
-    // Cohorte : seul le compte listé passe
-    reinit({ reglages: { enabled: 1, cohort_percent: 0, cohort_ids: '[7]' } });
-    assert.strictEqual((await appel('GET', '/me', { entetes: { 'x-test-user': '7' } })).status, 200);
-    assert.strictEqual((await appel('GET', '/me', { entetes: { 'x-test-user': '8' } })).status, 404);
 
     // ── Catalogue : ETag / 304, langue, verrou ─────────────────────────────
     reinit({ catalogue: { packs: [ligne, { ...ligne, id: 6, code: 'royal', name_i18n: { fr: 'Royal' }, is_premium: 1 }], version: 3 } });

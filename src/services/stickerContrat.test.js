@@ -1,6 +1,6 @@
 /**
  * Contrat stickers côté serveur — `node src/services/stickerContrat.test.js`.
- * Pur : formes de réponse contre les fixtures, réglages et cohorte,
+ * Pur : formes de réponse contre les fixtures, réglages,
  * `stickers:sync`, clés de stockage, exemption de la purge, codes d'erreur.
  */
 const assert = require('assert');
@@ -10,7 +10,7 @@ const crypto = require('crypto');
 
 const fix = (nom) => require(path.join(__dirname, '..', 'testUtils', 'stickers', nom));
 const { presentCatalog, presentPack, presentMe } = require('../utils/stickerPresenter');
-const { stickersOuverts, estDansCohorte, cohortBucket, DEFAULTS } = require('./stickerSettingsService');
+const { stickersOuverts, DEFAULTS } = require('./stickerSettingsService');
 const { syncPayload, emitStickersSync, REASONS } = require('./stickerSync');
 const storage = require('./mediaStorage');
 const { expiredMediaWhere } = require('./mediaRetention');
@@ -54,33 +54,21 @@ const memesCles = (a, b, msg) => assert.deepStrictEqual(Object.keys(a).sort(), O
   assert.deepStrictEqual(m, me, '/me : exactement la fixture, ids seulement');
 }
 
-// ── Réglages : fermé par défaut, cohorte stable ────────────────────────────
+// ── Réglages : un seul interrupteur, fermé par défaut ──────────────────────
 {
   assert.strictEqual(DEFAULTS.enabled, 0);
   assert.strictEqual(DEFAULTS.creation_enabled, 0);
   assert.strictEqual(DEFAULTS.animated_enabled, 0);
-  assert.strictEqual(stickersOuverts(7, DEFAULTS), false, 'valeurs par défaut : fermé');
-  assert.strictEqual(stickersOuverts(7, null), false);
-  assert.strictEqual(stickersOuverts(7, { enabled: 1 }), false, 'enabled seul, cohorte vide : personne');
-  assert.strictEqual(stickersOuverts(7, { enabled: 1, cohort_percent: 100 }), true);
-  assert.strictEqual(stickersOuverts(7, { enabled: 0, cohort_percent: 100 }), false, 'interrupteur éteint : fermé même à 100 %');
-  assert.strictEqual(stickersOuverts(7, { enabled: 1, cohort_ids: '[7,8]' }), true);
-  assert.strictEqual(stickersOuverts(9, { enabled: 1, cohort_ids: [7, 8] }), false);
-  assert.strictEqual(stickersOuverts(9, { enabled: 1, cohort_ids: '{abîmé' }), false, 'liste illisible : personne');
-  assert.strictEqual(stickersOuverts(0, { enabled: 1, cohort_percent: 100 }), false);
-  assert.strictEqual(stickersOuverts('x', { enabled: 1, cohort_percent: 100 }), false);
-  // Haché stable et monotone : monter le pourcentage ne fait sortir personne
-  const dedans = (pc) => new Set(Array.from({ length: 2000 }, (_, i) => i + 1).filter((id) => estDansCohorte(id, { cohort_percent: pc })));
-  const a = dedans(10); const b = dedans(50);
-  for (const id of a) assert.ok(b.has(id), `compte ${id} sorti en passant de 10 à 50 %`);
-  assert.ok(a.size > 100 && a.size < 300, `10 % ≈ 200 sur 2000 (obtenu ${a.size})`);
-  assert.ok(b.size > 900 && b.size < 1100);
-  assert.strictEqual(dedans(100).size, 2000);
-  assert.strictEqual(cohortBucket(12), cohortBucket(12));
-  // Tirage indépendant de celui de l'E2EE
-  const e2ee = require('./e2eeSettingsService');
-  const differents = Array.from({ length: 200 }, (_, i) => i + 1).filter((i) => e2ee.cohortBucket(i) !== cohortBucket(i)).length;
-  assert.ok(differents > 150, 'cohorte stickers ≠ cohorte E2EE');
+  assert.strictEqual(stickersOuverts(DEFAULTS), false, 'valeurs par défaut : fermé');
+  assert.strictEqual(stickersOuverts(null), false);
+  assert.strictEqual(stickersOuverts({}), false);
+  assert.strictEqual(stickersOuverts({ enabled: 0 }), false);
+  assert.strictEqual(stickersOuverts({ enabled: 1 }), true, 'interrupteur seul : ouvert');
+  assert.strictEqual(stickersOuverts({ enabled: '1' }), true, 'toléré : TINYINT rendu en chaîne');
+  // Les colonnes de cohorte de la migration 097 restent en base mais sont
+  // inertes : elles n'ouvrent ni ne ferment quoi que ce soit.
+  assert.strictEqual(stickersOuverts({ enabled: 0, cohort_percent: 100, cohort_ids: '[7]' }), false);
+  assert.strictEqual(stickersOuverts({ enabled: 1, cohort_percent: 0, cohort_ids: '[]' }), true);
 }
 
 // ── stickers:sync ──────────────────────────────────────────────────────────

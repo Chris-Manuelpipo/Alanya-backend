@@ -9,7 +9,7 @@
  * `estSticker` (Number(10.4) !== 10) ni par aucun autre garde : la colonne
  * `message.type` devenait pourtant 10 — un sticker écrit SANS résolution
  * serveur, gardant `mediaUrl`/`content` du client, sans contrôle de pack, de
- * droit Plus ni de cohorte.
+ * droit Plus ni de résolution serveur.
  *
  * ── Règle ──
  *

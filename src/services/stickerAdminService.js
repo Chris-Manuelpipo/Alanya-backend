@@ -380,8 +380,23 @@ async function archivePack(id, db = pool) {
   return { status: STATUT.ARCHIVE, code: pack.code };
 }
 
+/** Réglages exposés en JSON (camelCase, contrat admin). Les colonnes de
+ *  cohorte de la migration 097 sont conservées en base mais écartées : un seul
+ *  interrupteur, `enabled`, décide de l'ouverture. */
+function reglagesPublies(row) {
+  return {
+    id: Number(row.id) || 1,
+    enabled: Number(row.enabled) === 1 ? 1 : 0,
+    creationEnabled: Number(row.creation_enabled) === 1 ? 1 : 0,
+    animatedEnabled: Number(row.animated_enabled) === 1 ? 1 : 0,
+    minAppVersion: row.min_app_version ?? null,
+    updatedBy: row.updated_by ?? null,
+    updatedAt: row.updated_at ?? null,
+  };
+}
+
 async function getSettings() {
-  return getStickerSettings();
+  return reglagesPublies(await getStickerSettings());
 }
 
 async function updateSettings(champs, { by } = {}, db = pool) {
@@ -392,18 +407,6 @@ async function updateSettings(champs, { by } = {}, db = pool) {
       sets.push(`${k} = ?`);
       params.push(champs[k] ? 1 : 0);
     }
-  }
-  if ('cohort_percent' in champs) {
-    const p = Number(champs.cohort_percent);
-    if (!Number.isInteger(p) || p < 0 || p > 100) {
-      throw refus('STICKER_INVALID_PAYLOAD', 'cohort_percent doit être un entier entre 0 et 100');
-    }
-    sets.push('cohort_percent = ?');
-    params.push(p);
-  }
-  if ('cohort_ids' in champs) {
-    sets.push('cohort_ids = ?');
-    params.push(champs.cohort_ids == null ? null : JSON.stringify(champs.cohort_ids));
   }
   if ('min_app_version' in champs) {
     sets.push('min_app_version = ?');

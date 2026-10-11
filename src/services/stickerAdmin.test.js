@@ -5,7 +5,7 @@
  *   - la liste de contrôle de publication (noms FR+EN, icône, ≥ 8 stickers) ;
  *   - un pack publié/archivé ne se réécrit pas sticker à sticker (on archive) ;
  *   - 40 stickers maximum par pack (comme `uploadSticker`) ;
- *   - `cohort_percent` reste entre 0 et 100.
+ *   - les colonnes de cohorte de la migration 097 sont ignorées (inertes).
  *
  * Base, stockage et pipeline d'upload sont doublés : aucune dépendance externe.
  */
@@ -39,7 +39,7 @@ function db(handlers) {
   });
   remplace('./mediaStorage', { publicUrl: (k) => (k ? `https://cdn.test/${k}` : null), removeAllVersions: async () => {} });
   remplace('./stickerSettingsService', {
-    getStickerSettings: async () => ({ id: 1, enabled: 0, creation_enabled: 0, animated_enabled: 0, cohort_percent: 0 }),
+    getStickerSettings: async () => ({ id: 1, enabled: 0, creation_enabled: 0, animated_enabled: 0 }),
     invalidateStickerSettings: () => {},
   });
 
@@ -148,9 +148,21 @@ function db(handlers) {
     assert.strictEqual(crees[0].position, 5);
   });
 
-  test('updateSettings borne cohort_percent', async () => {
+  test('updateSettings écrit les champs, retour en camelCase', async () => {
+    const d = db([[/UPDATE sticker_settings/i, () => [{ affectedRows: 1 }, []]]]);
+    const r = await admin.updateSettings({ enabled: true, min_app_version: '3.4.0' }, { by: 1 }, d);
+    const [sql, params] = d.requetes.find(([s]) => /UPDATE sticker_settings/i.test(s));
+    assert.match(sql, /enabled = \?/);
+    assert.match(sql, /min_app_version = \?/);
+    assert.deepStrictEqual(params.slice(0, 2), [1, '3.4.0']);
+    assert.ok('creationEnabled' in r && 'minAppVersion' in r, 'retour camelCase');
+  });
+
+  test('updateSettings ignore les colonnes de cohorte (inertes)', async () => {
     const d = db([]);
-    await attendErreur(() => admin.updateSettings({ cohort_percent: 150 }, { by: 1 }, d), 'STICKER_INVALID_PAYLOAD');
+    const r = await admin.updateSettings({ cohort_percent: 150, cohort_ids: [1, 2] }, { by: 1 }, d);
+    assert.strictEqual(d.requetes.some(([sql]) => /UPDATE sticker_settings/i.test(sql)), false, 'aucune écriture');
+    assert.ok('enabled' in r, 'retour = relecture des réglages');
   });
 
   for (const [nom, fn] of tests) {

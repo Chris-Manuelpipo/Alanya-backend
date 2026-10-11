@@ -1,11 +1,12 @@
 /**
- * Interrupteurs de lancement des stickers : lecture en cache court, règle de
- * cohorte, décision « ce compte voit-il les stickers ? ».
+ * Interrupteurs de lancement des stickers : lecture en cache court, décision
+ * « les stickers sont-ils ouverts ? ».
  *
- * Une seule ligne (`sticker_settings`, id = 1, migration 097). Même patron que
- * `e2eeSettingsService` : la valeur est lue à chaque envoi de sticker et à
- * chaque appel de `/api/stickers/*`, et ne change qu'à chaque palier du
- * déploiement.
+ * Une seule ligne (`sticker_settings`, id = 1, migration 097). La valeur est lue
+ * à chaque envoi de sticker et à chaque appel de `/api/stickers/*`, et ne change
+ * qu'à la bascule du lancement. Un seul interrupteur décide de l'ouverture :
+ * `enabled`. Les colonnes `cohort_ids` et `cohort_percent` de la migration sont
+ * conservées mais inertes.
  *
  * ── Une base incomplète n'ouvre rien, mais ne fige pas une panne ──
  *
@@ -30,9 +31,7 @@
  * redémarrage de pm2 : la valeur est relue.
  */
 
-const crypto = require('crypto');
 const pool = require('../config/db');
-const { parseCohortIds } = require('./e2eeSettingsService');
 
 const TTL_MS = 30_000;
 
@@ -44,8 +43,6 @@ const DEFAULTS = Object.freeze({
   enabled: 0,
   creation_enabled: 0,
   animated_enabled: 0,
-  cohort_ids: null,
-  cohort_percent: 0,
   min_app_version: null,
   updated_at: null,
 });
@@ -65,31 +62,12 @@ class StickerSettingsInaccessibles extends Error {
 }
 
 /**
- * Le seau d'un compte, de 0 à 99. Haché stable : monter le pourcentage n'en
- * fait sortir personne. Le préfixe sépare ce tirage de celui de l'E2EE — un
- * compte tôt dans la cohorte du chiffrement ne l'est pas automatiquement ici.
+ * Stickers ouverts ? Un seul interrupteur : `enabled`. Les valeurs par défaut
+ * (migration non jouée, ligne absente) retombent sur `0` : FERMÉ. Fonction
+ * pure, testée sans base.
  */
-function cohortBucket(alanyaID) {
-  const h = crypto.createHash('sha256').update(`alanya-stickers-cohorte:${alanyaID}`).digest();
-  return h.readUInt32BE(0) % 100;
-}
-
-/** Le compte fait-il partie de la cohorte ? Fonction pure. */
-function estDansCohorte(alanyaID, settings) {
-  const id = Number(alanyaID);
-  if (!Number.isInteger(id) || id <= 0) return false;
-  if (parseCohortIds(settings.cohort_ids).has(id)) return true;
-  const pourcent = Number(settings.cohort_percent) || 0;
-  return pourcent > 0 && cohortBucket(id) < pourcent;
-}
-
-/**
- * Cohorte des stickers : sans liste ni pourcentage, personne n'y est et
- * `enabled = 1` seul n'ouvre RIEN. `cohort_percent = 100` ouvre à tous.
- * Fonction pure, testée sans base.
- */
-function stickersOuverts(alanyaID, settings) {
-  return Number(settings?.enabled) === 1 && estDansCohorte(alanyaID, settings);
+function stickersOuverts(settings) {
+  return Number(settings?.enabled) === 1;
 }
 
 /**
@@ -121,16 +99,14 @@ function invalidateStickerSettings() {
   _cache = null;
 }
 
-/** Ce compte voit-il les stickers (V1a) ? */
-async function peutUtiliserStickers(alanyaID) {
-  return stickersOuverts(alanyaID, await getStickerSettings());
+/** Les stickers sont-ils ouverts (V1a) ? */
+async function peutUtiliserStickers() {
+  return stickersOuverts(await getStickerSettings());
 }
 
 module.exports = {
   DEFAULTS,
   StickerSettingsInaccessibles,
-  cohortBucket,
-  estDansCohorte,
   stickersOuverts,
   getStickerSettings,
   invalidateStickerSettings,

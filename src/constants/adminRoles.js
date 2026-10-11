@@ -138,9 +138,9 @@ const SUPER_ADMIN_ONLY = [
   // Générer ou annuler des codes d'activation : chaque code est une année
   // d'abonnement. Même niveau que l'abonnement offert.
   'billing.codes',
-  // Publier un pack de stickers et régler le lancement (interrupteur, cohorte,
-  // version minimale) : ces gestes décident de ce que tous les comptes voient
-  // d'un coup, comme l'interrupteur du payant. Charger et modérer restent à
+  // Publier un pack de stickers et régler le lancement (interrupteur, version
+  // minimale) : ces gestes décident de ce que tous les comptes voient d'un
+  // coup, comme l'interrupteur du payant. Charger et modérer restent à
   // l'admin.
   'stickers.publish',
   'stickers.settings',

@@ -1,6 +1,6 @@
 // Stickers (type de message 10) — V1a, catalogue officiel. Contrat :
-// CONTRAT-STICKERS.md §4. Tout est derrière `sticker_settings.enabled` et la
-// cohorte (`requireStickers`) : fermé, tout répond 404.
+// CONTRAT-STICKERS.md §4. Tout est derrière `sticker_settings.enabled`
+// (`requireStickers`) : fermé, tout répond 404.
 //
 // L'ENVOI n'a pas de route ici : il passe par `message:send` et
 // `POST /api/conversations/:id/messages`, via `utils/stickerMessage`.
