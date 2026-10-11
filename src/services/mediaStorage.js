@@ -28,7 +28,7 @@
  *    Cloudflare R2 dès que `R2_ENDPOINT`, `R2_BUCKET`, `R2_KEY_ID` et
  *    `R2_APP_KEY` sont posés, sinon `B2_BUCKET` chez Backblaze ;
  *  - `images/` : `B2_PROFILE_BUCKET` (alanyaprofile), public ;
- *  - `voicemail/`, `ringtones/`, `official/` : `B2_PROFILEMEDIA_BUCKET`
+ *  - `voicemail/`, `ringtones/`, `official/`, `stickers/` : `B2_PROFILEMEDIA_BUCKET`
  *    (profilemedia), public.
  * Un fichier public est lu par son adresse Backblaze directe, sans passer par
  * ce serveur. Tant qu'un bucket public n'est pas configuré (nom et clé), ses
@@ -85,7 +85,7 @@ const CACHE_IMMUABLE = 'public, max-age=31536000, immutable';
  *
  * ⚠ Oublier un préfixe ici fait refuser ses clés par `isSafeKey`.
  */
-const PREFIXES_SERVIS = [MEDIA_ROOT, 'images', 'voicemail', 'ringtones', 'official'];
+const PREFIXES_SERVIS = [MEDIA_ROOT, 'images', 'voicemail', 'ringtones', 'official', 'stickers'];
 
 /** Bucket public de chaque préfixe public. Tout le reste va dans le bucket privé. */
 const BUCKET_PUBLIC_DU_PREFIXE = {
@@ -93,6 +93,7 @@ const BUCKET_PUBLIC_DU_PREFIXE = {
   voicemail: 'profilemedia',
   ringtones: 'profilemedia',
   official: 'profilemedia',
+  stickers: 'profilemedia',
 };
 
 const SEGMENT_SUR = /^[A-Za-z0-9._-]+$/;
@@ -409,6 +410,36 @@ function newVoicemailGreetingKey({ alanyaID, ext = '', instant = Date.now() }) {
 function newOfficialKey({ kind, ext = '', instant = Date.now() }) {
   if (!LEGACY_KINDS.includes(kind)) throw new Error(`type de média inconnu : ${kind}`);
   return `official/${kind}/off_${instant}_${suffixeAleatoire()}${ext}`;
+}
+
+/**
+ * Clé d'un sticker officiel : `official/stickers/<pack>/<sid>_<sha8>[_t].webp`.
+ * Jamais purgé (préfixe `official/`). L'empreinte est dans le nom : un fichier
+ * modifié change de nom, et le cache de l'application indexe par nom.
+ */
+function officialStickerKey({ pack, sid, sha256, thumb = false }) {
+  const code = String(pack || '');
+  const empreinte = String(sha256 || '').toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(code)) throw new Error(`pack de sticker invalide : ${code}`);
+  if (!/^[0-9a-f]{64}$/.test(empreinte)) throw new Error('empreinte de sticker invalide');
+  const id = Number(sid);
+  if (!Number.isSafeInteger(id) || id < 0) throw new Error('identifiant de sticker invalide');
+  return `official/stickers/${code}/${id}_${empreinte.slice(0, 8)}${thumb ? '_t' : ''}.webp`;
+}
+
+/**
+ * Clé d'un sticker personnel : `stickers/u/<alanyaID>/<sel16>_<sha256>[_t].webp`.
+ * `sel` (16 hex tirés au hasard à la création, ENREGISTRÉS dans `storage_key`)
+ * ferme l'oracle d'existence : connaître l'empreinte d'une image ne suffit pas
+ * à deviner l'adresse du fichier d'un autre compte.
+ */
+function personalStickerKey({ alanyaID, sha256, sel = crypto.randomBytes(8).toString('hex'), thumb = false }) {
+  const compte = Number(alanyaID);
+  const empreinte = String(sha256 || '').toLowerCase();
+  if (!Number.isInteger(compte) || compte <= 0) throw new Error('alanyaID invalide');
+  if (!/^[0-9a-f]{64}$/.test(empreinte)) throw new Error('empreinte de sticker invalide');
+  if (!/^[0-9a-f]{16}$/.test(sel)) throw new Error('sel de sticker invalide');
+  return `stickers/u/${compte}/${sel}_${empreinte}${thumb ? '_t' : ''}.webp`;
 }
 
 /**
@@ -767,6 +798,8 @@ module.exports = {
   newImageKey,
   newVoicemailGreetingKey,
   newOfficialKey,
+  officialStickerKey,
+  personalStickerKey,
   ringtoneKey,
   ringtoneUrl,
   cibleDe,

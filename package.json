@@ -28,6 +28,7 @@
         "test:welcome": "NODE_ENV=test node src/services/welcomeBlockI18n.test.js && NODE_ENV=test node src/services/welcomeStatusBlocks.test.js",
         "test:reports": "NODE_ENV=test node src/services/reportExcerpt.test.js && NODE_ENV=test node src/services/reportService.test.js && NODE_ENV=test node src/services/reportService.db.test.js && NODE_ENV=test node src/controllers/admin/reports.test.js",
         "test:audit": "NODE_ENV=test node src/middleware/adminAudit.test.js && NODE_ENV=test node src/middleware/adminAudit.record.test.js",
+        "test:stickers": "NODE_ENV=test node src/utils/messageType.test.js && NODE_ENV=test node src/utils/stickerAsset.test.js && NODE_ENV=test node src/utils/stickerMessage.test.js && NODE_ENV=test node src/utils/stickerParite.test.js && NODE_ENV=test node src/utils/stickerReponse.test.js && NODE_ENV=test node src/utils/messagePreview.caracterisation.test.js && NODE_ENV=test node src/utils/stickerApercu.test.js && NODE_ENV=test node src/utils/stickerI18n.test.js && NODE_ENV=test node src/services/stickerContrat.test.js && NODE_ENV=test node src/controllers/stickerRoutes.test.js && NODE_ENV=test node src/controllers/messageControllerSticker.test.js && NODE_ENV=test node src/services/stickerAdmin.test.js && NODE_ENV=test node src/services/accountDeletionStickers.test.js",
         "test:roles": "NODE_ENV=test node src/constants/adminRoles.test.js",
         "test:socle": "NODE_ENV=test node src/utils/soclePayload.test.js",
         "test:billing": "NODE_ENV=test node src/services/billing/rules.test.js && NODE_ENV=test node src/services/billing/codeFormat.test.js && NODE_ENV=test node src/services/billing/billingTexts.test.js && NODE_ENV=test node src/services/billing/outgoingGate.test.js && NODE_ENV=test node src/services/billing/uploadLimits.test.js && NODE_ENV=test node src/middleware/mediaTier.test.js && NODE_ENV=test node src/controllers/uploadTicketTier.test.js && NODE_ENV=test node src/middleware/requireOutgoing.test.js && NODE_ENV=test node src/utils/alanyaPhone.test.js && NODE_ENV=test node src/services/payments/paymentRules.test.js && NODE_ENV=test node src/services/billing/verificationRules.test.js && NODE_ENV=test node src/services/documentVault.test.js",
@@ -65,6 +66,7 @@
         "nodemailer": "^8.0.7",
         "pdfkit": "^0.19.1",
         "redis": "^4.7.1",
+        "sharp": "0.33.5",
         "socket.io": "^4.7.5",
         "swagger-jsdoc": "^6.2.8",
         "swagger-ui-express": "^5.0.1"
@@ -74,7 +76,7 @@
         "socket.io-client": "^4.8.3"
     },
     "engines": {
-        "node": ">=18.0.0"
+        "node": ">=18.17.0"
     },
     "overrides": {
         "google-auth-library": {

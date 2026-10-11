@@ -1,0 +1,3 @@
+{"version":3,"packs":[
+ {"id":1,"code":"alanya","name":"Alanya","description":"Le pack de la maison : appels, messages, réseau.","cover":"https://<bucket>/official/stickers/alanya/1_ab12cd34_t.webp","count":14,"isPremium":false,"locked":false,"version":1,"installedByDefault":true},
+ {"id":6,"code":"royal","name":"Royal","description":"The Plus pack: crowns, trophies, sparkle.","cover":"https://<bucket>/official/stickers/royal/71_9f8e7d6c_t.webp","count":12,"isPremium":true,"locked":true,"version":1,"installedByDefault":false}]}

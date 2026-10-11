@@ -1,0 +1,4 @@
+{"STICKER_NOT_FOUND":{"status":404},"STICKER_PACK_UNAVAILABLE":{"status":404},"STICKER_INVALID_PAYLOAD":{"status":400},
+ "SUBSCRIPTION_REQUIRED":{"status":403,"champs":{"feature":"stickers_premium"}},
+ "STICKER_ASSET_INVALID":{"status":422},"STICKER_ASSET_BLOCKED":{"status":422},"STICKER_QUOTA_EXCEEDED":{"status":429},"STICKER_PACK_LIMIT":{"status":409},
+ "_note":"status à aligner sur utils/apiError au T1 ; les codes, eux, sont figés"}

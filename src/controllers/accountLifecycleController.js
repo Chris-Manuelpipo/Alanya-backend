@@ -2,6 +2,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
+const { chargeStickersExport } = require('../services/stickerStore');
 const { emitToUser } = require('../utils/userSocketRegistry');
 const { retireClesAppareils } = require('../services/e2eeKeyService');
 const { loadUserPrivacyPrefs } = require('../services/privacyPrefsService');
@@ -47,6 +48,21 @@ const _disconnectAllUserSockets = (io, alanyaID) => {
     }
   }
   return closed;
+};
+
+/**
+ * État stickers du compte pour l'export de données (plan §4 : `user_sticker_*`
+ * entrent dans l'export). Les packs installés sont rendus par leur code lisible,
+ * pas seulement par leur id. Migration 097 pas encore jouée :
+ * `ER_NO_SUCH_TABLE` rend une section vide plutôt que de faire échouer l'export.
+ */
+const _chargeStickersExport = async (alanyaID) => {
+  try {
+    return await chargeStickersExport(alanyaID);
+  } catch (e) {
+    if (e.code === 'ER_NO_SUCH_TABLE') return { installedPacks: [], favorites: [] };
+    throw e;
+  }
 };
 
 const _buildSyncExport = async (alanyaID) => {
@@ -140,6 +156,8 @@ const _buildSyncExport = async (alanyaID) => {
       loadUserVoicemailSchedule(alanyaID),
     ]);
 
+  const stickers = await _chargeStickersExport(alanyaID);
+
   return {
     exportedAt: new Date().toISOString(),
     version: 1,
@@ -152,6 +170,7 @@ const _buildSyncExport = async (alanyaID) => {
     notificationPrefs,
     dndSchedule,
     voicemailSchedule,
+    stickers,
     conversations: conversations.map((c) => ({
       ...c,
       lastMessage: undefined,

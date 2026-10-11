@@ -3,6 +3,7 @@ const path    = require('path');
 const fs      = require('fs');
 const os      = require('os');
 
+const { LIMITES: LIMITES_STICKER, mimeAccepte: stickerMimeAccepte } = require('../utils/stickerAsset');
 const {
   newMediaKey,
   newImageKey,
@@ -185,6 +186,18 @@ const mediaFilter = (req, file, cb) => {
   cb(new Error(`Type de fichier ${file.mimetype} non autorisé`), false);
 };
 
+/**
+ * Sticker : PNG ou WebP seulement, en MÉMOIRE (≤ 1 Mo) — le pipeline
+ * `utils/stickerAsset` décode puis ré-encode, et rien du fichier d'origine
+ * n'est conservé. Ce filtre n'est qu'un premier tri sur le type déclaré ; le
+ * format réel est contrôlé sur les octets. Surtout pas `uploadOfficial` : son
+ * filtre accepte zip, apk et documents, avec le plafond des médias.
+ */
+const stickerFilter = (req, file, cb) => {
+  if (stickerMimeAccepte(file.mimetype)) return cb(null, true);
+  cb(new Error('Seuls les formats PNG et WebP sont autorisés pour un sticker'), false);
+};
+
 // Multer middleware
 const uploadAvatar = multer({
   storage: imageStorage,
@@ -252,7 +265,15 @@ const handleMulterError = (err, req, res, next) => {
   next();
 };
 
+/** Un sticker par envoi, champ `file` ; plusieurs, champ `files` (admin). */
+const uploadSticker = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: LIMITES_STICKER.ENTREE_MAX_OCTETS, files: 40 },
+  fileFilter: stickerFilter,
+});
+
 module.exports = {
+  uploadSticker,
   uploadAvatar,
   uploadMedia,
   uploadVoicemailGreeting,

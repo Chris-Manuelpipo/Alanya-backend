@@ -1,0 +1,11 @@
+{"cas":[
+ {"nom":"json_casse","content":"{\"v\":1,"},
+ {"nom":"sid_enorme","content":"{\"v\":1,\"pack\":\"a\",\"sid\":1e999,\"emoji\":\"x\"}"},
+ {"nom":"sid_texte","content":"{\"v\":1,\"pack\":\"a\",\"sid\":\"1 OR 1=1\",\"emoji\":\"x\"}"},
+ {"nom":"sid_negatif","content":"{\"v\":1,\"pack\":\"a\",\"sid\":-5,\"emoji\":\"x\"}"},
+ {"nom":"pas_objet","content":"[1,2,3]"},
+ {"nom":"vide","content":""},
+ {"nom":"trop_long","content_longueur":513},
+ {"nom":"proto","content":"{\"v\":1,\"__proto__\":{\"polluted\":1},\"pack\":\"a\",\"sid\":1,\"emoji\":\"x\"}"}
+ ],
+ "attendu":"STICKER_INVALID_PAYLOAD pour tous (sauf proto : accepté, champ ignoré, aucune pollution)"}

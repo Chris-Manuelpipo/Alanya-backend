@@ -89,6 +89,14 @@ const ADMIN_PERMISSIONS = [
   // L'auteur de chaque décision est tracé, chaque ouverture de pièce aussi.
   'verifications.read',
   'verifications.decide',
+
+  // Stickers (type 10) : préparer le catalogue et modérer. Charger des packs,
+  // poser un emoji ou un ordre, retirer une image signalée — le quotidien.
+  // Publier et régler le lancement, qui décident de ce que TOUT LE MONDE voit,
+  // sont au super-admin (voir `SUPER_ADMIN_ONLY`).
+  'stickers.read',
+  'stickers.write',
+  'stickers.moderate',
 ];
 
 /**
@@ -130,6 +138,12 @@ const SUPER_ADMIN_ONLY = [
   // Générer ou annuler des codes d'activation : chaque code est une année
   // d'abonnement. Même niveau que l'abonnement offert.
   'billing.codes',
+  // Publier un pack de stickers et régler le lancement (interrupteur, cohorte,
+  // version minimale) : ces gestes décident de ce que tous les comptes voient
+  // d'un coup, comme l'interrupteur du payant. Charger et modérer restent à
+  // l'admin.
+  'stickers.publish',
+  'stickers.settings',
 ];
 
 const ROLE_USER = 0;

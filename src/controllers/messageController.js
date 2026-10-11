@@ -8,7 +8,7 @@ const { assertCanSendToConversation } = require('../utils/groupSendPolicy');
 const { sanitizeMentions, serializeMentionsColumn } = require('../utils/mentions');
 const { markConversationDeliveredBy } = require('../utils/deliveryReceiptUtils');
 const { resolveLastMessagePreview } = require('../utils/mediaAlbum');
-const { resolveReplyToID } = require('../utils/resolveReplyToID');
+const { resolveReplyTarget } = require('../utils/resolveReplyToID');
 const { HISTORY_CUTOFF_SQL } = require('../utils/messageHistoryFilter');
 const { appliquerStatutLecteur } = require('../utils/groupReceipts');
 const { messageInsertSql, messageInsertParams, insertMessageThumb } = require('../utils/messageInsert');
@@ -25,6 +25,8 @@ const {
 } = require('../socket/handlers/chat/envelopeRouting');
 const { MEDIA_THUMB_SELECT } = require('../utils/messageThumbSql');
 const { copyForForward } = require('../services/mediaStorage');
+const { resolveStickerFields, estSticker, sanitizeReplyContent, champsDeTransfert } = require('../utils/stickerMessage');
+const { normalizeMessageType } = require('../utils/messageType');
 
 // Même origine que celle composée à l'upload : une URL de transfert doit être
 // indiscernable d'une URL d'upload, sans quoi le client la traiterait comme
@@ -233,13 +235,29 @@ const _deliverMessage = async (req, conversationID, senderID, msg, fields, silen
 };
 
 const _persistMessage = async (conn, conversationID, senderID, fields) => {
-  const {
+  // `let` pour `content`, `mediaUrl` et `mediaName` : un sticker (type 10) les
+  // voit réécrits par le serveur plus bas.
+  let {
     content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
     mediaSize, mediaPageCount,
     replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
     clickSentAt, clientId, mentions, mentionsAll = false,
     chiffre = null,
   } = fields;
+
+  // `type` normalisé AVANT tout contrôle sticker : MySQL arrondit un `10.4` à
+  // 10 à l'INSERT, ce qui créerait un type 10 sans résolution serveur. Un
+  // non-entier est refusé pour TOUS les types (messageType). Le `throw` porte
+  // `status`/`code` : le `catch` de `sendMessage` le rend tel quel, et un lot
+  // de transfert l'abandonne en cours de transaction.
+  const typeNormalise = normalizeMessageType(type);
+  if (typeNormalise === null) {
+    const err = new Error('type de message invalide');
+    err.status = 400;
+    err.code = 'INVALID_PAYLOAD';
+    throw err;
+  }
+  type = typeNormalise;
 
   if (clientId) {
     const [existing] = await _execute(conn,
@@ -297,8 +315,20 @@ const _persistMessage = async (conn, conversationID, senderID, fields) => {
 
   const silentDrop = blockEval.isDirect && blockEval.action === 'silent';
 
-  const resolvedReplyToID = await resolveReplyToID(conversationID, replyToID);
-  const resolvedReplyToContent = resolvedReplyToID != null ? (replyToContent ?? null) : null;
+  // Sticker : même fonction que `message:send` (socket). Le serveur relit le
+  // `sid` en base ; `content`, `mediaUrl` et `mediaName` du client sont
+  // ignorés. Une `StickerMessageError` porte `status`, `code` et `feature` :
+  // les `catch` des appelants la rendent telle quelle.
+  const sticker = await resolveStickerFields({
+    type, content, senderID, chiffre,
+  });
+  if (sticker) ({ content, mediaUrl, mediaName } = sticker);
+
+  const { id: resolvedReplyToID, type: replyToType } = await resolveReplyTarget(conversationID, replyToID);
+  // Citation d'un sticker : libellé neutre, jamais le JSON (voir stickerMessage).
+  const resolvedReplyToContent = resolvedReplyToID != null
+    ? sanitizeReplyContent(replyToContent ?? null, replyToType)
+    : null;
 
   const mentionsValue = await sanitizeMentions(
     conversationID, senderID, mentions, { all: mentionsAll === true },
@@ -499,7 +529,11 @@ const sendMessage = async (req, res, next) => {
     // `error.status` et non `=== 403` : la politique d'envoi renvoie aussi un
     // 404 (conversation inexistante), qui finirait sinon en 500.
     if (error.status) {
-      return res.status(error.status).json({ error: error.message, code: error.code });
+      return res.status(error.status).json({
+        error: error.message,
+        code: error.code,
+        ...(error.feature ? { feature: error.feature } : {}),
+      });
     }
     next(error);
   }
@@ -548,6 +582,19 @@ const updateMessage = async (req, res) => {
       return res.status(409).json({
         error: 'La modification d\'un message chiffré n\'est pas encore prise en charge',
         code: 'E2EE_EDITION_NON_PRISE_EN_CHARGE',
+      });
+    }
+
+    // Modifier un sticker n'a pas de sens : son `content` est un JSON que le
+    // serveur a canonisé à l'envoi, et son `mediaUrl` est recalculée depuis la
+    // base. Une édition remplacerait tout par du texte arbitraire affiché en
+    // JSON brut chez les destinataires — exactement ce que « ne jamais
+    // exposer le content d'un sticker » interdit. Le retrait (DELETE) n'est
+    // pas concerné : seul le remplacement du texte est refusé.
+    if (estSticker(existing[0].type)) {
+      return res.status(409).json({
+        error: 'La modification d\'un sticker n\'est pas prise en charge',
+        code: 'STICKER_EDIT_FORBIDDEN',
       });
     }
 
@@ -1099,7 +1146,8 @@ const batchForwardMessages = async (req, res) => {
       if (m.isViewOnce) {
         return res.status(400).json({ error: 'Média à vue unique non transférable', code: 'INVALID_MEDIA' });
       }
-      if (m.type !== 0 && m.type !== 5 && !m.mediaUrl) {
+      // Un sticker n'a pas besoin d'URL source : `mediaUrl` est recalculée.
+      if (m.type !== 0 && m.type !== 5 && !estSticker(m.type) && !m.mediaUrl) {
         return res.status(400).json({ error: 'Média sans URL serveur non transférable via batch', code: 'INVALID_MEDIA' });
       }
     }
@@ -1123,12 +1171,9 @@ const batchForwardMessages = async (req, res) => {
     for (const targetId of targetIds) {
       for (let i = 0; i < sources.length; i++) {
         const source = sources[i];
-        let content = source.content ?? null;
-        if (i === 0 && trimmedCaption) {
-          content = trimmedCaption;
-        } else if (i === 0 && source.type !== 0 && trimmedCaption === '') {
-          content = source.content ?? null;
-        }
+        // Un sticker se transfère seul, sans légende : son `content` est le
+        // JSON canonique, que `_persistMessage` relit et réécrit.
+        const { content, copie } = champsDeTransfert(source, i, trimmedCaption);
 
         // Le média transféré reçoit une adresse à LUI, par copie côté
         // Backblaze (CopyObject, aucun octet ne passe par le serveur). Sans ça,
@@ -1141,7 +1186,12 @@ const batchForwardMessages = async (req, res) => {
         //
         // En cas d'échec (fichier source déjà disparu, stockage injoignable),
         // on retombe sur l'URL d'origine : mieux vaut qu'un transfert refusé.
-        const cheminRelie = await copyForForward(source.mediaUrl, { alanyaID: senderID });
+        // Un sticker se transfère PAR RÉFÉRENCE : l'asset est réutilisé, aucun
+        // fichier n'est copié (contrat §5). Sa durée de vie n'est pas celle d'un
+        // média de discussion.
+        const cheminRelie = !copie
+          ? null
+          : await copyForForward(source.mediaUrl, { alanyaID: senderID });
         const mediaUrlTransfere = cheminRelie
           ? `${MEDIA_BASE_URL}/uploads/${cheminRelie}`
           : source.mediaUrl;
@@ -1192,7 +1242,11 @@ const batchForwardMessages = async (req, res) => {
   } catch (error) {
     await conn.rollback();
     if (error.status) {
-      return res.status(error.status).json({ error: error.message, code: error.code });
+      return res.status(error.status).json({
+        error: error.message,
+        code: error.code,
+        ...(error.feature ? { feature: error.feature } : {}),
+      });
     }
     throw error;
   } finally {

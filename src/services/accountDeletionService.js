@@ -71,6 +71,46 @@ const purgeExpiredAccounts = async () => {
   return rows.length;
 };
 
+/**
+ * Nettoyage des données stickers (type 10) d'un compte supprimé.
+ *
+ * Les tables de compte (`user_sticker_pack`, `user_sticker_favorite`) portent
+ * `alanyaID` et disparaissent avec lui. Les signalements suivent le
+ * rapporteur (`reporter_id`), et ceux portant sur un actif du compte aussi.
+ * Le contenu privé (V1b) part : packs, stickers et actifs dont `owner_id` est
+ * le compte. L'officiel (`owner_id` NULL pour un pack, 0 pour un actif) n'est
+ * jamais touché.
+ *
+ * Migration 097 pas encore jouée : `ER_NO_SUCH_TABLE` laisse le reste de la
+ * purge continuer plutôt que de bloquer une suppression de compte.
+ */
+const _purgeStickers = async (conn, alanyaID) => {
+  try {
+    await conn.execute('DELETE FROM user_sticker_pack WHERE alanyaID = ?', [alanyaID]);
+    await conn.execute('DELETE FROM user_sticker_favorite WHERE alanyaID = ?', [alanyaID]);
+    await conn.execute('DELETE FROM sticker_report WHERE reporter_id = ?', [alanyaID]);
+    await conn.execute(
+      `DELETE r FROM sticker_report r
+        JOIN sticker_asset a ON r.asset_id = a.id
+       WHERE a.owner_id = ?`,
+      [alanyaID],
+    );
+    // Stickers des packs privés du compte, puis les packs (la cascade les
+    // reprendrait), puis les actifs référencés par eux.
+    await conn.execute(
+      `DELETE s FROM sticker s
+        JOIN sticker_pack p ON s.pack_id = p.id
+       WHERE p.owner_id = ?`,
+      [alanyaID],
+    );
+    await conn.execute('DELETE FROM sticker_pack WHERE owner_id = ?', [alanyaID]);
+    await conn.execute('DELETE FROM sticker_asset WHERE owner_id = ?', [alanyaID]);
+  } catch (e) {
+    if (e.code === 'ER_NO_SUCH_TABLE') return;
+    throw e;
+  }
+};
+
 const _purgeUser = async (alanyaID) => {
   const conn = await pool.getConnection();
   let fichiersPublics = [];
@@ -86,6 +126,8 @@ const _purgeUser = async (alanyaID) => {
       'DELETE FROM blocked WHERE alanyaID = ? OR idCallerBlock = ?',
       [alanyaID, alanyaID],
     );
+
+    await _purgeStickers(conn, alanyaID);
 
     const [jobs] = await conn.execute(
       'SELECT filePath FROM user_export_jobs WHERE alanyaID = ?',

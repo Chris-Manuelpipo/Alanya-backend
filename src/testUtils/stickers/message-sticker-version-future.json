@@ -1,0 +1,3 @@
+{"content":"{\"v\":7,\"pack\":\"mboa\",\"sid\":4812,\"emoji\":\"😂\",\"nouveau_champ\":{\"x\":1}}",
+ "attendu_client":{"rendu":"repli","texte":"Sticker","emoji":"😂","jamais_afficher_json":true},
+ "attendu_serveur_v_inconnu":{"erreur":"STICKER_INVALID_PAYLOAD"}}

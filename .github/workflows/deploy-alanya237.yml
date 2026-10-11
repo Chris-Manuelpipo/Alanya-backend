@@ -49,6 +49,7 @@ jobs:
           npm run test:trips
           npm run test:media
           npm run test:e2ee
+          npm run test:stickers
 
   deploy:
     needs: tests

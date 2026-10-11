@@ -5,7 +5,7 @@ const {
   serializeMentionsColumn,
 } = require('../../../utils/mentions');
 const { resolveLastMessagePreview } = require('../../../utils/mediaAlbum');
-const { resolveReplyToID } = require('../../../utils/resolveReplyToID');
+const { resolveReplyTarget } = require('../../../utils/resolveReplyToID');
 const {
   getCachedParticipants,
   setCachedParticipants,
@@ -26,6 +26,13 @@ const { getSenderIdentity } = require('../../../utils/senderIdentityCache');
 const { buildSentPayload } = require('../../../utils/sentMessagePayload');
 const { MEDIA_THUMB_SELECT } = require('../../../utils/messageThumbSql');
 const { checkOutgoing, OUTGOING_DENIED } = require('../../../services/billing/outgoingGate');
+const {
+  resolveStickerFields,
+  sanitizeReplyContent,
+  StickerMessageError,
+  toSocketError,
+} = require('../../../utils/stickerMessage');
+const { normalizeMessageType } = require('../../../utils/messageType');
 
 // `mt.thumb` rejoint APRÈS m.* et réencodé en base64 : mysql2 retourne un
 // objet JS où la dernière colonne du même nom l'emporte, donc `mediaThumb`
@@ -235,7 +242,9 @@ const messageSend = (io, socket) => {
         });
       }
 
-      const {
+      // `let` pour `content`, `mediaUrl` et `mediaName` : un sticker (type 10)
+      // les voit réécrits par le serveur plus bas.
+      let {
         conversationID, content, type = 0, mediaUrl, mediaName, mediaDuration, mediaThumb,
         mediaSize, mediaPageCount,
         replyToID, replyToContent, isStatusReply = 0, isForwarded = 0, isViewOnce = 0,
@@ -253,6 +262,20 @@ const messageSend = (io, socket) => {
         });
         return;
       }
+
+      // `type` normalisé AVANT tout contrôle sticker : MySQL arrondit un
+      // `10.4` à 10 à l'INSERT, ce qui créerait un type 10 sans résolution
+      // serveur. Un non-entier est refusé pour TOUS les types (messageType).
+      const typeNormalise = normalizeMessageType(type);
+      if (typeNormalise === null) {
+        emitSendFailed(socket, {
+          clientId,
+          code: 'INVALID_PAYLOAD',
+          message: 'type de message invalide',
+        });
+        return;
+      }
+      type = typeNormalise;
 
       // Partie chiffrée, s'il y en a une. Validée AVANT l'INSERT et non
       // réparée après : un message chiffré mal formé est perdu sans recours —
@@ -328,14 +351,30 @@ const messageSend = (io, socket) => {
       }
       const { silentDrop } = sendPolicy;
 
+      // Sticker : le serveur relit le `sid` en base et réécrit `content`,
+      // `mediaUrl` et `mediaName` — ceux du client sont ignorés. Même fonction
+      // que le chemin HTTP (`messageController`). Corps chiffré : ni lu ni
+      // touché, il est scellé.
+      try {
+        const sticker = await resolveStickerFields({
+          type, content, senderID, chiffre,
+        });
+        if (sticker) ({ content, mediaUrl, mediaName } = sticker);
+      } catch (e) {
+        if (!(e instanceof StickerMessageError)) throw e;
+        const refus = toSocketError(e);
+        emitSendFailed(socket, { clientId, ...refus });
+        return socket.emit('error', refus);
+      }
+
       // Ces quatre lectures sont indépendantes les unes des autres : les lancer
       // ensemble met leur coût en parallèle au lieu de l'additionner. Les deux
       // dernières passent par un cache 60 s et ne coûtent donc rien la plupart
       // du temps ; les deux premières ne touchent la base que s'il y a
       // effectivement une citation ou une mention.
-      const [resolvedReplyToID, mentionsValue, senderIdentity, participants] =
+      const [replyTarget, mentionsValue, senderIdentity, participants] =
         await Promise.all([
-          resolveReplyToID(conversationID, replyToID),
+          resolveReplyTarget(conversationID, replyToID),
           // Écrites DANS l'INSERT et pas en UPDATE séparé : l'idempotence devient
           // gratuite, un rejeu du même clientID ne peut ni les dupliquer ni les
           // perdre. L'intersection avec les participants se fait côté serveur.
@@ -347,9 +386,12 @@ const messageSend = (io, socket) => {
             ? Promise.resolve([])
             : loadParticipantsExcept(conversationID, senderID),
         ]);
+      const resolvedReplyToID = replyTarget.id;
+      // Citation d'un sticker : libellé neutre, jamais le JSON (même règle que
+      // le chemin HTTP, via `sanitizeReplyContent`).
       const resolvedReplyToContent =
         (replyToContent != null && String(replyToContent).trim() !== '')
-          ? replyToContent
+          ? sanitizeReplyContent(replyToContent, replyTarget.type)
           : null;
 
       // Date d'envoi décidée ici et non par `NOW()` : c'est ce qui permet
@@ -575,4 +617,4 @@ const messageSend = (io, socket) => {
   });
 };
 
-module.exports = { joinConversation, messageSend };
+module.exports = { joinConversation, messageSend, emitSendFailed };

@@ -157,6 +157,14 @@ function musicTitle(mediaName) {
   return title || null;
 }
 
+/**
+ * Aperçu d'un sticker (type 10) : « 😀 Sticker », identique pour l'aperçu de
+ * conversation et le corps de notification (contrat §1). Constant — jamais
+ * l'emoji du sticker ni son JSON : le serveur n'a pas la langue du lecteur, et
+ * le client re-dérive un aperçu localisé dès qu'il possède le message.
+ */
+const STICKER_PREVIEW = '😀 Sticker';
+
 function mediaTypeLabel(type, { isViewOnce = false, mediaName } = {}) {
   const t = parseInt(type, 10) || 0;
   switch (t) {
@@ -177,6 +185,8 @@ function mediaTypeLabel(type, { isViewOnce = false, mediaName } = {}) {
       return '👤 Contact';
     case 9:
       return '🧭 Trajet de confiance';
+    case 10:
+      return STICKER_PREVIEW;
     default:
       return mediaName ?? 'Média';
   }
@@ -260,6 +270,11 @@ function messagePreview({
     return tripPreviewFromContent(content) || mediaTypeLabel(9);
   }
 
+  // type=10 : sticker. `content` est un JSON versionné — ne JAMAIS l'exposer.
+  // Le court-circuit doit rester AVANT le traitement générique ci-dessous,
+  // qui renverrait le payload brut.
+  if (t === 10) return STICKER_PREVIEW;
+
   // type=7 : JSON contact — ne jamais exposer le content brut.
   if (t === 7) {
     const contact = contactPreviewFromContent(content);
@@ -296,6 +311,7 @@ function messagePreview({
 }
 
 module.exports = {
+  STICKER_PREVIEW,
   tripPreviewFromContent,
   albumPreviewFromContent,
   mediaTypeLabel,

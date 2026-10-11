@@ -1,0 +1,5 @@
+{"regle":"langue demandée -> en -> fr ; vide = absent",
+ "entree":{"fr":"Les Classiques","en":"The Classics","zh":""},
+ "cas":[{"lang":"fr","attendu":"Les Classiques"},{"lang":"en","attendu":"The Classics"},{"lang":"zh","attendu":"The Classics"},{"lang":"de","attendu":"The Classics"}],
+ "entree2":{"fr":"Parlons-en"},
+ "cas2":[{"lang":"zh","attendu":"Parlons-en"},{"lang":"en","attendu":"Parlons-en"}]}

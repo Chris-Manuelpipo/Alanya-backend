@@ -1043,4 +1043,46 @@ router.post('/verifications/:id/request-document',  adminAuth, requirePermission
 router.post('/verifications/:id/revoke',            adminAuth, requirePermission('verifications.decide'), revokeVerification);
 router.post('/verifications/:id/reconfirm',         adminAuth, requirePermission('verifications.decide'), reconfirmVerification);
 
+// ── Stickers (type 10) — plan §6.4 ──────────────────────────────────────
+// Charger le catalogue et modérer est le travail de l'admin ; publier un pack
+// et régler le lancement engagent tous les comptes, donc super-admin. Le même
+// pipeline d'upload que le script de chargement est réutilisé (uploadSticker).
+const {
+  listPacks: listStickerPacks,
+  getPack: getStickerPack,
+  createPack: createStickerPack,
+  updatePack: updateStickerPack,
+  addStickers: addStickerAssets,
+  updateSticker: updateStickerItem,
+  deleteSticker: deleteStickerItem,
+  publishPack: publishStickerPack,
+  archivePack: archiveStickerPack,
+  getSettings: getStickersSettings,
+  updateSettings: updateStickersSettings,
+  listReports: listStickerReports,
+  takedownAsset: takedownStickerAsset,
+} = require('../controllers/admin/stickers');
+const { uploadSticker, handleMulterError } = require('../middleware/upload');
+
+router.get('/sticker-packs',                      adminAuth, requirePermission('stickers.read'), listStickerPacks);
+router.get('/sticker-packs/:id',                  adminAuth, requirePermission('stickers.read'), getStickerPack);
+router.post('/sticker-packs',                     adminAuth, requirePermission('stickers.write'), createStickerPack);
+router.patch('/sticker-packs/:id',                adminAuth, requirePermission('stickers.write'), updateStickerPack);
+router.post(
+  '/sticker-packs/:id/stickers',
+  adminAuth,
+  requirePermission('stickers.write'),
+  uploadSticker.array('files', 40),
+  handleMulterError,
+  addStickerAssets,
+);
+router.patch('/stickers/:id',                     adminAuth, requirePermission('stickers.write'), updateStickerItem);
+router.delete('/stickers/:id',                    adminAuth, requirePermission('stickers.write'), deleteStickerItem);
+router.post('/sticker-packs/:id/publish',         adminAuth, requirePermission('stickers.publish'), publishStickerPack);
+router.post('/sticker-packs/:id/archive',         adminAuth, requirePermission('stickers.publish'), archiveStickerPack);
+router.get('/sticker-settings',                   adminAuth, requirePermission('stickers.read'), getStickersSettings);
+router.put('/sticker-settings',                   adminAuth, requirePermission('stickers.settings'), updateStickersSettings);
+router.get('/sticker-reports',                    adminAuth, requirePermission('stickers.moderate'), listStickerReports);
+router.post('/sticker-assets/:id/takedown',       adminAuth, requirePermission('stickers.moderate'), takedownStickerAsset);
+
 module.exports = router;

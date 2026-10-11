@@ -130,6 +130,19 @@ const ACTIONS = {
   'POST /verifications/:id/revoke': { action: 'verifications.revoke', targetType: 'verification', param: 'id' },
   'POST /verifications/:id/reconfirm': { action: 'verifications.reconfirm', targetType: 'verification', param: 'id' },
 
+  // Stickers. Le verbe porte le nom de la permission qui garde la route
+  // (AGENTS.md) : charger, poser et modérer sont le quotidien de l'admin ;
+  // publier et régler décident de ce que tous les comptes voient.
+  'POST /sticker-packs': { action: 'stickers.write', targetType: 'sticker_pack' },
+  'PATCH /sticker-packs/:id': { action: 'stickers.write', targetType: 'sticker_pack', param: 'id' },
+  'POST /sticker-packs/:id/stickers': { action: 'stickers.write', targetType: 'sticker_pack', param: 'id' },
+  'PATCH /stickers/:id': { action: 'stickers.write', targetType: 'sticker', param: 'id' },
+  'DELETE /stickers/:id': { action: 'stickers.write', targetType: 'sticker', param: 'id' },
+  'POST /sticker-packs/:id/publish': { action: 'stickers.publish', targetType: 'sticker_pack', param: 'id' },
+  'POST /sticker-packs/:id/archive': { action: 'stickers.publish', targetType: 'sticker_pack', param: 'id' },
+  'PUT /sticker-settings': { action: 'stickers.settings', targetType: 'settings' },
+  'POST /sticker-assets/:id/takedown': { action: 'stickers.moderate', targetType: 'sticker_asset', param: 'id' },
+
   // Compte de l'administrateur lui-même
   'PUT /me': { action: 'profile.update', targetType: 'self' },
   'PUT /me/password': { action: 'profile.password', targetType: 'self' },
